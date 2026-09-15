@@ -1,0 +1,1089 @@
+Frontier Reasoning Engine — Build-Authoritative Codex Plan
+1. Objective
+Build the Frontier Reasoning Engine as a local-first, provider-neutral reasoning control plane that converts an incoming task into an auditable, replayable decision process.
+The engine must:
+	•	classify the task and allocate an appropriate reasoning budget;
+	•	formalise objectives, constraints, unknowns, variables, evidence, and acceptance criteria;
+	•	select useful problem representations;
+	•	generate structurally diverse candidates;
+	•	evaluate feasibility and prune only when justified;
+	•	search for higher-order combinations;
+	•	falsify decision-relevant survivors;
+	•	preserve epistemic state and provenance;
+	•	perform Pareto, sensitivity, ablation, robustness, and regret analysis;
+	•	acquire information only when it could materially affect the decision;
+	•	compile compact authoritative context packets;
+	•	terminate through marginal-value policy plus hard resource ceilings.
+The thirteen modules are conditional reasoning operators, not a mandatory fixed pipeline. Simple tasks should use only the minimum useful subset; difficult tasks may invoke modules repeatedly or in parallel.
+TaskEnvelope     ↓ Auditable Run     ↓ DecisionResult or explicit partial/blocking result     ↓ Reproducible ContextPacket
+ 
+2. Authority and conflict resolution
+This plan becomes the controlling build document.
+When implementation details conflict, apply this order:
+	1	this plan;
+	2	explicit domain contracts and tests already accepted in the repository;
+	3	the supplied technical introduction;
+	4	the supplied thirteen-module technical pass;
+	5	implementation conventions chosen by Codex.
+The technical module pass supplies the conceptual algorithms and terminology, but this plan corrects several unsafe simplifications in it, including forced scalar scoring, demotion of non-deterministic hard constraints, a globally acyclic ledger, naïve confidence propagation, and convergence-based termination guarantees.
+Codex may resolve local implementation details independently only when the decision:
+	•	does not alter a public contract;
+	•	does not weaken an invariant;
+	•	does not add a provider dependency;
+	•	does not move work into a later wave;
+	•	is recorded under DEVIATIONS or an ADR when architecturally material.
+ 
+3. Binding architectural decisions
+3.1 Control plane, not monolithic agent
+The engine owns canonical state, action selection, budget enforcement, persistence, replay, and module coordination.
+No model call may directly mutate canonical state.
+Every successful operation produces typed events that are validated and committed through one runtime path.
+3.2 Deterministic core, model-assisted semantics
+Use language models for:
+	•	semantic extraction;
+	•	reframing;
+	•	candidate generation;
+	•	qualitative interpretation;
+	•	causal hypothesis formation;
+	•	interaction discovery;
+	•	adversarial challenge generation.
+Use deterministic code for:
+	•	schema validation;
+	•	hashing;
+	•	budget accounting;
+	•	graph validation;
+	•	constraint evaluation where executable;
+	•	dominance calculations;
+	•	interval comparison;
+	•	sensitivity and regret calculations;
+	•	event reduction;
+	•	dependency invalidation;
+	•	context projection;
+	•	stop policy enforcement.
+3.3 Canonical state before conversational history
+Conversation text, uploaded files, model responses, and tool outputs are input artifacts.
+They are not the runtime database.
+The authoritative state consists of:
+append-only events + immutable object revisions + versioned projections + content-addressed artifacts
+3.4 Events before mutation
+Modules return events and artifacts. They do not update shared Python objects or database tables directly.
+The orchestrator:
+	1	reads a versioned snapshot;
+	2	asks modules for eligible actions;
+	3	executes one or more actions;
+	4	validates the returned events;
+	5	commits them with optimistic concurrency;
+	6	reduces them into the next snapshot.
+3.5 Immutable candidates and claims
+A candidate, claim, evaluation, or decision revision is never edited in place.
+A repair or reconsideration creates:
+	•	a new revision;
+	•	an explicit parent or supersession relation;
+	•	a reason for the change;
+	•	stale markers for dependent projections.
+3.6 Four-valued constraint semantics
+Constraint evaluation uses:
+PASS FAIL UNKNOWN ERROR
+Only a verified FAIL establishes infeasibility.
+UNKNOWN means the candidate remains conditional or blocked pending information. It must never be treated as failure.
+ERROR means evaluation failed. It must never be interpreted as evidence about the candidate.
+Hard constraints remain hard even when verification requires a model, human, external source, or unavailable capability.
+3.7 Pareto-first decisions
+Do not collapse multi-objective decisions into one score before determining feasibility and dominance.
+The decision sequence is:
+hard-constraint evaluation → exact or robust Pareto frontier → sensitivity and robustness → regret or lexicographic policy → explicit scalarisation only as final fallback
+No hidden weights are permitted.
+3.8 Representations are projections
+A DAG, decision table, causal graph, state machine, event log, constraint graph, or hypergraph is a versioned view over canonical state.
+No representation becomes an independent source of truth.
+3.9 Replay reproducibility
+Reproducibility means:
+The same stored events, model/tool outputs, reducer versions, and compiler versions reconstruct the same canonical state and hashes.
+It does not mean that re-calling a nondeterministic remote model must reproduce identical prose.
+3.10 Hard ceilings guarantee termination
+Marginal-value estimates, frontier stability, and value-of-information scores are heuristics.
+Finite termination is guaranteed by hard limits on:
+	•	iterations;
+	•	model calls;
+	•	tool calls;
+	•	wall-clock time;
+	•	token or monetary expenditure;
+	•	synthesis order;
+	•	validation branches.
+3.11 Structured audit, not hidden reasoning traces
+Persist:
+	•	structured inputs and outputs;
+	•	evidence references;
+	•	concise rationales;
+	•	action reasons;
+	•	prune reasons;
+	•	challenge records;
+	•	decision policies;
+	•	stop reasons.
+Do not require or store private chain-of-thought traces.
+3.12 Provider neutrality
+Modules request capabilities, not named products:
+STRUCTURED_MODEL DIVERGENT_MODEL CRITIC_MODEL QUALITATIVE_JUDGE DETERMINISTIC_COMPUTE CODE_SANDBOX RETRIEVAL EXTERNAL_TOOL HUMAN_INPUT
+Adapters map those capabilities to available execution surfaces.
+ 
+4. System architecture
+┌──────────────────────────────────────────────────────────────┐ │                     Integration Surfaces                     │ │                 Python SDK · CLI · later MCP                 │ └──────────────────────────────┬───────────────────────────────┘                                │ ┌──────────────────────────────▼───────────────────────────────┐ │                       Run Orchestrator                       │ │ scheduler · budget meter · retries · reservations · commits │ └──────────────┬─────────────────────┬─────────────────────────┘                │                     │        ┌───────▼────────┐    ┌───────▼────────────┐        │ 13 Reasoning   │    │ Deterministic      │        │ Modules        │    │ Algorithms         │        └───────┬────────┘    └───────┬────────────┘                │                     │        ┌───────▼─────────────────────▼────────────┐        │        Ports and Capability Router       │        │ models · tools · retrieval · sandbox     │        │ storage · clock · UUID · human input     │        └───────┬─────────────────────┬────────────┘                │                     │        ┌───────▼─────────┐   ┌──────▼────────────┐        │ SQLite Event +  │   │ Content-addressed │        │ Snapshot Store  │   │ Artifact Store    │        └─────────────────┘   └───────────────────┘
+Dependency direction
+Dependencies must point inward:
+interfaces     → runtime         → modules             → domain + algorithms + ports
+Concrete adapters may implement ports, but:
+	•	domain code must not import runtime, modules, or adapters;
+	•	modules must not import concrete adapters;
+	•	deterministic algorithms must not call models or tools;
+	•	integration surfaces must invoke the SDK rather than duplicate engine logic.
+ 
+5. Canonical domain contracts
+Codex must define the contracts before implementing module behaviour.
+Every persistent object requires:
+	•	stable identifier;
+	•	schema version;
+	•	immutable revision;
+	•	UTC creation timestamp;
+	•	producing action and module;
+	•	provenance or source references;
+	•	explicit status;
+	•	canonical serialisation support.
+Core contracts:
+Contract
+Purpose
+TaskEnvelope
+Original task, attachments, permissions, output contract
+TaskSignature
+Difficulty, consequence, ambiguity, evidence and search classification
+BudgetPlan
+Tier, hard ceilings, search policy and validation requirements
+ProblemSpec
+Objectives, constraints, variables, unknowns, observables and acceptance criteria
+RepresentationPlan
+Primary and optional secondary reasoning views
+Candidate
+Immutable solution or hypothesis revision with lineage
+ConstraintEvaluation
+Four-valued evaluation with verifier provenance
+ObjectiveEstimate
+Point, interval, distribution or qualitative estimate
+LedgerNode / LedgerEdge
+Epistemic claims, evidence, relations and revisions
+DecisionResult
+Frontier, recommendation, policy, findings and unresolved conditions
+AcquisitionAction
+Proposed or executed research/experiment action
+ContextPacket
+Deterministic compact state projection
+StopDecision
+Continue or terminal disposition with reasons
+RunSnapshot
+Versioned reduced state of the complete run
+DomainEvent
+Validated state transition record
+ArtifactDescriptor
+Hash-addressed raw external or generated material
+Canonical serialisation
+Use canonical UTF-8 JSON with:
+	•	recursively sorted object keys;
+	•	stable enum and UUID encoding;
+	•	UTC timestamps;
+	•	compact separators;
+	•	deterministic ordering for set-like collections;
+	•	rejection of NaN and infinity;
+	•	SHA-256 over the exact canonical bytes.
+Hashes must never depend on Python object identity, dictionary insertion order, or incidental formatting.
+ 
+6. Shared runtime contracts
+6.1 Module protocol
+Every module implements:
+class ReasoningModule(Protocol):     module_id: ModuleId
+def propose_actions(         self,         snapshot: RunSnapshot,         policy: RuntimePolicy,     ) -> Sequence[ActionProposal]:         ...
+async def execute(         self,         action: ActionProposal,         context: ModuleContext,     ) -> ModuleResult:         ...
+propose_actions must be deterministic for a fixed snapshot and policy.
+execute may invoke configured capabilities but may only return:
+	•	typed events;
+	•	artifact descriptors;
+	•	actual cost records;
+	•	diagnostics;
+	•	proposed follow-up actions.
+6.2 Action idempotency
+An action is identified by:
+run_id + module_id + operation + canonical_input_hash + module_version + policy_hash
+Repeated execution returns the stored result unless explicitly run under a versioned refresh policy.
+6.3 Scheduler priority
+The scheduler chooses among valid actions in this order:
+	1	invariant-preserving mandatory actions;
+	2	blockers affecting hard constraints or acceptance criteria;
+	3	mandatory actions required by the active reasoning tier;
+	4	highest estimated decision impact per normalised cost;
+	5	context compilation checkpoints;
+	6	stop evaluation.
+Expected impact must not override:
+	•	permissions;
+	•	hard budgets;
+	•	prerequisites;
+	•	safety restrictions;
+	•	unresolved concurrency conflicts.
+6.4 Optimistic concurrency
+Each commit provides an expected_version.
+When the stored run version differs:
+	•	commit nothing;
+	•	reload the latest snapshot;
+	•	re-evaluate whether the action remains valid;
+	•	reuse a stored idempotent result only if its canonical input still matches.
+ 
+7. Finalised module architecture
+The responsibilities below preserve the thirteen mechanisms from the technical pass while making their contracts implementable and safe.
+M01 — Task Classifier
+Purpose
+Convert the task into a typed signature that determines minimum reasoning and validation requirements.
+Execution
+Hybrid:
+	•	constrained structured-model extraction;
+	•	deterministic validation;
+	•	conservative rule-based fallback.
+Input
+TaskEnvelope ClassificationPolicy available attachment metadata
+Output
+TaskSignature classification evidence references classification diagnostics ledger nodes
+Required axes
+	•	task family;
+	•	consequence of error;
+	•	reversibility;
+	•	ambiguity;
+	•	search-space class;
+	•	evidence availability;
+	•	novelty;
+	•	time horizon;
+	•	external-action risk;
+	•	required output form.
+Use irreversibility = maximum_reversibility_score - reversibility internally so monotonic difficulty rules remain unambiguous.
+Core policy
+Classification produces:
+	•	an estimated value;
+	•	a confidence or uncertainty status;
+	•	the evidence or text span supporting that value;
+	•	a conservative upper classification when material ambiguity remains.
+Do not let one weighted score solely control the tier. Use a monotone policy with:
+	1	mandatory minimum-tier floors for high-consequence or irreversible tasks;
+	2	rule-based escalation conditions;
+	3	an optional weighted score only for remaining borderline cases.
+Gate
+	•	complete typed signature;
+	•	malformed model output cannot enter state;
+	•	increasing a difficulty axis cannot reduce the minimum tier;
+	•	low-confidence classification escalates rather than silently under-allocates;
+	•	all material classifications are traceable.
+ 
+M02 — Budget Allocator
+Purpose
+Translate the task signature and deployment limits into an enforceable reasoning budget and search policy.
+Execution
+Deterministic.
+Input
+TaskSignature TierPolicy DeploymentLimits BudgetUsage
+Output
+BudgetPlan BudgetAllocatedEvent BudgetRevisedEvent
+Budget contents
+	•	reasoning tier T0–T5;
+	•	maximum iterations;
+	•	maximum candidates;
+	•	representation-view limit;
+	•	synthesis order;
+	•	falsifier operator limit;
+	•	model-call limits;
+	•	tool-call limits;
+	•	independent validation branches;
+	•	wall-clock and expenditure ceilings;
+	•	acquisition-priority threshold;
+	•	mandatory validation actions.
+Core policy
+The budget allocator applies:
+mandatory tier floors → monotone policy rules → deployment caps → explicit search policy
+Budget revisions may redistribute only unused capacity.
+Consumed budget can never be reset by a revision.
+Gate
+	•	allocation is deterministic;
+	•	harder signatures cannot receive a lower minimum tier;
+	•	all hard ceilings are represented in executable units;
+	•	revision preserves consumed expenditure;
+	•	oversubscription is rejected before execution.
+ 
+M03 — Problem Formaliser
+Purpose
+Compile the task into an explicit decision problem without converting inference into fact.
+Execution
+Hybrid:
+	•	model-assisted semantic extraction;
+	•	deterministic validation and contradiction checks.
+Input
+TaskEnvelope TaskSignature BudgetPlan LedgerProjection
+Output
+ProblemSpec ContradictionDiagnostic Blocker ledger nodes
+ProblemSpec contents
+	•	primary and secondary objectives;
+	•	hard constraints;
+	•	soft preferences;
+	•	decision variables;
+	•	fixed parameters;
+	•	unknowns;
+	•	observables;
+	•	candidate scope;
+	•	acceptance criteria;
+	•	output requirements;
+	•	consequence and reversibility metadata.
+Classification of extracted content
+Every item must be labelled as one of:
+EXPLICIT_INPUT SUPPORTED_INFERENCE WORKING_ASSUMPTION UNRESOLVED CONTRADICTED
+Constraint policy
+A hard constraint carries:
+constraint_kind verification_mode verification_status predicate or semantic criterion source references
+A hard constraint that cannot currently be evaluated remains HARD + UNKNOWN; it is not demoted to a preference.
+Gate
+	•	inferred items are never emitted as explicit facts;
+	•	contradictions are surfaced rather than reconciled silently;
+	•	every acceptance criterion is evaluable, externally verifiable, or explicitly blocked;
+	•	semantic hard constraints remain hard;
+	•	material ambiguity produces a blocker or conservative branch.
+ 
+M04 — Representation Selector
+Purpose
+Choose the smallest useful set of reasoning views for the formalised problem.
+Execution
+Hybrid:
+	•	deterministic compatibility scoring;
+	•	optional model-assisted selection for ambiguous cases.
+Input
+ProblemSpec TaskSignature BudgetPlan RepresentationRegistry
+Output
+RepresentationPlan versioned RepresentationArtifact objects
+Registry
+Initial representation types:
+typed constraint set decision matrix Pareto objective matrix DAG causal graph state machine event log property graph hypergraph scenario tree morphological space
+Selection policy
+Each selected representation requires:
+	•	intended purpose;
+	•	source objects;
+	•	deterministic build recipe;
+	•	expected benefit;
+	•	expected cost;
+	•	limitations;
+	•	conditions requiring reselection.
+When the two strongest representations are close and the tier permits it, preserve both as complementary lenses.
+Gate
+	•	canonical state remains authoritative;
+	•	every view has a named reasoning purpose;
+	•	fixed snapshot plus representation version produces identical output;
+	•	unsupported representations degrade to a typed text/table view rather than failing the run;
+	•	representation selection never changes the underlying facts.
+ 
+M05 — Candidate / Hypothesis Generator
+Purpose
+Generate structurally distinct candidates and widen the search only where justified.
+Execution
+Model-assisted generation with deterministic lineage, deduplication, screening, and budget control.
+Input
+ProblemSpec RepresentationPlan BudgetPlan ActiveFrontier OperatorRegistry
+Output
+Candidate CandidateLineage DiversityMetric CheapScreeningMetric
+Generative operator registry
+Initial operators should vary:
+	•	objective emphasis;
+	•	causal mechanism;
+	•	decomposition;
+	•	representation;
+	•	information flow;
+	•	centralisation;
+	•	temporal horizon;
+	•	state-first versus event-first;
+	•	deterministic versus probabilistic design;
+	•	exploit versus explore posture.
+Generation policy
+	1	Generate initial seeds independently.
+	2	Prevent seed prompts from exposing other candidate rationales.
+	3	Canonicalise candidate components.
+	4	Compute structural fingerprints.
+	5	Remove exact and near-duplicate structures.
+	6	Apply cheap screening.
+	7	Expand only promising or underexplored regions.
+	8	Stop widening at the tier ceiling.
+Candidate quality alone is insufficient; the active set must retain meaningful structural diversity.
+Gate
+	•	candidates are immutable;
+	•	every candidate has complete operator and parent lineage;
+	•	independent seeds are genuinely isolated;
+	•	duplicate candidates are not repeatedly evaluated;
+	•	widening respects budget;
+	•	repair proposals create successors rather than mutating originals.
+ 
+M06 — Constraint Propagator and Dominance Pruner
+Purpose
+Evaluate candidate feasibility, preserve uncertainty correctly, and remove only candidates that are demonstrably infeasible or dominated.
+Execution
+Deterministic where evaluators exist; model or human verification through typed evaluator ports where necessary.
+Input
+Candidate revisions ProblemSpec RepresentationPlan EvaluatorRegistry ObjectiveEstimate objects
+Output
+ConstraintEvaluation FeasibilityPartition DominanceRecord PruningDecision
+Feasibility partitions
+VIABLE CONDITIONAL INFEASIBLE EVALUATION_ERROR
+Evaluation policy
+	•	verified FAIL on a hard constraint → INFEASIBLE;
+	•	any hard UNKNOWN with no hard failure → CONDITIONAL;
+	•	evaluator failure → EVALUATION_ERROR;
+	•	all hard constraints passed → VIABLE.
+Dominance policy
+Compute dominance only when objective estimates are comparable.
+Supported modes:
+	•	exact point dominance;
+	•	interval dominance;
+	•	scenario-robust dominance;
+	•	declared qualitative ordering.
+Missing or materially uncertain objective values make candidates incomparable unless robust dominance can still be proved.
+Gate
+	•	four-valued semantics preserved;
+	•	missing data cannot create false dominance;
+	•	pruning is idempotent;
+	•	every prune has a candidate, reason, evaluator version, and evidence reference;
+	•	conditional candidates remain visible when their unknowns could change the decision.
+ 
+M07 — Interaction / Synthesis Search
+Purpose
+Discover combinations whose joint capability exceeds the isolated contribution of their components.
+Execution
+Hybrid:
+	•	deterministic compatibility filtering and bounded enumeration;
+	•	model-assisted synergy hypothesis generation;
+	•	optional simulation or code evaluation.
+Input
+ActiveFrontier CandidateComponentGraph CompatibilityRules BudgetPlan
+Output
+InteractionGraph SynergyHypothesis Hybrid Candidate
+Search policy
+	1	Extract reusable components from surviving candidates.
+	2	Remove incompatible combinations deterministically.
+	3	Evaluate pairwise combinations first.
+	4	Expand to higher-order hyperedges only when:
+	◦	pairwise results leave meaningful unexplained opportunity;
+	◦	the tier permits it;
+	◦	combination order remains within the hard ceiling.
+	5	Generate hybrid candidates only from supported compatibility structures.
+	6	Route every hybrid back through M06.
+Synergy policy
+A claimed interaction remains:
+PROVISIONAL SUPPORTED REFUTED NOT_EVALUABLE
+until evaluated.
+The engine must distinguish additive combination from genuine emergent capability.
+Gate
+	•	combination order is bounded;
+	•	incompatibilities are removed before expensive generation;
+	•	every hybrid has full component lineage;
+	•	no hybrid bypasses constraint evaluation;
+	•	model-proposed synergy is not presented as established fact.
+ 
+M08 — Falsifier
+Purpose
+Apply targeted adversarial operators to the candidates and claims most capable of changing the decision.
+Execution
+Model-assisted challenge generation with deterministic target selection, verification, and state transitions.
+Input
+ActiveFrontier ProvisionalRecommendation ProblemSpec DecisionSensitivity LedgerProjection tier falsification policy
+Output
+Challenge CandidateStatusEvent RepairCandidateProposal RecomputeRequest
+Operators
+	1	assumption attack;
+	2	counterexample search;
+	3	internal contradiction search;
+	4	causal alternative generation;
+	5	edge-case or adversarial-input search;
+	6	missing-variable or confounder detection;
+	7	implementation-failure analysis;
+	8	distribution-shift analysis;
+	9	Goodhart or gaming analysis;
+	10	dependency and provenance attack.
+Target policy
+Prioritise:
+	•	the provisional recommendation;
+	•	the non-dominated frontier;
+	•	candidates near a decision boundary;
+	•	high-consequence claims with weak evidence;
+	•	decisive interaction hypotheses;
+	•	assumptions with high sensitivity leverage.
+A scalar global leader is not required.
+Challenge lifecycle
+severity: NO_FINDING | RISK | COUNTEREXAMPLE | FATAL
+verification: UNVERIFIED | VERIFIED | REJECTED
+Only a verified challenge may invalidate a candidate.
+A repair creates a successor candidate and marks affected downstream results stale.
+Gate
+	•	every challenge names target, operator, claimed consequence, and evidence;
+	•	model criticism is not self-verifying;
+	•	FATAL requires a hard-constraint or acceptance-criterion consequence;
+	•	unverified criticism cannot remove a candidate;
+	•	falsifier prompts are isolated from promotional rationale where the tier requires independence.
+ 
+M09 — Epistemic Ledger
+Purpose
+Provide the authoritative provenance and epistemic-state graph.
+Execution
+Deterministic shared subsystem.
+Graph model
+Immutable node revisions represent:
+FACT OBSERVATION INFERENCE ASSUMPTION HYPOTHESIS PROPOSAL DECISION UNKNOWN CONTESTED CHALLENGE
+Relations include:
+SUPPORTS DEPENDS_ON DERIVED_FROM CONTRADICTS SUPERSEDES FALSIFIES RESOLVES OBSERVED_IN EVALUATES SELECTS REJECTS
+Graph rules
+	•	SUPPORTS, DEPENDS_ON, and DERIVED_FROM form an acyclic support graph per revision;
+	•	SUPERSEDES follows revision order;
+	•	CONTRADICTS may be symmetric;
+	•	dangling references are forbidden;
+	•	large evidence remains in the artifact store and is referenced by hash and span.
+Confidence model
+Confidence is structured, not merely one propagated scalar:
+score or qualitative level method calibration group evidence independence groups explanation
+Independent evidence may increase confidence.
+An upstream revision marks dependent nodes stale; it does not mechanically force all descendants to the minimum upstream score.
+Gate
+	•	append-only history;
+	•	complete provenance for prune and decision records;
+	•	support-graph cycle prevention;
+	•	contradiction edges do not trigger false cycle failures;
+	•	upstream revision marks descendants stale;
+	•	replay produces identical ledger projection and hash.
+ 
+M10 — Decision Engine
+Purpose
+Construct the feasible frontier, measure robustness and leverage, and recommend only under an explicit policy.
+Execution
+Deterministic-first; optional qualitative comparator for non-numeric dimensions.
+Input
+FeasibilityPartition ObjectiveEstimate objects ProblemSpec LedgerProjection DecisionPolicy
+Output
+DecisionResult ParetoFront SensitivityFinding AblationFinding RegretFinding DecisionLedgerNode
+Decision sequence
+	1	Exclude verified infeasible candidates.
+	2	Keep viable and conditional candidates distinct.
+	3	Compute exact or robust Pareto fronts.
+	4	Detect robust dominance.
+	5	Test sensitivity to assumptions, estimates, scenarios, and policy parameters.
+	6	Perform meaningful component ablations.
+	7	Estimate scenario regret where justified.
+	8	Apply a single-choice policy only when required by the output contract.
+	9	Return the frontier without forced selection when evidence is insufficient.
+Selection-policy order
+	1	robust dominance;
+	2	explicit lexicographic priorities;
+	3	epsilon-constraint policy;
+	4	minimax or expected regret under declared scenarios;
+	5	weighted scalarisation as final fallback.
+Any scalarisation must expose:
+	•	weights;
+	•	normalisation;
+	•	sensitivity to weight perturbation;
+	•	candidates whose ranking changes.
+Ablation states
+MEASURED SIMULATED MODEL_ESTIMATED NOT_EVALUABLE
+Gate
+	•	Pareto frontier precedes scalarisation;
+	•	active policy is named and versioned;
+	•	quantitative and qualitative comparisons are distinguishable;
+	•	conditional candidates remain visible;
+	•	identical inputs and policy produce identical results;
+	•	no recommendation is fabricated when the evidence supports only a frontier.
+ 
+M11 — Active Information / Experiment Controller
+Purpose
+Resolve only uncertainties whose expected decision impact justifies the acquisition cost and permissions.
+Execution
+Hybrid:
+	•	deterministic ranking;
+	•	model-assisted action design;
+	•	execution through capability adapters.
+Input
+UnknownSpec objects ConditionalConstraint objects DecisionResult SensitivityFinding objects CapabilityRegistry PermissionSet BudgetRemaining
+Output
+AcquisitionAction ExperimentPlan Observation AcquisitionFailure RecomputeRequest
+Action types
+RETRIEVE WEB_RESEARCH DATABASE_QUERY CODE_EXPERIMENT SIMULATION FILE_ANALYSIS HUMAN_QUERY EXTERNAL_TOOL
+Priority policy
+When a calibrated probabilistic utility model exists, formal value-of-information methods may be used.
+Otherwise use an explicitly heuristic ranking:
+priority =     expected_decision_impact     × probability_of_resolution     × expected_result_reliability     ÷ normalised_cost
+M10 supplies the decision-sensitivity signal.
+Execution policy
+	•	every action targets named unknowns;
+	•	permissions are checked before scheduling;
+	•	local, read-only, deterministic methods are preferred when equivalent;
+	•	raw results are stored as artifacts;
+	•	interpreted observations are separate ledger nodes;
+	•	acquisition failure leaves the unknown unresolved;
+	•	absent capabilities produce a plan, not an invented result;
+	•	only dependent state is marked stale after new evidence.
+Gate
+	•	tool failure is never negative evidence;
+	•	no side effect occurs without permission;
+	•	provenance is complete;
+	•	actions remain inside budget;
+	•	low-impact research cannot displace mandatory validation or blockers.
+ 
+M12 — Context Compiler
+Purpose
+Compile canonical state into compact, authoritative packets for continuation, inspection, validation, or transfer to another execution surface.
+Execution
+Deterministic projection and rendering.
+Input
+RunSnapshot LedgerProjection CandidateProjection DecisionProjection CompilerProfile size target
+Output
+ContextPacket deterministic Markdown rendering packet hash ArtifactRef
+Profiles
+FULL     all active decision-relevant state and complete rejection register
+STANDARD     full active frontier, decisive evidence and compact rejection register
+HANDOFF     minimum sufficient state for safe continuation
+Required retained state
+	•	objective and output contract;
+	•	hard constraints and verification states;
+	•	fixed decisions and bases;
+	•	verified facts;
+	•	high-leverage assumptions;
+	•	active and conditional frontier;
+	•	rejected candidates and reasons;
+	•	unresolved high-priority questions;
+	•	remaining budget;
+	•	next action or terminal disposition.
+Compression may remove duplicate prose, obsolete revisions, and low-leverage detail. It must never remove why a branch was rejected.
+Gate
+	•	every substantive claim references canonical objects;
+	•	stale claims are excluded or marked;
+	•	rendering order is deterministic;
+	•	packet hash is stable for fixed inputs and compiler version;
+	•	FULL → STANDARD → HANDOFF preserves all profile-required fields;
+	•	overflow produces a diagnostic rather than silent truncation.
+ 
+M13 — Marginal-Value Stop Controller
+Purpose
+Decide whether to continue or terminate transparently.
+Execution
+Deterministic policy.
+Input
+BudgetRemaining ActionHistory DecisionResult RankedAcquisitionActions AcceptanceStatus ValidationStatus CancellationState
+Output
+StopDecision ActionProposal when continuing ContextCompilationRequest when terminal
+Dispositions
+CONTINUE COMPLETE PARTIAL_BUDGET BLOCKED FAILED_INVARIANT CANCELLED
+Hard terminal conditions
+	•	explicit cancellation;
+	•	budget or iteration ceiling reached;
+	•	unrecoverable invariant failure;
+	•	required capability, evidence, or permission unavailable with no executable alternative;
+	•	acceptance criteria met and mandatory validation completed.
+Mandatory continuation conditions
+Subject to hard ceilings:
+	•	mandatory tier action not yet executed;
+	•	decision-relevant hard constraint remains unknown and resolvable;
+	•	required independent validation is incomplete;
+	•	a remaining acquisition action exceeds the configured threshold;
+	•	the frontier remains materially unstable.
+Soft completion policy
+Completion is permitted when:
+	•	acceptance criteria are met;
+	•	the frontier or recommendation is stable over the configured checkpoint window;
+	•	no unresolved issue is likely to alter the decision above threshold;
+	•	the estimated value of another pass is below its normalised cost;
+	•	tier-required validation is complete.
+Gate
+	•	hard ceilings always terminate;
+	•	every stop or continuation decision has named reasons and references;
+	•	COMPLETE is impossible while a required criterion is known to fail;
+	•	every terminal disposition produces a context packet;
+	•	budget exhaustion returns usable partial state rather than pretending completion.
+ 
+8. Default runtime loop
+CREATE RUN     ↓ M09 initialise authoritative ledger     ↓ M01 classify     ↓ M02 allocate budget     ↓ M03 formalise problem     ↓ M04 select representation views     ↓ M05 generate independent candidates     ↓ M06 evaluate constraints and prune     ↓ M10 construct preliminary frontier and sensitivity     ↓ optional M07 synthesis → M06 → M10     ↓ M08 falsify decision-relevant survivors → M06 → M10     ↓ M11 acquire decision-sensitive information     ↓ recompute smallest affected dependency set     ↓ M13 continue or terminate     ↓ M12 compile checkpoint or final packet
+This is a policy default, not a rigid sequence.
+Re-entry rules
+	•	new M05 or M07 candidates always return to M06;
+	•	verified M08 challenges mark dependent evaluations stale and trigger M06/M10;
+	•	M11 observations trigger only the smallest affected recomputation set;
+	•	changed hard constraints invalidate every dependent evaluation;
+	•	M13 may request more generation, falsification, synthesis, or acquisition only within remaining budget;
+	•	a context packet may be compiled at any checkpoint without changing state.
+ 
+9. Reasoning tiers
+Tier defaults are versioned policy, not hard-coded module logic.
+Tier
+Intended behaviour
+T0
+Direct deterministic or single-inference resolution
+T1
+Structured single pass with minimal candidate comparison
+T2
+Small frontier, sensitivity, and targeted falsification
+T3
+Progressive widening, synthesis, and targeted acquisition
+T4
+High-consequence analysis with extensive falsification and validation
+T5
+Isolated independent branches followed by explicit reconciliation
+T5 isolation
+T5 branches must not share:
+	•	candidate rationales;
+	•	intermediate rankings;
+	•	provisional decisions;
+	•	falsifier conclusions.
+They may share only:
+	•	original task material;
+	•	explicit constraints;
+	•	approved evidence;
+	•	common schemas and policy.
+Branches are reconciled only after each produces its independent result and context packet.
+ 
+10. Repository architecture
+frontier-reasoning-engine/ ├── pyproject.toml ├── uv.lock ├── README.md ├── LICENSE ├── Makefile ├── configs/ │   ├── default.yaml │   ├── tiers.yaml │   └── model_roles.example.yaml ├── docs/ │   ├── architecture/ │   ├── adr/ │   └── schemas/ ├── src/fre/ │   ├── __init__.py │   ├── engine.py │   ├── cli.py │   ├── domain/ │   ├── runtime/ │   ├── modules/ │   ├── algorithms/ │   ├── ports/ │   ├── adapters/ │   ├── prompts/ │   └── projections/ └── tests/     ├── unit/     ├── property/     ├── integration/     ├── golden/     └── fixtures/
+Initial technology choices
+	•	Python >=3.12;
+	•	uv for dependency and environment management;
+	•	Pydantic v2 for strict contracts;
+	•	standard-library sqlite3;
+	•	PyYAML for versioned configuration;
+	•	pytest;
+	•	Hypothesis;
+	•	mypy strict mode;
+	•	Ruff formatting and linting.
+Avoid an ORM in v1. The persistence model is small, event-oriented, and benefits from explicit SQL and transaction boundaries.
+ 
+11. Build programme
+Codex must execute one wave at a time. A wave cannot begin until the preceding gate passes and its report identifies no unresolved invariant defect.
+The earlier Waves 0–1 plan is retained as the initial implementation boundary, but the full programme below prevents early design decisions from blocking later modules.
+Wave 0 — Repository and quality foundation
+Deliver
+	•	local Git repository on main;
+	•	src/ package structure;
+	•	pyproject.toml and lockfile;
+	•	strict lint, format, typing, and test configuration;
+	•	versioned config loader;
+	•	canonical JSON and hashing utilities;
+	•	package dependency-boundary test;
+	•	architecture records and initial ADRs;
+	•	no fake implementations of later modules.
+ADRs
+At minimum:
+	1	modular control plane rather than monolithic agent;
+	2	event sourcing and deterministic replay;
+	3	SQLite WAL and content-addressed artifact storage;
+	4	four-valued constraint semantics;
+	5	immutable revisions and dependency invalidation;
+	6	provider-neutral capability ports.
+Gate
+package imports configuration validates canonical hashes are stable dependency rules pass format/lint/type/test commands pass
+ 
+Wave 1 — Canonical contracts, events, storage, and replay
+Deliver
+	•	all canonical domain models;
+	•	uncommitted and stored event envelopes;
+	•	event payload registry;
+	•	pure versioned reducer protocol;
+	•	RunCreated, RunStatusChanged, ArtifactRegistered, and test events;
+	•	SQLite WAL event and snapshot store;
+	•	optimistic expected-version append;
+	•	content-addressed local artifact store;
+	•	fake clock, UUID, model, and tool adapters;
+	•	minimal SDK for create, inspect, append, snapshot, verify, and replay.
+Persistence requirements
+	•	append-only events;
+	•	atomic run creation and first event;
+	•	contiguous per-run sequence numbers;
+	•	unique event IDs;
+	•	snapshot hashes;
+	•	reducer-version tracking;
+	•	database schema version;
+	•	transaction rollback on any batch failure;
+	•	no model or tool invocation during replay.
+Gate
+A complete integration test must:
+	1	create a run;
+	2	append typed events;
+	3	reduce immutable state;
+	4	store and reference an artifact;
+	5	create a snapshot;
+	6	close and reopen storage;
+	7	replay from sequence one;
+	8	reproduce the same state and hash;
+	9	prove stale concurrent append rejection;
+	10	prove artifact deduplication;
+	11	prove rollback after mixed valid/invalid append;
+	12	detect snapshot tampering.
+ 
+Wave 2 — Deterministic spine
+Deliver
+	•	M09 Epistemic Ledger;
+	•	M02 Budget Allocator;
+	•	M12 Context Compiler;
+	•	M13 Stop Controller;
+	•	deterministic ledger and context projections;
+	•	executable budget meter;
+	•	synthetic run driver.
+M02 may be developed against fixed TaskSignature fixtures before M01 exists. Runtime wiring to M01 occurs in Wave 3.
+Gate
+A synthetic run must:
+	•	allocate a monotone budget;
+	•	build and revise ledger state;
+	•	compile stable context hashes;
+	•	terminate under hard ceilings;
+	•	return BLOCKED, PARTIAL_BUDGET, or COMPLETE correctly;
+	•	replay to the same ledger and packet hashes.
+ 
+Wave 3 — Semantic front end
+Deliver
+	•	prompt registry and prompt versions;
+	•	structured model port;
+	•	M01 Task Classifier;
+	•	M03 Problem Formaliser;
+	•	M04 Representation Selector;
+	•	conservative deterministic fallbacks;
+	•	fixtures for malformed and contradictory inputs.
+Gate
+For a fixed task fixture, the engine must deterministically produce:
+TaskEnvelope → TaskSignature → BudgetPlan → ProblemSpec → RepresentationPlan
+The gate must prove:
+	•	classification monotonicity;
+	•	inferred content remains labelled;
+	•	hard constraints are not demoted;
+	•	contradictions are surfaced;
+	•	representation artifacts rebuild deterministically.
+ 
+Wave 4 — Search and decision core
+Deliver
+	•	M05 Candidate Generator;
+	•	M06 Constraint Propagator;
+	•	M10 Decision Engine;
+	•	progressive-widening algorithms;
+	•	structural fingerprints;
+	•	exact and interval Pareto algorithms;
+	•	sensitivity, ablation, robustness, and regret algorithms.
+Gate
+A multi-candidate fixture must prove:
+	•	structurally diverse seed generation;
+	•	deterministic deduplication;
+	•	four-valued feasibility;
+	•	no dominance under missing incomparable values;
+	•	correct exact and interval Pareto fronts;
+	•	scalarisation only after frontier construction;
+	•	explicit selection policy;
+	•	deterministic repeated results for fixed stored model outputs.
+ 
+Wave 5 — Synthesis and falsification
+Deliver
+	•	M07 Interaction/Synthesis Search;
+	•	M08 Falsifier;
+	•	compatibility graph;
+	•	bounded hypergraph expansion;
+	•	challenge lifecycle;
+	•	repair-successor workflow;
+	•	dependency staleness propagation.
+Gate
+A controlled fixture must show:
+	1	incompatible components are removed before generation;
+	2	a valid hybrid is created with complete lineage;
+	3	the hybrid re-enters M06;
+	4	a falsifier produces an unverified challenge;
+	5	the challenge cannot invalidate the candidate until verified;
+	6	a verified fatal challenge removes it from the frontier;
+	7	a repair creates a successor;
+	8	dependent decisions become stale and are recomputed.
+ 
+Wave 6 — Information acquisition and capability routing
+Deliver
+	•	M11 Information Controller;
+	•	capability registry;
+	•	permission enforcement;
+	•	acquisition plans;
+	•	local file-analysis and code-experiment adapters;
+	•	optional retrieval adapter boundary;
+	•	targeted recomputation.
+Gate
+A fixture with a decision-sensitive unknown must show:
+	•	M10 identifies the sensitivity;
+	•	M11 ranks the resolving action above irrelevant research;
+	•	permission checks occur before execution;
+	•	tool failure leaves the unknown unresolved;
+	•	successful acquisition creates raw artifact plus interpreted observation;
+	•	only dependent state becomes stale;
+	•	the decision is recomputed;
+	•	unavailable capability yields an executable plan rather than fabrication.
+ 
+Wave 7 — Full orchestration, CLI, and validation
+Deliver
+	•	adaptive scheduler;
+	•	complete orchestration loop;
+	•	action reservations and concurrency handling;
+	•	T0–T5 policies;
+	•	isolated T5 branches;
+	•	reconciliation;
+	•	CLI;
+	•	run inspection;
+	•	run export;
+	•	resumption;
+	•	golden end-to-end scenarios;
+	•	structured observability.
+CLI minimum
+fre run fre inspect fre resume fre replay fre export fre validate fre config check
+Gate
+All golden scenarios must pass:
+	1	T0 deterministic direct task;
+	2	T1 structured single-pass task;
+	3	T2 multi-candidate decision with falsification;
+	4	T3 synthesis plus information acquisition;
+	5	T4 high-consequence validation;
+	6	T5 isolated branch reconciliation;
+	7	unresolved hard blocker;
+	8	hard-budget partial result;
+	9	replay after process restart;
+	10	concurrent scheduler contention;
+	11	provider/tool failure without false evidence;
+	12	context handoff and safe continuation.
+ 
+Wave 8 — Thin integration adapter
+Deliver
+One thin adapter only after SDK and CLI contracts are stable:
+	•	MCP or HTTP adapter;
+	•	permission mapping;
+	•	request/response translation;
+	•	SDK parity tests.
+No reasoning logic may exist in the adapter.
+Gate
+For equivalent requests:
+SDK result == CLI result == adapter result
+after normalising transport-specific metadata.
+ 
+12. Test architecture
+Unit tests
+Cover:
+	•	every domain contract;
+	•	schema versions;
+	•	canonical serialisation;
+	•	event validation;
+	•	reducers;
+	•	module action eligibility;
+	•	algorithms;
+	•	permission rules;
+	•	budget accounting;
+	•	dependency invalidation;
+	•	packet rendering.
+Property tests
+At minimum:
+	•	replay equivalence;
+	•	canonical hash stability;
+	•	append atomicity;
+	•	stale-version rejection;
+	•	artifact deduplication;
+	•	pruning idempotence;
+	•	Pareto invariance under candidate ordering;
+	•	monotone tier allocation;
+	•	hard-budget termination;
+	•	context packet idempotence.
+Integration tests
+Exercise real SQLite and filesystem storage using temporary directories.
+No test may write to the user’s default runtime state.
+Golden tests
+Golden fixtures store:
+	•	original task;
+	•	fixed fake model/tool responses;
+	•	expected event classes;
+	•	expected final disposition;
+	•	expected frontier membership;
+	•	expected state and packet hashes.
+Golden tests validate structured state, not incidental prose.
+Mandatory global acceptance bar
+Every wave requires:
+ruff format --check ruff check mypy --strict pytest unit pytest property pytest integration relevant golden tests
+Additionally:
+	•	no module imports a concrete adapter;
+	•	no replay calls a model or tool;
+	•	no terminal run lacks a context packet;
+	•	no prune, decision, or stop lacks provenance;
+	•	no UNKNOWN or tool error becomes negative evidence;
+	•	no hidden scalarisation is used.
+ 
+13. Observability
+Persist structured operational records for:
+	•	proposed actions;
+	•	selected and rejected actions;
+	•	module latency;
+	•	estimated and actual cost;
+	•	model/tool capability used;
+	•	retries;
+	•	concurrency conflicts;
+	•	event counts;
+	•	candidate counts;
+	•	frontier changes;
+	•	acquisition decisions;
+	•	stop decisions;
+	•	reducer and compiler versions.
+Logs must not become canonical state and must not contain secrets or unredacted sensitive artifacts.
+ 
+14. Security and side-effect boundary
+v1 is local-first and conservative.
+Required controls:
+	•	explicit permission object on every run;
+	•	read-only default for external tools;
+	•	no implicit network or filesystem access;
+	•	sandbox boundary for executable experiments;
+	•	allowlisted command and path policies;
+	•	artifact-size limits;
+	•	secret filtering before logs;
+	•	no credentials in config examples;
+	•	no unrestricted shell tool exposed through the domain layer.
+An unavailable or disallowed side effect produces BLOCKED or an acquisition plan. It must not be bypassed.
+ 
+15. Wave execution protocol
+For each wave, Codex must:
+	1	inspect the repository and current tests;
+	2	confirm the preceding gate;
+	3	identify the exact files to create or change;
+	4	implement only the active wave;
+	5	add acceptance tests alongside implementation;
+	6	run the complete quality suite;
+	7	correct in-scope defects;
+	8	stop at the wave boundary;
+	9	report actual results rather than intended results.
+Use these exact report headings:
+IMPLEMENTED FILES CHANGED TESTS INVARIANTS VERIFIED DEVIATIONS OPEN DECISIONS REPOSITORY STATUS NEXT WAVE
+Under TESTS, include:
+	•	exact commands;
+	•	passed, failed, skipped, and deselected counts;
+	•	static-analysis status;
+	•	any environment limitation.
+Under DEVIATIONS, distinguish:
+NONE BENIGN IMPLEMENTATION DETAIL ARCHITECTURAL DEVIATION BLOCKING DEVIATION
+Codex must stop with PLAN_DRIFT_DETECTED when:
+	•	the repository contains conflicting user changes;
+	•	a required invariant cannot be implemented as specified;
+	•	the active wave requires later-wave behaviour;
+	•	source or storage boundaries differ materially;
+	•	a provider-specific dependency becomes necessary;
+	•	tests cannot pass without changing a public contract.
+Do not silently broaden scope.
+ 
+16. Initial Codex execution scope
+Codex should begin with Wave 0 and Wave 1 only at:
+/Users/kierantandi_mbp/Documents/frontier-reasoning-engine-architecture-v1
+The first execution must not implement any of M01–M13 beyond shared contracts needed to serialise their future inputs and outputs.
+It must not add:
+	•	real model providers;
+	•	external research;
+	•	unrestricted tool adapters;
+	•	full scheduler;
+	•	CLI commands beyond any minimal test harness;
+	•	MCP or HTTP service;
+	•	synthesis, falsification, Pareto, acquisition, or stop algorithms;
+	•	misleading no-op module implementations.
+The initial execution is complete only when the Wave 1 replay, concurrency, rollback, snapshot-verification, and artifact-deduplication gates pass.
+Unless separately authorised:
+	•	do not create a remote;
+	•	do not push;
+	•	do not publish;
+	•	do not deploy;
+	•	leave staging and commit decisions to the user.
+ 
+PLAN_READY_FOR_APPROVAL

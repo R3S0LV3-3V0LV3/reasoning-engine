@@ -1,0 +1,573 @@
+schema_version: '1.0'
+project:
+  name: frontier-reasoning-engine
+  package: fre
+  architecture_status: build-authoritative
+  implementation_target: python-local-first-provider-neutral
+  canonical_state: append-only-events-plus-versioned-snapshots
+  initial_interfaces:
+  - python-sdk
+  - cli
+  deferred_interfaces:
+  - mcp-adapter
+  - http-service
+runtime:
+  orchestrator: fre.runtime.orchestrator.RunOrchestrator
+  scheduler: fre.runtime.scheduler.ActionScheduler
+  reducer: fre.runtime.reducer.RunReducer
+  budget_meter: fre.runtime.budget_meter.BudgetMeter
+  persistence:
+    event_store: sqlite-wal
+    artifact_store: local-content-addressed
+    projections_rebuildable: true
+  action_idempotency_key:
+  - run_id
+  - module_id
+  - operation
+  - canonical_input_hash
+  - module_version
+  - policy_hash
+  hard_guarantees:
+  - no-direct-module-state-mutation
+  - hard-budget-termination
+  - append-only-history
+  - unknown-is-not-false
+  - immutable-candidate-revisions
+  - provenance-for-prune-decision-and-stop
+capabilities:
+- STRUCTURED_MODEL
+- DIVERGENT_MODEL
+- CRITIC_MODEL
+- QUALITATIVE_JUDGE
+- DETERMINISTIC_COMPUTE
+- CODE_SANDBOX
+- RETRIEVAL
+- EXTERNAL_TOOL
+- HUMAN_INPUT
+modules:
+- id: M01
+  name: Task Classifier
+  package: fre.modules.m01_classifier
+  execution: hybrid
+  consumes:
+  - TaskEnvelope
+  - ClassificationPolicy
+  produces:
+  - TaskSignature
+  - LedgerNode
+  - Diagnostic
+  depends_on:
+  - event-core
+  - M09
+  required_from_tier: T0
+  may_reenter: false
+  required_capabilities:
+  - STRUCTURED_MODEL
+  deterministic_fallback: conservative-rule-classification
+  failure_policy: fallback-then-invariant-failure
+  acceptance:
+  - typed-complete-signature
+  - harder-axes-cannot-lower-tier
+  - classification-evidence-traceable
+- id: M02
+  name: Budget Allocator
+  package: fre.modules.m02_budget
+  execution: deterministic
+  consumes:
+  - TaskSignature
+  - TierPolicy
+  - DeploymentLimits
+  - BudgetUsage
+  produces:
+  - BudgetPlan
+  - BudgetAllocatedEvent
+  - BudgetRevisedEvent
+  depends_on:
+  - event-core
+  - M01
+  - M09
+  required_from_tier: T0
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  failure_policy: invariant-failure
+  acceptance:
+  - monotone-tier-allocation
+  - hard-ceilings-enforced
+  - revisions-preserve-consumed-budget
+- id: M03
+  name: Problem Formaliser
+  package: fre.modules.m03_formaliser
+  execution: hybrid
+  consumes:
+  - TaskEnvelope
+  - TaskSignature
+  - LedgerProjection
+  produces:
+  - ProblemSpec
+  - LedgerNode
+  - ContradictionDiagnostic
+  - Blocker
+  depends_on:
+  - event-core
+  - M01
+  - M02
+  - M09
+  required_from_tier: T1
+  may_reenter: true
+  required_capabilities:
+  - STRUCTURED_MODEL
+  deterministic_fallback: preserve-explicit-inputs-and-mark-unknown
+  failure_policy: block-material-ambiguity
+  acceptance:
+  - inferred-items-not-facts
+  - semantic-hard-constraints-remain-hard
+  - acceptance-criteria-evaluable-or-blocked
+- id: M04
+  name: Representation Selector
+  package: fre.modules.m04_representation
+  execution: hybrid
+  consumes:
+  - ProblemSpec
+  - TaskSignature
+  - BudgetPlan
+  - RepresentationRegistry
+  produces:
+  - RepresentationPlan
+  - RepresentationArtifact
+  depends_on:
+  - event-core
+  - M03
+  - M09
+  required_from_tier: T1
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  - STRUCTURED_MODEL
+  deterministic_fallback: highest-compatible-registry-view
+  failure_policy: text-fallback-view
+  acceptance:
+  - canonical-state-remains-authoritative
+  - selected-view-has-purpose
+  - fixed-snapshot-build-is-deterministic
+- id: M05
+  name: Candidate Hypothesis Generator
+  package: fre.modules.m05_generator
+  execution: model-assisted
+  consumes:
+  - ProblemSpec
+  - RepresentationPlan
+  - BudgetPlan
+  - ActiveFrontier
+  produces:
+  - Candidate
+  - CandidateLineage
+  - DiversityMetric
+  - CheapScreeningMetric
+  depends_on:
+  - event-core
+  - M03
+  - M04
+  - M09
+  required_from_tier: T1
+  may_reenter: true
+  required_capabilities:
+  - DIVERGENT_MODEL
+  - DETERMINISTIC_COMPUTE
+  deterministic_fallback: single-direct-candidate-when-policy-allows
+  failure_policy: block-if-minimum-candidate-set-not-met
+  acceptance:
+  - seed-generation-isolated
+  - immutable-candidates
+  - complete-lineage
+  - structural-deduplication
+  - widening-respects-budget
+- id: M06
+  name: Constraint Propagator and Dominance Pruner
+  package: fre.modules.m06_constraints
+  execution: hybrid
+  consumes:
+  - Candidate
+  - ProblemSpec
+  - RepresentationPlan
+  - EvaluatorRegistry
+  - ObjectiveEstimate
+  produces:
+  - ConstraintEvaluation
+  - FeasibilityPartition
+  - DominanceRecord
+  - PruningDecision
+  depends_on:
+  - event-core
+  - M03
+  - M05
+  - M09
+  required_from_tier: T1
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  - QUALITATIVE_JUDGE
+  deterministic_fallback: preserve-incomparable-and-conditional
+  failure_policy: verifier-error-becomes-error-not-fail
+  acceptance:
+  - four-valued-constraint-semantics
+  - missing-data-prevents-invalid-dominance
+  - pruning-idempotent
+  - every-prune-has-reason
+- id: M07
+  name: Interaction Synthesis Search
+  package: fre.modules.m07_synthesis
+  execution: hybrid
+  consumes:
+  - ActiveFrontier
+  - CandidateComponentGraph
+  - CompatibilityRules
+  - BudgetPlan
+  produces:
+  - InteractionGraph
+  - SynergyHypothesis
+  - Candidate
+  depends_on:
+  - event-core
+  - M05
+  - M06
+  - M09
+  required_from_tier: T3
+  may_reenter: true
+  required_capabilities:
+  - DIVERGENT_MODEL
+  - DETERMINISTIC_COMPUTE
+  - CODE_SANDBOX
+  deterministic_fallback: pairwise-compatible-components-only
+  failure_policy: skip-synthesis-with-diagnostic
+  acceptance:
+  - bounded-combination-order
+  - incompatibilities-pruned-before-model-calls
+  - hybrid-lineage-complete
+  - hybrids-return-to-M06
+  - unvalidated-synergy-remains-provisional
+- id: M08
+  name: Falsifier
+  package: fre.modules.m08_falsifier
+  execution: model-assisted
+  consumes:
+  - ActiveFrontier
+  - ProvisionalRecommendation
+  - ProblemSpec
+  - DecisionSensitivity
+  - LedgerProjection
+  produces:
+  - Challenge
+  - CandidateStatusEvent
+  - RepairCandidateProposal
+  - RecomputeRequest
+  depends_on:
+  - event-core
+  - M06
+  - M09
+  required_from_tier: T2
+  may_reenter: true
+  required_capabilities:
+  - CRITIC_MODEL
+  - DETERMINISTIC_COMPUTE
+  deterministic_fallback: rule-based-consistency-and-dependency-checks
+  failure_policy: unverified-challenge-cannot-invalidate
+  acceptance:
+  - target-selection-does-not-require-global-score
+  - fatal-challenge-verified
+  - repair-creates-successor
+  - downstream-state-marked-stale
+  optional_context_from:
+  - M10
+- id: M09
+  name: Epistemic Ledger
+  package: fre.modules.m09_ledger
+  execution: deterministic
+  consumes:
+  - DomainEvent
+  - LedgerCommand
+  produces:
+  - LedgerNode
+  - LedgerEdge
+  - LedgerProjection
+  - GraphValidationResult
+  depends_on:
+  - event-core
+  - artifact-store
+  required_from_tier: T0
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  failure_policy: invariant-failure
+  acceptance:
+  - append-only-history
+  - support-graph-acyclic
+  - contradiction-edges-allowed
+  - no-dangling-references
+  - replay-hash-stable
+- id: M10
+  name: Decision Engine
+  package: fre.modules.m10_decision
+  execution: deterministic-first-hybrid-optional
+  consumes:
+  - FeasibilityPartition
+  - ObjectiveEstimate
+  - ProblemSpec
+  - LedgerProjection
+  - DecisionPolicy
+  produces:
+  - DecisionResult
+  - ParetoFront
+  - SensitivityFinding
+  - AblationFinding
+  - RegretFinding
+  - DecisionLedgerNode
+  depends_on:
+  - event-core
+  - M06
+  - M09
+  required_from_tier: T2
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  - QUALITATIVE_JUDGE
+  deterministic_fallback: return-frontier-without-forced-recommendation
+  failure_policy: insufficient-evidence-or-blocked
+  acceptance:
+  - pareto-first
+  - conditional-candidates-visible
+  - selection-policy-explicit
+  - scalarisation-last
+  - deterministic-for-fixed-inputs
+- id: M11
+  name: Active Information Experiment Controller
+  package: fre.modules.m11_information
+  execution: hybrid
+  consumes:
+  - UnknownSpec
+  - ConditionalConstraint
+  - DecisionResult
+  - SensitivityFinding
+  - CapabilityRegistry
+  - PermissionSet
+  - BudgetRemaining
+  produces:
+  - AcquisitionAction
+  - ExperimentPlan
+  - Observation
+  - AcquisitionFailure
+  - RecomputeRequest
+  depends_on:
+  - event-core
+  - M03
+  - M09
+  - M10
+  required_from_tier: T3
+  may_reenter: true
+  required_capabilities:
+  - RETRIEVAL
+  - EXTERNAL_TOOL
+  - CODE_SANDBOX
+  - HUMAN_INPUT
+  - DETERMINISTIC_COMPUTE
+  deterministic_fallback: emit-acquisition-plan-without-execution
+  failure_policy: keep-unknown-unresolved
+  acceptance:
+  - action-targets-named-uncertainty
+  - permissions-enforced
+  - tool-failure-not-negative-evidence
+  - result-provenance-complete
+  - only-dependent-state-staled
+- id: M12
+  name: Context Compiler
+  package: fre.modules.m12_context
+  execution: deterministic
+  consumes:
+  - RunSnapshot
+  - LedgerProjection
+  - CandidateProjection
+  - DecisionProjection
+  - CompilerProfile
+  produces:
+  - ContextPacket
+  - ContextPacketMarkdown
+  - ArtifactRef
+  depends_on:
+  - event-core
+  - M09
+  required_from_tier: T0
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  failure_policy: overflow-diagnostic-or-invariant-failure
+  acceptance:
+  - substantive-claims-have-references
+  - stale-claims-not-verified
+  - deterministic-order
+  - fixed-input-packet-hash-stable
+  - rejection-reasons-preserved
+  optional_context_from:
+  - M03
+  - M05
+  - M06
+  - M10
+  - M11
+  - M13
+- id: M13
+  name: Marginal Value Stop Controller
+  package: fre.modules.m13_stop
+  execution: deterministic
+  consumes:
+  - BudgetRemaining
+  - ActionHistory
+  - DecisionResult
+  - RankedAcquisitionActions
+  - AcceptanceStatus
+  - ValidationStatus
+  - CancellationState
+  produces:
+  - StopDecision
+  - ActionProposal
+  - ContextCompilationRequest
+  depends_on:
+  - event-core
+  - M02
+  - M12
+  required_from_tier: T0
+  may_reenter: true
+  required_capabilities:
+  - DETERMINISTIC_COMPUTE
+  failure_policy: hard-budget-partial-or-invariant-failure
+  acceptance:
+  - hard-ceilings-guarantee-termination
+  - every-decision-has-reasons
+  - complete-forbidden-on-known-required-failure
+  - every-terminal-state-has-context-packet
+  optional_context_from:
+  - M10
+  - M11
+tier_defaults:
+  T0:
+    description: direct-inference-or-deterministic
+    initial_candidates: 1
+    max_representation_views: 1
+    max_falsifier_operators: 0
+    max_tool_calls: 0
+    independent_validation_branches: 0
+    max_iterations: 1
+  T1:
+    description: structured-single-pass
+    initial_candidates: 2
+    max_representation_views: 1
+    max_falsifier_operators: 1
+    max_tool_calls: 0
+    independent_validation_branches: 0
+    max_iterations: 2
+  T2:
+    description: small-comparison
+    initial_candidates: 4
+    max_representation_views: 1
+    max_falsifier_operators: 2
+    max_tool_calls: 1
+    independent_validation_branches: 0
+    max_iterations: 4
+  T3:
+    description: frontier-search
+    initial_candidates: 6
+    max_representation_views: 2
+    max_falsifier_operators: 4
+    max_tool_calls: 2
+    max_synthesis_order: 2
+    independent_validation_branches: 0
+    max_iterations: 6
+  T4:
+    description: high-consequence-analysis
+    initial_candidates: 10
+    max_representation_views: 2
+    max_falsifier_operators: 10
+    max_tool_calls: 5
+    max_synthesis_order: 3
+    independent_validation_branches: 1
+    max_iterations: 10
+  T5:
+    description: isolated-adversarial-validation
+    initial_candidates_per_branch: 12
+    max_representation_views: 2
+    max_falsifier_operators: 10
+    max_tool_calls: 10
+    max_synthesis_order: 3
+    independent_validation_branches: 2
+    max_iterations: 14
+build_waves:
+- id: W0
+  name: repository-and-quality-foundation
+  deliverables:
+  - package-skeleton
+  - config-loader
+  - lint-type-test-commands
+  - architecture-docs
+  gate: package-imports-and-quality-commands-pass
+- id: W1
+  name: canonical-contracts-events-storage
+  deliverables:
+  - domain-models
+  - event-envelope
+  - reducer-protocol
+  - sqlite-event-snapshot-store
+  - local-artifact-store
+  - fake-adapters
+  gate: empty-run-create-snapshot-replay-verify
+- id: W2
+  name: deterministic-spine
+  deliverables:
+  - M09
+  - M02
+  - M12
+  - M13
+  gate: synthetic-run-budgets-ledger-context-terminates
+- id: W3
+  name: semantic-front-end
+  deliverables:
+  - prompt-registry
+  - structured-model-port
+  - M01
+  - M03
+  - M04
+  gate: task-to-signature-problem-and-representation
+- id: W4
+  name: search-and-decision-core
+  deliverables:
+  - M05
+  - M06
+  - M10
+  gate: multi-candidate-fixture-produces-correct-frontier
+- id: W5
+  name: synthesis-and-falsification
+  deliverables:
+  - M07
+  - M08
+  gate: hybrid-and-falsification-lifecycle-passes
+- id: W6
+  name: acquisition-and-routing
+  deliverables:
+  - M11
+  - capability-router
+  - local-tool-adapters
+  gate: decision-sensitive-unknown-resolved-with-targeted-recompute
+- id: W7
+  name: orchestration-cli-validation
+  deliverables:
+  - adaptive-scheduler
+  - concurrency-reservations
+  - T5-branches
+  - cli
+  - run-export
+  - end-to-end-golden-tests
+  gate: all-golden-scenarios-and-replay-hashes-pass
+- id: W8
+  name: thin-integration-adapter
+  deliverables:
+  - mcp-or-http-adapter
+  - permission-mapping
+  - sdk-parity-tests
+  gate: adapter-parity-with-sdk
