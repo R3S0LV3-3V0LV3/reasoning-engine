@@ -386,6 +386,50 @@ def test_finalization_rejects_stop_decisions_staled_by_authoritative_changes(
         runtime.finalize(run.run_id, decision)
 
 
+def test_duplicate_stop_decision_cannot_refresh_freshness_boundary(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run = engine.create_run({"stale-stop": "duplicate"})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    runtime = Wave2Runtime(engine)
+    runtime.record_decision(run.run_id, decision)
+    current = engine.inspect(run.run_id)
+    engine.append(
+        run.run_id,
+        current.version,
+        (engine.make_event(run.run_id, ValueSet(key="late", value=True)),),
+    )
+
+    with pytest.raises(ValueError, match="already recorded"):
+        runtime.record_decision(run.run_id, decision)
+    with pytest.raises(ValueError, match="stale"):
+        runtime.finalize(run.run_id, decision)
+
+
 @pytest.mark.integration
 def test_wave1_state_hash_shape_remains_compatible(engine: FrontierReasoningEngine) -> None:
     from fre.domain.common import canonical_hash

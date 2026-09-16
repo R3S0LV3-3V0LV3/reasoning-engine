@@ -26,6 +26,12 @@ class Wave2Runtime:
 
     def record_decision(self, run_id: UUID, decision: StopDecision) -> int:
         state = self.engine.inspect(run_id)
+        # StopDecisionRecorded 1.0 does not carry the version it evaluated.
+        # Consequently an identical value cannot prove that it was recomputed
+        # after intervening state changes.  Reject duplicates rather than let
+        # one move finalize()'s freshness boundary forward.
+        if decision in state.stop_decisions:
+            raise ValueError("stop decision is already recorded")
         event = self.engine.make_event(
             run_id, StopDecisionRecorded(decision=decision), module_id="M13"
         )

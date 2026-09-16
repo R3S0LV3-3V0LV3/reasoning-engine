@@ -161,8 +161,10 @@ class Wave3ContextCompiler(ContextCompiler):
         representation: RepresentationPlan | None,
         **kwargs: object,
     ) -> ContextCompilationResult:
-        if representation is not None and representation.problem_spec_hash != canonical_hash(
-            problem
+        if (
+            representation is not None
+            and representation.problem_spec_hash is not None
+            and representation.problem_spec_hash != canonical_hash(problem)
         ):
             raise ValueError("representation plan does not bind current ProblemSpec")
         semantic_summary: JsonValue = {

@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_serializer
 
 from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, ObjectRef
 
@@ -51,10 +51,24 @@ class RepresentationView(FrozenModel):
 
 
 class RepresentationPlan(FrozenModel):
-    problem_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Wave 3's original persisted 1.0 shape did not contain this binding.  Keep
+    # accepting that shape so old events and snapshots remain replayable; all
+    # newly selected plans supply the hash.
+    problem_spec_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     views: tuple[RepresentationView, ...]
     selection_basis: tuple[str, ...] = ()
     omitted_reasons: tuple[str, ...] = ()
+
+    @model_serializer(mode="plain")
+    def serialize_compatibly(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "views": self.views,
+            "selection_basis": self.selection_basis,
+            "omitted_reasons": self.omitted_reasons,
+        }
+        if self.problem_spec_hash is not None:
+            payload["problem_spec_hash"] = self.problem_spec_hash
+        return payload
 
 
 class RepresentationArtifact(FrozenModel):
