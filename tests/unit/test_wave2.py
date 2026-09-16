@@ -23,6 +23,7 @@ from fre.domain.context import (
 from fre.domain.ledger import (
     ContradictionResolution,
     ContradictionState,
+    DanglingLedgerReference,
     EpistemicStatus,
     InvalidLedgerRelation,
     LedgerCycleError,
@@ -177,6 +178,16 @@ def test_relation_specific_cycles_and_contradiction_resolution() -> None:
     )
     assert service.contradictions(resolved, ContradictionState.RESOLVED) == (conflict,)
     assert service.effective_status(resolved, right.ref) is EpistemicStatus.REFUTED
+
+    dangling = LedgerEdge(
+        edge_id=uid(999),
+        source=left.ref,
+        target=LedgerNodeRef(node_id=uid(999), revision=1),
+        relation=LedgerRelation.RESOLVES,
+    )
+    with pytest.raises(DanglingLedgerReference):
+        service.resolve_contradiction(base, resolution, dangling)
+    assert service.validate_graph(base).valid
 
 
 @pytest.mark.parametrize(
