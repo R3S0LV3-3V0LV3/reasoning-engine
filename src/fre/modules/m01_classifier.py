@@ -2,7 +2,8 @@
 
 from pydantic import Field
 
-from fre.domain.common import FrozenModel, canonical_hash
+from fre.domain.common import FrozenModel, ObjectRef, canonical_hash, canonical_json
+from fre.domain.semantic import SourceAnchor, SourceKind
 from fre.domain.task import (
     ClassificationDimensionResult,
     ClassificationRecord,
@@ -14,9 +15,42 @@ from fre.domain.task import (
     TaskSignature,
     TaskType,
 )
+from fre.modules.source_anchors import validate_source_anchor
 from fre.prompts.schemas import ClassificationOutput
 
 ORDINAL = tuple(Ordinal4)
+
+
+_OUTPUT_ALIASES = {
+    OutputForm.TEXT: frozenset({"text", "plain_text", "prose", "markdown", "md", "report"}),
+    OutputForm.STRUCTURED: frozenset(
+        {"structured", "json", "yaml", "yml", "table", "tabular", "schema", "schema_bound"}
+    ),
+    OutputForm.ARTIFACT: frozenset(
+        {"artifact", "file", "document", "media", "image", "audio", "video", "binary"}
+    ),
+}
+
+
+def normalise_output_form(value: str) -> OutputForm:
+    """Conservatively normalize common contracts without changing the original envelope."""
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    for output_form, aliases in _OUTPUT_ALIASES.items():
+        if normalized in aliases:
+            return output_form
+    return OutputForm.ARTIFACT
+
+
+def _field_anchor(envelope: TaskEnvelope, selector: str) -> SourceAnchor:
+    return SourceAnchor(
+        source_kind=SourceKind.TASK_FIELD,
+        source_ref=ObjectRef(object_type="TaskEnvelope", object_id=str(envelope.task_id)),
+        selector=selector,
+    )
+
+
+def _anchor_ref(anchor: SourceAnchor) -> str:
+    return canonical_json(anchor).decode("utf-8")
 
 
 class ClassificationPolicy(FrozenModel):
@@ -74,10 +108,21 @@ class TaskClassifier:
             confidence: float | None,
             upper: Ordinal4 | None,
             floor: Ordinal4 = Ordinal4.LOW,
+            proposed_anchors: tuple[SourceAnchor, ...] = (),
+            deterministic_anchors: tuple[SourceAnchor, ...] = (),
         ) -> Ordinal4:
+            for anchor in proposed_anchors:
+                validate_source_anchor(anchor, envelope)
+            is_explicit = name in explicit
             estimate = explicit.get(name, proposed or policy.fallback_ordinal)
             effective = harder(estimate, floor)
-            if confidence is not None and confidence < policy.confidence_threshold:
+            effective_confidence = None if is_explicit else confidence
+            effective_upper = None if is_explicit else upper
+            if (
+                not is_explicit
+                and confidence is not None
+                and confidence < policy.confidence_threshold
+            ):
                 effective = harder(
                     effective, harder(upper or estimate, policy.low_confidence_floor)
                 )
@@ -86,8 +131,9 @@ class TaskClassifier:
             dimensions[name] = ClassificationDimensionResult(
                 estimated=estimate,
                 effective=effective,
-                confidence=confidence,
-                conservative_upper=upper,
+                confidence=effective_confidence,
+                conservative_upper=effective_upper,
+                source_anchors=deterministic_anchors + proposed_anchors,
                 basis="EXPLICIT"
                 if name in explicit
                 else "MODEL"
@@ -111,6 +157,14 @@ class TaskClassifier:
             proposal.consequence.confidence if proposal else None,
             proposal.consequence.conservative_upper if proposal else None,
             floor_consequence,
+            proposal.consequence.anchors if proposal else (),
+            (
+                (_field_anchor(envelope, "/user_metadata/consequence"),)
+                if "consequence" in explicit
+                else (_field_anchor(envelope, "/execution_permissions/allow_external_writes"),)
+                if envelope.execution_permissions.allow_external_writes
+                else ()
+            ),
         )
         irreversible = dimension(
             "irreversibility",
@@ -118,25 +172,67 @@ class TaskClassifier:
             proposal.reversibility.confidence if proposal else None,
             irreversible_upper,
             floor_irreversibility,
+            proposal.reversibility.anchors if proposal else (),
+            (
+                (_field_anchor(envelope, "/user_metadata/irreversibility"),)
+                if "irreversibility" in explicit
+                else (_field_anchor(envelope, "/execution_permissions/allow_external_writes"),)
+                if envelope.execution_permissions.allow_external_writes
+                else (_field_anchor(envelope, "/execution_permissions/allow_network"),)
+                if envelope.execution_permissions.allow_network
+                else ()
+            ),
         )
         ambiguity = dimension(
             "ambiguity",
             proposal.ambiguity.estimate if proposal else None,
             proposal.ambiguity.confidence if proposal else None,
             proposal.ambiguity.conservative_upper if proposal else None,
+            proposed_anchors=proposal.ambiguity.anchors if proposal else (),
+            deterministic_anchors=(
+                (_field_anchor(envelope, "/user_metadata/ambiguity"),)
+                if "ambiguity" in explicit
+                else ()
+            ),
         )
         scarcity = dimension(
             "evidence_scarcity",
             proposal.evidence_scarcity.estimate if proposal else None,
             proposal.evidence_scarcity.confidence if proposal else None,
             proposal.evidence_scarcity.conservative_upper if proposal else None,
+            proposed_anchors=proposal.evidence_scarcity.anchors if proposal else (),
+            deterministic_anchors=(
+                (_field_anchor(envelope, "/user_metadata/evidence_scarcity"),)
+                if "evidence_scarcity" in explicit
+                else ()
+            ),
         )
         search = proposal.search_space if proposal else policy.fallback_search_space
         if proposal and proposal.search_space_confidence < policy.confidence_threshold:
             search = SearchSpaceClass.OPEN
         task_type = proposal.task_type if proposal else TaskType.ANALYSIS
         horizon = proposal.horizon if proposal else policy.fallback_horizon
-        output_form = OutputForm(envelope.requested_output.form.upper())
+        output_form = normalise_output_form(envelope.requested_output.form)
+        deterministic_evidence = {
+            _anchor_ref(_field_anchor(envelope, f"/explicit_constraints/{index}"))
+            for index in range(len(envelope.explicit_constraints))
+        }
+        deterministic_evidence.add(_anchor_ref(_field_anchor(envelope, "/requested_output")))
+        for key in sorted(envelope.user_metadata):
+            escaped = key.replace("~", "~0").replace("/", "~1")
+            deterministic_evidence.add(
+                _anchor_ref(_field_anchor(envelope, f"/user_metadata/{escaped}"))
+            )
+        permissions = envelope.execution_permissions
+        if (
+            permissions.capabilities
+            or permissions.allow_network
+            or permissions.allow_external_writes
+            or permissions.allowed_paths
+        ):
+            deterministic_evidence.add(
+                _anchor_ref(_field_anchor(envelope, "/execution_permissions"))
+            )
         signature = TaskSignature(
             task_type=task_type,
             consequence=consequence,
@@ -148,7 +244,14 @@ class TaskClassifier:
             output_form=output_form,
             dimension_confidence={name: item.confidence for name, item in dimensions.items()},
             evidence_refs=tuple(
-                sorted({str(anchor) for d in dimensions.values() for anchor in d.source_anchors})
+                sorted(
+                    deterministic_evidence
+                    | {
+                        _anchor_ref(anchor)
+                        for d in dimensions.values()
+                        for anchor in d.source_anchors
+                    }
+                )
             ),
         )
         return signature, ClassificationRecord(

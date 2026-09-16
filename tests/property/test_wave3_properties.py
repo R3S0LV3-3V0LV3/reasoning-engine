@@ -20,17 +20,21 @@ def test_reversibility_transform_is_involution(value: Ordinal4) -> None:
 
 
 @pytest.mark.property
-@given(st.integers(min_value=0, max_value=3), st.integers(min_value=0, max_value=3))
-def test_m01_to_m02_axes_are_monotone(left: int, right: int) -> None:
+@given(
+    st.sampled_from(("consequence", "irreversibility", "ambiguity", "evidence_scarcity")),
+    st.integers(min_value=0, max_value=3),
+    st.integers(min_value=0, max_value=3),
+)
+def test_m01_to_m02_axes_are_monotone(axis: str, left: int, right: int) -> None:
     low, high = sorted((left, right))
     task = TaskEnvelope(
         task_id=UUID(int=1),
         text="x",
         requested_output=OutputContract(form="TEXT"),
         execution_permissions=PermissionSet(),
-        user_metadata={"consequence": tuple(Ordinal4)[low].value},
+        user_metadata={axis: tuple(Ordinal4)[low].value},
     )
-    harder = task.model_copy(update={"user_metadata": {"consequence": tuple(Ordinal4)[high].value}})
+    harder = task.model_copy(update={"user_metadata": {axis: tuple(Ordinal4)[high].value}})
     classifier = TaskClassifier()
     first, _ = classifier.classify(task, None)
     second, _ = classifier.classify(harder, None)
