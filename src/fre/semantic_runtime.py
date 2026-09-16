@@ -1,36 +1,37 @@
-"""Budgeted, idempotent semantic-model execution outside the pure replay core."""
+"""Durable, asynchronous semantic-model execution outside the replay core."""
 
-from pydantic import BaseModel, ValidationError
+from __future__ import annotations
 
-from fre.adapters.artifacts_local import LocalArtifactStore
-from fre.domain.budget import BudgetExceeded, BudgetProjection, BudgetReservation, ResourceVector
+from pydantic import BaseModel, Field, ValidationError
+
+from fre.domain.budget import BudgetExceeded, BudgetReservation, ResourceVector
 from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.semantic import (
+    SemanticAccountingCondition,
     SemanticCallCharge,
     SemanticModelCallRecord,
     StructuredModelRequest,
     StructuredModelResult,
     StructuredModelStatus,
 )
-from fre.ports.clock import UUIDFactory
+from fre.engine import FrontierReasoningEngine
 from fre.ports.models import StructuredModelPort
-from fre.prompts.registry import PromptRegistry
-from fre.prompts.schemas import OutputSchemaRegistry
-from fre.runtime.budget_meter import BudgetMeter
+from fre.prompts.registry import PromptDefinition, PromptRegistry
+from fre.prompts.schemas import OutputSchemaDefinition, OutputSchemaRegistry
 from fre.runtime.events import (
     ArtifactRegistered,
+    BudgetReservationReleased,
     BudgetReservationSettled,
     BudgetReserved,
     EventPayload,
     ModelCallFailed,
     ModelCallRecorded,
 )
-from fre.runtime.reducer import RunState
 
 
 class SemanticRuntimePolicy(FrozenModel):
-    version: str = "wave3-semantic-runtime/1.0"
-    maximum_repair_attempts: int = 1
+    version: str = "wave3-semantic-runtime/2.0"
+    maximum_repair_attempts: int = Field(default=1, ge=0, le=1)
     reserve_input_tokens: int = 4096
     reserve_output_tokens: int = 2048
 
@@ -45,86 +46,65 @@ class SemanticExecution(FrozenModel):
     event_payloads: tuple[EventPayload, ...] = ()
     reused: bool = False
     repaired: bool = False
+    cause: str | None = None
+
+
+class SemanticOwnershipError(ValueError):
+    """The selected prompt/schema does not belong to the requested operation."""
 
 
 class SemanticModelRuntime:
     def __init__(
         self,
         model: StructuredModelPort,
-        artifacts: LocalArtifactStore,
-        uuids: UUIDFactory,
+        engine: FrontierReasoningEngine,
         prompts: PromptRegistry,
         schemas: OutputSchemaRegistry,
     ) -> None:
         self.model = model
-        self.artifacts = artifacts
-        self.uuids = uuids
+        self.engine = engine
+        self.artifacts = engine.artifacts
         self.prompts = prompts
         self.schemas = schemas
 
-    def execute(
+    async def execute(
         self,
-        state: RunState,
         *,
+        run_id: object,
         module_id: str,
         module_version: str,
         operation: str,
         prompt_id: str,
         prompt_version: str,
+        repair_prompt_version: str | None = None,
         canonical_input: JsonValue,
         policy: SemanticRuntimePolicy | None = None,
         allow_repair: bool = True,
     ) -> SemanticExecution:
+        from uuid import UUID
+
+        if not isinstance(run_id, UUID):
+            raise TypeError("run_id must be a UUID")
         policy = policy or SemanticRuntimePolicy()
         prompt = self.prompts.get(prompt_id, prompt_version)
-        rendered = self.prompts.render(prompt_id, prompt_version, canonical_input)
         schema, model_type = self.schemas.get(prompt.output_schema_id, prompt.output_schema_version)
-        identity = canonical_hash(
-            {
-                "run_id": state.run_id,
-                "module_id": module_id,
-                "operation": operation,
-                "canonical_input_hash": rendered.canonical_input_hash,
-                "module_version": module_version,
-                "policy_hash": policy.policy_hash,
-                "prompt_id": prompt.prompt_id,
-                "prompt_version": prompt.prompt_version,
-                "template_hash": prompt.template_hash,
-                "output_schema_id": schema.schema_id,
-                "output_schema_version": schema.schema_version,
-                "output_schema_hash": schema.schema_hash,
-            }
+        self._validate_ownership(prompt, schema, module_id, operation)
+        rendered = self.prompts.render(prompt_id, prompt_version, canonical_input)
+        identity = self._identity(
+            run_id=str(run_id),
+            module_id=module_id,
+            operation=operation,
+            module_version=module_version,
+            policy_hash=policy.policy_hash,
+            prompt=prompt,
+            schema=schema,
+            input_hash=rendered.canonical_input_hash,
         )
-        initial = next(
-            (record for record in state.model_calls if record.idempotency_key == identity), None
-        )
-        prior_repair = next(
-            (
-                record
-                for record in state.model_calls
-                if record.repair_parent_key == identity
-                and record.status is StructuredModelStatus.SUCCESS
-            ),
-            None,
-        )
-        prior = prior_repair or initial
-        if prior is not None:
-            proposal: BaseModel | None = None
-            if prior.status is StructuredModelStatus.SUCCESS and prior.raw_artifact is not None:
-                try:
-                    proposal = model_type.model_validate_json(
-                        self.artifacts.get(prior.raw_artifact.sha256), strict=True
-                    )
-                except ValidationError:
-                    proposal = None
-            return SemanticExecution(
-                proposal=proposal,
-                record=prior,
-                reused=True,
-                repaired=prior.repair_parent_key is not None,
-            )
-        first = self._call(
-            state.budget,
+        reused = self._reuse(run_id, identity, model_type)
+        if reused is not None:
+            return reused
+        first = await self._invoke(
+            run_id,
             identity,
             module_id,
             module_version,
@@ -132,9 +112,7 @@ class SemanticModelRuntime:
             prompt,
             rendered.messages,
             rendered.canonical_input_hash,
-            schema.schema_id,
-            schema.schema_version,
-            schema.schema_hash,
+            schema,
             model_type,
             policy,
             None,
@@ -142,112 +120,145 @@ class SemanticModelRuntime:
         if (
             first.proposal is not None
             or not allow_repair
+            or policy.maximum_repair_attempts == 0
             or first.record is None
             or first.record.status is not StructuredModelStatus.INVALID_STRUCTURED_OUTPUT
         ):
             return first
-        projected = self._project_budget(state.budget, first.event_payloads)
-        repair_prompt = self.prompts.get(f"{prompt_id}.repair", prompt_version)
-        repair_identity = canonical_hash(
-            {
-                "parent": identity,
-                "repair": 1,
-                "prompt_id": repair_prompt.prompt_id,
-                "template_hash": repair_prompt.template_hash,
-            }
+
+        repair_prompt = self.prompts.get(
+            f"{prompt_id}.repair", repair_prompt_version or prompt_version
         )
-        repaired = self._call(
-            projected,
+        self._validate_repair_ownership(repair_prompt, prompt, schema, module_id, operation)
+        repair_input: JsonValue = {
+            "original_canonical_input": canonical_input,
+            "parent_call_identity": identity,
+            "invalid_raw_response_artifact": first.record.raw_artifact.model_dump(mode="json")
+            if first.record.raw_artifact
+            else None,
+            "schema_validation_diagnostics": list(first.record.validation_diagnostics),
+        }
+        repair_render = self.prompts.render(
+            repair_prompt.prompt_id, repair_prompt.prompt_version, repair_input
+        )
+        repair_identity = self._identity(
+            run_id=str(run_id),
+            module_id=module_id,
+            operation=f"{operation}-repair",
+            module_version=module_version,
+            policy_hash=policy.policy_hash,
+            prompt=repair_prompt,
+            schema=schema,
+            input_hash=repair_render.canonical_input_hash,
+            parent=identity,
+        )
+        repaired = await self._invoke(
+            run_id,
             repair_identity,
             module_id,
             module_version,
             f"{operation}-repair",
             repair_prompt,
-            rendered.messages,
-            rendered.canonical_input_hash,
-            schema.schema_id,
-            schema.schema_version,
-            schema.schema_hash,
+            repair_render.messages,
+            repair_render.canonical_input_hash,
+            schema,
             model_type,
             policy,
             identity,
         )
-        return SemanticExecution(
-            proposal=repaired.proposal,
-            record=repaired.record,
-            event_payloads=(*first.event_payloads, *repaired.event_payloads),
-            repaired=True,
-        )
+        if repaired.record is None:
+            return first.model_copy(
+                update={"cause": "REPAIR_BUDGET_UNAVAILABLE", "repaired": False}
+            )
+        return repaired.model_copy(update={"repaired": True})
 
-    def _call(
+    async def _invoke(
         self,
-        budget: BudgetProjection,
+        run_id: object,
         identity: str,
         module_id: str,
         module_version: str,
         operation: str,
-        prompt: object,
+        prompt: PromptDefinition,
         messages: tuple[dict[str, JsonValue], ...],
         input_hash: str,
-        schema_id: str,
-        schema_version: str,
-        schema_hash: str,
+        schema: OutputSchemaDefinition,
         model_type: type[BaseModel],
         policy: SemanticRuntimePolicy,
         repair_parent: str | None,
     ) -> SemanticExecution:
-        from fre.prompts.registry import PromptDefinition
+        from uuid import UUID
 
-        assert isinstance(prompt, PromptDefinition)
-        reservation_id = str(self.uuids.new())
-        reserved = ResourceVector(
-            llm_calls=1,
-            input_tokens=policy.reserve_input_tokens,
-            output_tokens=policy.reserve_output_tokens,
-        )
+        assert isinstance(run_id, UUID)
         reservation = BudgetReservation(
-            reservation_id=reservation_id, action_id=identity, resources=reserved
+            reservation_id=str(self.engine.uuids.new()),
+            action_id=identity,
+            resources=ResourceVector(
+                llm_calls=1,
+                input_tokens=policy.reserve_input_tokens,
+                output_tokens=policy.reserve_output_tokens,
+            ),
         )
+        reserved_event = BudgetReserved(reservation=reservation)
+        state = self.engine.inspect(run_id)
         try:
-            BudgetMeter().reserve(budget, reservation)
+            self.engine.append(
+                run_id,
+                state.version,
+                (self.engine.make_event(run_id, reserved_event, module_id="semantic-runtime"),),
+            )
         except (BudgetExceeded, ValueError):
-            return SemanticExecution()
+            return SemanticExecution(cause="BUDGET_UNAVAILABLE")
         request = StructuredModelRequest(
             role=prompt.model_role,
             messages=messages,
-            output_schema_id=schema_id,
-            output_schema_version=schema_version,
+            output_schema_id=schema.schema_id,
+            output_schema_version=schema.schema_version,
             max_input_tokens=policy.reserve_input_tokens,
             max_output_tokens=policy.reserve_output_tokens,
             idempotency_key=identity,
         )
-        result = self.model.generate(request)
-        descriptor = self.artifacts.put(
+        try:
+            result = await self.model.generate(request)
+        except BaseException:
+            self._release(run_id, reservation.reservation_id)
+            raise
+
+        raw = self.artifacts.put(
             result.raw_response,
             media_type="application/octet-stream",
-            metadata={"semantic_call": identity, "status": result.status.value},
+            metadata={"role": "raw-model-response", "semantic_call": identity},
         )
-        artifact = ArtifactRef(artifact_id=descriptor.id, sha256=descriptor.sha256)
-        actual = self._charge(result, reserved)
+        raw_ref = ArtifactRef(artifact_id=raw.id, sha256=raw.sha256)
         status = result.status
         proposal: BaseModel | None = None
+        diagnostics = list(result.diagnostics)
         if status is StructuredModelStatus.SUCCESS:
             try:
                 proposal = model_type.model_validate_json(
                     canonical_json(result.decoded), strict=True
                 )
-            except ValidationError:
+            except ValidationError as error:
                 status = StructuredModelStatus.INVALID_STRUCTURED_OUTPUT
-        charge = SemanticCallCharge(
-            llm_calls=1,
-            input_tokens=actual.input_tokens,
-            output_tokens=actual.output_tokens,
-            basis="REPORTED_USAGE"
-            if result.usage.input_tokens is not None and result.usage.output_tokens is not None
-            else "CONSERVATIVE_RESERVED_CAPACITY",
+                diagnostics.extend(self._validation_diagnostics(error))
+        proposal_ref: ArtifactRef | None = None
+        proposal_bytes: bytes | None = None
+        if proposal is not None:
+            proposal_bytes = canonical_json(proposal)
+            stored = self.artifacts.put(
+                proposal_bytes,
+                media_type="application/json",
+                metadata={"role": "validated-proposal", "semantic_call": identity},
+            )
+            proposal_ref = ArtifactRef(artifact_id=stored.id, sha256=stored.sha256)
+        actual = self._charge(result, reservation.resources)
+        over = any(
+            getattr(actual, name) > getattr(reservation.resources, name)
+            for name in ("llm_calls", "input_tokens", "output_tokens")
         )
+        accounting = SemanticAccountingCondition.USAGE_EXCEEDS_RESERVATION if over else None
         record = SemanticModelCallRecord(
-            call_id=self.uuids.new(),
+            call_id=self.engine.uuids.new(),
             idempotency_key=identity,
             module_id=module_id,
             operation=operation,
@@ -257,37 +268,171 @@ class SemanticModelRuntime:
             prompt_id=prompt.prompt_id,
             prompt_version=prompt.prompt_version,
             template_hash=prompt.template_hash,
-            output_schema_id=schema_id,
-            output_schema_version=schema_version,
-            output_schema_hash=schema_hash,
+            output_schema_id=schema.schema_id,
+            output_schema_version=schema.schema_version,
+            output_schema_hash=schema.schema_hash,
             canonical_input_hash=input_hash,
             model_role=prompt.model_role,
             adapter_id=result.adapter_id,
             model_id=result.model_id,
             status=status,
-            raw_artifact=artifact,
+            raw_artifact=raw_ref,
+            proposal_artifact=proposal_ref,
             usage=result.usage,
-            policy_charge=charge,
+            policy_charge=SemanticCallCharge(
+                llm_calls=1,
+                input_tokens=actual.input_tokens,
+                output_tokens=actual.output_tokens,
+                basis="REPORTED_USAGE"
+                if result.usage.input_tokens is not None and result.usage.output_tokens is not None
+                else "CONSERVATIVE_RESERVED_CAPACITY",
+            ),
             repair_parent_key=repair_parent,
+            accounting_condition=accounting,
+            validation_diagnostics=tuple(diagnostics),
         )
-        record_event: EventPayload = (
-            ModelCallRecorded(record=record)
-            if status is StructuredModelStatus.SUCCESS
-            else ModelCallFailed(
-                record=record, reason="; ".join(result.diagnostics) or status.value
-            )
-        )
-        events: tuple[EventPayload, ...] = (
-            BudgetReserved(reservation=reservation),
+        registrations: list[EventPayload] = [
             ArtifactRegistered(
-                artifact=artifact,
+                artifact=raw_ref,
                 media_type="application/octet-stream",
                 byte_size=len(result.raw_response),
-            ),
-            BudgetReservationSettled(reservation_id=reservation_id, actual_usage=actual),
-            record_event,
+            )
+        ]
+        if proposal_ref is not None and proposal_bytes is not None:
+            registrations.append(
+                ArtifactRegistered(
+                    artifact=proposal_ref,
+                    media_type="application/json",
+                    byte_size=len(proposal_bytes),
+                )
+            )
+        accounting_event: EventPayload = (
+            BudgetReservationReleased(reservation_id=reservation.reservation_id)
+            if over
+            else BudgetReservationSettled(
+                reservation_id=reservation.reservation_id, actual_usage=actual
+            )
         )
-        return SemanticExecution(proposal=proposal, record=record, event_payloads=events)
+        recorded: EventPayload = (
+            ModelCallRecorded(record=record)
+            if (status is StructuredModelStatus.SUCCESS and not over)
+            else ModelCallFailed(
+                record=record,
+                reason=("; ".join(diagnostics) or accounting.value if accounting else status.value),
+            )
+        )
+        payloads = (*registrations, accounting_event, recorded)
+        self._append_current(run_id, payloads)
+        return SemanticExecution(
+            proposal=proposal if not over else None,
+            record=record,
+            event_payloads=(reserved_event, *payloads),
+        )
+
+    def _append_current(self, run_id: object, payloads: tuple[EventPayload, ...]) -> None:
+        from uuid import UUID
+
+        assert isinstance(run_id, UUID)
+        state = self.engine.inspect(run_id)
+        events = tuple(
+            self.engine.make_event(run_id, p, module_id="semantic-runtime") for p in payloads
+        )
+        self.engine.append(run_id, state.version, events)
+
+    def _release(self, run_id: object, reservation_id: str) -> None:
+        self._append_current(run_id, (BudgetReservationReleased(reservation_id=reservation_id),))
+
+    def recover_outstanding_reservations(self, run_id: object) -> tuple[str, ...]:
+        """Release calls left in-flight by process interruption, in stable identifier order."""
+        state = self.engine.inspect(run_id)  # type: ignore[arg-type]
+        reservation_ids = tuple(sorted(item.reservation_id for item in state.budget.reservations))
+        if reservation_ids:
+            self._append_current(
+                run_id,
+                tuple(BudgetReservationReleased(reservation_id=item) for item in reservation_ids),
+            )
+        return reservation_ids
+
+    def _reuse(
+        self, run_id: object, identity: str, model_type: type[BaseModel]
+    ) -> SemanticExecution | None:
+        state = self.engine.inspect(run_id)  # type: ignore[arg-type]
+        initial = next((r for r in state.model_calls if r.idempotency_key == identity), None)
+        repair = next(
+            (
+                r
+                for r in state.model_calls
+                if r.repair_parent_key == identity and r.status is StructuredModelStatus.SUCCESS
+            ),
+            None,
+        )
+        record = repair or initial
+        if record is None:
+            return None
+        proposal = None
+        if (
+            record.status is StructuredModelStatus.SUCCESS
+            and record.accounting_condition is None
+            and record.proposal_artifact is not None
+        ):
+            proposal = model_type.model_validate_json(
+                self.artifacts.get(record.proposal_artifact.sha256), strict=True
+            )
+        return SemanticExecution(
+            proposal=proposal,
+            record=record,
+            reused=True,
+            repaired=record.repair_parent_key is not None,
+        )
+
+    @staticmethod
+    def _validate_ownership(
+        prompt: PromptDefinition, schema: OutputSchemaDefinition, module: str, operation: str
+    ) -> None:
+        if (prompt.module_id, prompt.operation) != (module, operation) or (
+            schema.module_id,
+            schema.operation,
+        ) != (module, operation):
+            raise SemanticOwnershipError(
+                "prompt/schema ownership does not match requested operation"
+            )
+
+    @staticmethod
+    def _validate_repair_ownership(
+        repair: PromptDefinition,
+        parent: PromptDefinition,
+        schema: OutputSchemaDefinition,
+        module: str,
+        operation: str,
+    ) -> None:
+        if (
+            repair.module_id != module
+            or repair.operation != f"{operation}-repair"
+            or (repair.output_schema_id, repair.output_schema_version)
+            != (schema.schema_id, schema.schema_version)
+            or parent.module_id != module
+        ):
+            raise SemanticOwnershipError("repair prompt is incompatible with parent operation")
+
+    @staticmethod
+    def _identity(
+        *, prompt: PromptDefinition, schema: OutputSchemaDefinition, **values: JsonValue
+    ) -> str:
+        return canonical_hash(
+            {
+                **values,
+                "prompt_id": prompt.prompt_id,
+                "prompt_version": prompt.prompt_version,
+                "template_hash": prompt.template_hash,
+                "output_schema_id": schema.schema_id,
+                "output_schema_version": schema.schema_version,
+                "output_schema_hash": schema.schema_hash,
+            }
+        )
+
+    @staticmethod
+    def _validation_diagnostics(error: ValidationError) -> tuple[str, ...]:
+        return tuple(f"{'.'.join(map(str, item['loc']))}:{item['type']}" for item in error.errors())
 
     @staticmethod
     def _charge(result: StructuredModelResult, reserved: ResourceVector) -> ResourceVector:
@@ -300,16 +445,3 @@ class SemanticModelRuntime:
             if result.usage.output_tokens is not None
             else reserved.output_tokens,
         )
-
-    @staticmethod
-    def _project_budget(
-        budget: BudgetProjection, payloads: tuple[EventPayload, ...]
-    ) -> BudgetProjection:
-        result = budget
-        meter = BudgetMeter()
-        for payload in payloads:
-            if isinstance(payload, BudgetReserved):
-                result = meter.reserve(result, payload.reservation)
-            elif isinstance(payload, BudgetReservationSettled):
-                result = meter.settle(result, payload.reservation_id, payload.actual_usage)
-        return result

@@ -8,6 +8,6 @@ class FakeStructuredModel:
         self._responses = responses
         self.calls: list[str] = []
 
-    def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+    async def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
         self.calls.append(request.idempotency_key)
         return self._responses[request.idempotency_key]

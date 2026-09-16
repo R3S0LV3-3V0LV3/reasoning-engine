@@ -25,7 +25,7 @@ class Wave3Config(BaseModel):
     schema_version: SchemaVersion = "1.0"
     classification_policy_version: str = "wave3-m01/1.0"
     confidence_threshold: float = Field(default=0.70, ge=0, le=1)
-    maximum_repair_attempts: int = Field(default=1, ge=1, le=1)
+    maximum_repair_attempts: int = Field(default=1, ge=0, le=1)
     representation_registry_version: str = "wave3-m04-registry/1.0"
     representation_selection_policy_version: str = "wave3-m04/1.0"
     representation_tie_band: float = Field(default=0.05, ge=0, le=1)

@@ -308,13 +308,15 @@ class RunReducer:
                 item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
             ):
                 raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, ModelCallRecorded) and payload.record.raw_artifact is None:
-                raise ValueError("successful semantic model call requires a raw-response artifact")
-            if (
-                payload.record.raw_artifact is not None
-                and payload.record.raw_artifact.sha256 not in state.artifacts
+            if isinstance(payload, ModelCallRecorded) and (
+                payload.record.raw_artifact is None or payload.record.proposal_artifact is None
             ):
-                raise ValueError("semantic model-call artifact is not registered")
+                raise ValueError(
+                    "successful semantic model call requires raw and proposal artifacts"
+                )
+            for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
+                if artifact is not None and artifact.sha256 not in state.artifacts:
+                    raise ValueError("semantic model-call artifact is not registered")
             changes["model_calls"] = (*state.model_calls, payload.record)
         elif isinstance(payload, TaskClassified):
             changes["task_signature"] = payload.signature

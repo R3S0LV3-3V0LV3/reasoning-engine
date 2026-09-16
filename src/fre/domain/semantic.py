@@ -74,6 +74,10 @@ class StructuredModelStatus(StrEnum):
     PERMANENT_FAILURE = "PERMANENT_FAILURE"
 
 
+class SemanticAccountingCondition(StrEnum):
+    USAGE_EXCEEDS_RESERVATION = "USAGE_EXCEEDS_RESERVATION"
+
+
 class SemanticCallUsage(FrozenModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
@@ -127,7 +131,10 @@ class SemanticModelCallRecord(FrozenModel):
     model_id: str
     status: StructuredModelStatus
     raw_artifact: ArtifactRef | None = None
+    proposal_artifact: ArtifactRef | None = None
     usage: SemanticCallUsage = SemanticCallUsage()
     policy_charge: SemanticCallCharge
     repair_parent_key: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     fallback_used: bool = False
+    accounting_condition: SemanticAccountingCondition | None = None
+    validation_diagnostics: tuple[str, ...] = ()

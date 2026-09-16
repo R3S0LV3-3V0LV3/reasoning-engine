@@ -68,6 +68,8 @@ class BudgetMeter:
             item.reservation_id == reservation.reservation_id for item in projection.reservations
         ):
             raise ReservationConflict("reservation identifier already exists")
+        if any(item.action_id == reservation.action_id for item in projection.reservations):
+            raise ReservationConflict("action already has an outstanding reservation")
         if (
             projection.plan is None
             or len(projection.reservations) >= projection.plan.limits.max_concurrent_actions
