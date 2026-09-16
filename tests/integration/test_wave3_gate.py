@@ -12,14 +12,22 @@ import pytest
 from fre.adapters.artifacts_local import LocalArtifactStore
 from fre.adapters.storage_sqlite import SQLiteStore
 from fre.adapters.testing import FakeClock, FakeUUIDFactory
-from fre.domain.budget import DeploymentLimits
+from fre.domain.budget import BudgetRemaining, DeploymentLimits, ResourceVector
 from fre.domain.common import JsonValue, OutputContract, PermissionSet
 from fre.domain.context import CompilerProfile
+from fre.domain.ledger import DanglingLedgerReference
 from fre.domain.semantic import (
     SemanticCallUsage,
     StructuredModelRequest,
     StructuredModelResult,
     StructuredModelStatus,
+)
+from fre.domain.stop import (
+    AcceptanceStatus,
+    StopDisposition,
+    StopInputs,
+    StopPolicy,
+    ValidationStatus,
 )
 from fre.domain.task import TaskEnvelope
 from fre.engine import FrontierReasoningEngine
@@ -28,12 +36,14 @@ from fre.modules.m02_budget import BudgetAllocator, default_tier_policy
 from fre.modules.m03_formaliser import ProblemFormaliser
 from fre.modules.m04_representation import RepresentationSelector
 from fre.modules.m12_context import Wave3ContextCompiler
+from fre.modules.m13_stop import StopController
 from fre.prompts import default_output_schema_registry, default_prompt_registry
-from fre.prompts.schemas import ClassificationOutput
+from fre.prompts.schemas import ClassificationOutput, ProblemFormalisationOutput
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
     BudgetAllocated,
     ModelCallRecorded,
+    ProblemBlockerRecorded,
     ProblemFormalised,
     RepresentationArtifactCompiled,
     RepresentationPlanSelected,
@@ -334,3 +344,103 @@ def test_legacy_representation_plan_event_and_snapshot_remain_replayable(
     assert replayed.representation_plan.problem_spec_hash is None
     snapshot_hash = engine.snapshot(handle.run_id)
     assert engine.replay_from_snapshot(handle.run_id).state_hash == snapshot_hash
+
+
+@pytest.mark.integration
+def test_m03_contradiction_batch_is_atomic_and_replayable(
+    engine: FrontierReasoningEngine,
+) -> None:
+    handle = engine.create_run({"m03": "atomic-contradiction"})
+    task = TaskEnvelope(
+        task_id=UUID(int=903),
+        text="Resolve A versus B.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+    proposal = ProblemFormalisationOutput.model_validate_json(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "left",
+                        "kind": "UNKNOWN",
+                        "description": "A",
+                        "origin": "CONTRADICTED",
+                    },
+                    {
+                        "id": "right",
+                        "kind": "UNKNOWN",
+                        "description": "B",
+                        "origin": "CONTRADICTED",
+                    },
+                    {
+                        "id": "conflict",
+                        "kind": "RELATION",
+                        "description": "A conflicts with B",
+                        "origin": "CONTRADICTED",
+                        "attributes": {
+                            "source_id": "left",
+                            "target_id": "right",
+                            "relation_kind": "CONTRADICTS",
+                        },
+                    },
+                ]
+            }
+        )
+    )
+    payloads = ProblemFormaliser().canonical_events(
+        task,
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(uuids()),
+    )
+    events = tuple(
+        engine.make_event(handle.run_id, payload, module_id="M03") for payload in payloads
+    )
+    blocker_index = next(
+        index
+        for index, payload in enumerate(payloads)
+        if isinstance(payload, ProblemBlockerRecorded)
+    )
+    blocker = cast(ProblemBlockerRecorded, payloads[blocker_index]).blocker
+    bad_blocker = blocker.model_copy(
+        update={"ledger_ref": blocker.ledger_ref.model_copy(update={"node_id": UUID(int=9999)})}
+    )
+    invalid_events = list(events)
+    invalid_events[blocker_index] = engine.make_event(
+        handle.run_id,
+        ProblemBlockerRecorded(blocker=bad_blocker),
+        module_id="M03",
+    )
+    with pytest.raises(DanglingLedgerReference, match="unknown ledger revision"):
+        engine.append(handle.run_id, handle.version, tuple(invalid_events))
+    assert engine.inspect(handle.run_id).version == handle.version
+
+    engine.append(handle.run_id, handle.version, events)
+    state = engine.inspect(handle.run_id)
+    assert len(state.problem_contradictions) == 1
+    assert state.problem_blockers == (blocker,)
+    assert state.problem_blockers[0].ledger_ref in {
+        state.ledger.nodes[0].ref,
+        state.ledger.nodes[1].ref,
+    }
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetRemaining(
+                resources=ResourceVector(iterations=1),
+                active_concurrent_actions=0,
+                projection_hash="0" * 64,
+            ),
+            acceptance=AcceptanceStatus.PENDING,
+            validation=ValidationStatus.NOT_APPLICABLE,
+            blocker_required=True,
+            blocker_resolvable=state.problem_blockers[0].resolvable,
+            epistemic_trigger_refs=(state.problem_blockers[0].ledger_ref,),
+        ),
+        StopPolicy(version="test/1"),
+    )
+    assert decision.disposition is StopDisposition.CONTINUE
+    assert decision.ledger_trigger_refs == (state.problem_blockers[0].ledger_ref,)
+    snapshot_hash = engine.snapshot(handle.run_id)
+    assert engine.replay(handle.run_id) == engine.replay_from_snapshot(handle.run_id)
+    assert state.state_hash == snapshot_hash

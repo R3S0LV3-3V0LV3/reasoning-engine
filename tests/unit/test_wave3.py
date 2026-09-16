@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from fre.adapters.testing import FakeUUIDFactory
 from fre.domain.budget import DeploymentLimits
 from fre.domain.common import ObjectRef, OutputContract, PermissionSet, canonical_hash
-from fre.domain.ledger import LedgerRelation
+from fre.domain.ledger import EpistemicStatus, LedgerRelation
 from fre.domain.problem import ProblemRelation, ProblemRelationKind, VerificationStatus
 from fre.domain.representation import RepresentationKind
 from fre.domain.semantic import (
@@ -26,7 +26,7 @@ from fre.modules.m01_classifier import (
     reversibility_to_irreversibility,
 )
 from fre.modules.m02_budget import BudgetAllocator, default_tier_policy
-from fre.modules.m03_formaliser import ProblemFormaliser
+from fre.modules.m03_formaliser import InvalidProblemSpec, ProblemFormaliser
 from fre.modules.m04_representation import RepresentationSelector
 from fre.modules.source_anchors import InvalidSourceAnchor, validate_source_anchor
 from fre.prompts import default_output_schema_registry, default_prompt_registry
@@ -36,7 +36,12 @@ from fre.prompts.schemas import (
     ProblemFormalisationOutput,
     RepresentationAdjudicationOutput,
 )
-from fre.runtime.events import LedgerEdgeAdded
+from fre.runtime.events import (
+    LedgerEdgeAdded,
+    LedgerNodeAdded,
+    ProblemBlockerRecorded,
+    ProblemContradictionRecorded,
+)
 
 
 def envelope(*, external_write: bool = False) -> TaskEnvelope:
@@ -169,7 +174,7 @@ def test_m03_preserves_hard_unknown_and_epistemic_labels(mode: str) -> None:
                         "id": "u1",
                         "kind": "UNKNOWN",
                         "description": "future demand",
-                        "origin": "UNRESOLVED",
+                        "origin": EpistemicOriginLabel.UNRESOLVED,
                         "attributes": {"resolvable": False},
                     },
                 )
@@ -285,7 +290,244 @@ def test_m03_contradiction_maps_to_frozen_m09_events() -> None:
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 10)),
     )
-    assert len(events) == 3
-    edge = events[-1]
+    assert len(events) == 5
+    edge = events[2]
     assert isinstance(edge, LedgerEdgeAdded)
     assert edge.edge.relation is LedgerRelation.CONTRADICTS
+    assert isinstance(events[3], ProblemContradictionRecorded)
+    assert isinstance(events[4], ProblemBlockerRecorded)
+    left_node = events[0]
+    assert isinstance(left_node, LedgerNodeAdded)
+    assert left_node.node.epistemic_status is EpistemicStatus.CONTESTED
+    assert events[4].blocker.ledger_ref == left_node.node.ref
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["DETERMINISTIC", "MODEL", "HUMAN", "UNAVAILABLE"])
+@pytest.mark.parametrize("status", list(VerificationStatus))
+def test_m03_model_constraint_statuses_begin_unknown(mode: str, status: VerificationStatus) -> None:
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "c1",
+                    "kind": "CONSTRAINT",
+                    "description": "safe",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {
+                        "constraint_kind": "HARD",
+                        "verification_mode": mode,
+                        "verification_status": status.value,
+                    },
+                },
+            )
+        }
+    )
+    constraint = ProblemFormaliser().formalise(envelope(), proposal).constraints[0]
+    assert constraint.kind == "HARD"
+    assert constraint.verification_status is VerificationStatus.UNKNOWN
+
+
+@pytest.mark.unit
+def test_m03_only_trusted_named_deterministic_verifier_establishes_status() -> None:
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "c1",
+                    "kind": "CONSTRAINT",
+                    "description": "safe",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {
+                        "constraint_kind": "HARD",
+                        "verification_mode": "DETERMINISTIC",
+                        "verifier_ref": "checker:safety-v1",
+                        "verification_status": "FAIL",
+                    },
+                },
+            )
+        }
+    )
+    formaliser = ProblemFormaliser()
+    for status in VerificationStatus:
+        constraint = formaliser.formalise(
+            envelope(), proposal, trusted_verifier_results={"c1": status}
+        ).constraints[0]
+        assert constraint.verification_status is status
+    untrusted_mode = proposal.model_copy(
+        update={
+            "items": (
+                proposal.items[0].model_copy(
+                    update={
+                        "attributes": {
+                            **proposal.items[0].attributes,
+                            "verification_mode": "MODEL",
+                        }
+                    }
+                ),
+            )
+        }
+    )
+    with pytest.raises(InvalidProblemSpec, match="named deterministic"):
+        formaliser.formalise(
+            envelope(), untrusted_mode, trusted_verifier_results={"c1": VerificationStatus.PASS}
+        )
+
+
+@pytest.mark.unit
+def test_m03_relations_are_order_independent_and_strict() -> None:
+    relation = {
+        "id": "r1",
+        "kind": "RELATION",
+        "description": "depends",
+        "origin": EpistemicOriginLabel.UNRESOLVED,
+        "attributes": {
+            "source_id": "later",
+            "target_id": "first",
+            "relation_kind": "DEPENDS_ON",
+        },
+    }
+    nodes = (
+        relation,
+        {
+            "id": "first",
+            "kind": "UNKNOWN",
+            "description": "first",
+            "origin": EpistemicOriginLabel.UNRESOLVED,
+        },
+        {
+            "id": "later",
+            "kind": "UNKNOWN",
+            "description": "later",
+            "origin": EpistemicOriginLabel.UNRESOLVED,
+        },
+    )
+    proposal = ProblemFormalisationOutput.model_validate({"items": nodes})
+    assert ProblemFormaliser().formalise(envelope(), proposal).relations[0].source_id == "later"
+    missing = {
+        "id": "r1",
+        "kind": "RELATION",
+        "description": "depends",
+        "origin": EpistemicOriginLabel.UNRESOLVED,
+        "attributes": {
+            "source_id": "later",
+            "target_id": "missing",
+            "relation_kind": "DEPENDS_ON",
+        },
+    }
+    self_relation = {
+        "id": "r1",
+        "kind": "RELATION",
+        "description": "depends",
+        "origin": EpistemicOriginLabel.UNRESOLVED,
+        "attributes": {
+            "source_id": "later",
+            "target_id": "later",
+            "relation_kind": "DEPENDS_ON",
+        },
+    }
+    for bad in (
+        (missing, *nodes[1:]),
+        (self_relation, *nodes[1:]),
+        (*nodes, {**relation, "id": "r2"}),
+    ):
+        with pytest.raises(InvalidProblemSpec):
+            ProblemFormaliser().formalise(
+                envelope(), ProblemFormalisationOutput.model_validate({"items": bad})
+            )
+    unsupported = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "x",
+                    "kind": "MAGIC",
+                    "description": "x",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                },
+            )
+        }
+    )
+    with pytest.raises(InvalidProblemSpec, match="unsupported"):
+        ProblemFormaliser().formalise(envelope(), unsupported)
+
+
+@pytest.mark.unit
+def test_m03_fallback_provenance_objectives_and_unavailable_acceptance_blocker() -> None:
+    task = envelope()
+    fallback = ProblemFormaliser().formalise(task, None)
+    provenance = fallback.constraints[0].provenance
+    assert provenance is not None
+    assert provenance.origin is EpistemicOriginLabel.EXPLICIT_INPUT
+    assert provenance.anchors[0].selector == "/explicit_constraints/0"
+    validate_source_anchor(provenance.anchors[0], task)
+
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "objective",
+                    "kind": "OBJECTIVE",
+                    "description": "minimise cost",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {
+                        "direction": "LEXICOGRAPHIC",
+                        "priority": 1,
+                        "evaluator_ref": "evaluator:cost-v1",
+                    },
+                },
+                {
+                    "id": "criterion",
+                    "kind": "ACCEPTANCE_CRITERION",
+                    "description": "must be reviewed",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {"verification_mode": "UNAVAILABLE", "required": True},
+                },
+            )
+        }
+    )
+    problem = ProblemFormaliser().formalise(task, proposal)
+    assert problem.objectives[0].priority == 1
+    assert problem.objectives[0].evaluator_ref == "evaluator:cost-v1"
+    events = ProblemFormaliser().ledger_events(
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(20, 40)),
+    )
+    blocker = next(item for item in events if isinstance(item, ProblemBlockerRecorded))
+    assert not blocker.blocker.resolvable
+    nodes = (item.node for item in events if isinstance(item, LedgerNodeAdded))
+    criterion_node = next(
+        node
+        for node in nodes
+        if isinstance(node.content, dict) and node.content["id"] == "criterion"
+    )
+    assert blocker.blocker.ledger_ref == criterion_node.ref
+
+    duplicate_priorities = proposal.model_copy(
+        update={"items": (proposal.items[0], proposal.items[0].model_copy(update={"id": "o2"}))}
+    )
+    with pytest.raises(InvalidProblemSpec, match="priorities"):
+        ProblemFormaliser().formalise(task, duplicate_priorities)
+    incomplete_priorities = proposal.model_copy(
+        update={
+            "items": (
+                proposal.items[0],
+                proposal.items[0].model_copy(
+                    update={"id": "o2", "attributes": {"direction": "LEXICOGRAPHIC"}}
+                ),
+            )
+        }
+    )
+    with pytest.raises(InvalidProblemSpec, match="complete ordering"):
+        ProblemFormaliser().formalise(task, incomplete_priorities)
+    invalid_criterion = proposal.model_copy(
+        update={
+            "items": (
+                proposal.items[1].model_copy(
+                    update={"attributes": {"verification_mode": "MAGIC", "required": True}}
+                ),
+            )
+        }
+    )
+    with pytest.raises(InvalidProblemSpec, match="verification mode"):
+        ProblemFormaliser().formalise(task, invalid_criterion)
