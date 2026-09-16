@@ -32,11 +32,13 @@ from fre.runtime.events import (
     BudgetReservationSettled,
     BudgetReserved,
     ContextCompiled,
+    EventPayload,
     LedgerDependentsMarkedStale,
     LedgerEdgeAdded,
     LedgerNodeAdded,
     LedgerNodeRevised,
 )
+from fre.runtime.events import TestValueSet as ValueSet
 from fre.runtime.reducer import RunReducer
 from fre.runtime.wave2 import Wave2Runtime
 
@@ -243,6 +245,71 @@ def test_explicit_staleness_event_marks_exact_dependents(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("marker_source", ["predecessor", "successor"])
+def test_revision_stale_markers_survive_sqlite_and_snapshot_replay(
+    engine: FrontierReasoningEngine, marker_source: str
+) -> None:
+    run = engine.create_run({"marker": marker_source})
+    source = make_node(
+        node_id=UUID(int=811),
+        revision=1,
+        node_type=LedgerNodeType.FACT,
+        content="source",
+        status=EpistemicStatus.SUPPORTED,
+        created_at="2026-01-01T00:00:00Z",
+        action_id=UUID(int=812),
+        module_id="M09",
+    )
+    dependent = make_node(
+        node_id=UUID(int=813),
+        revision=1,
+        node_type=LedgerNodeType.INFERENCE,
+        content="dependent",
+        status=EpistemicStatus.SUPPORTED,
+        created_at="2026-01-01T00:00:01Z",
+        action_id=UUID(int=814),
+        module_id="M09",
+    )
+    successor = make_node(
+        node_id=source.node_id,
+        revision=2,
+        node_type=source.node_type,
+        content="revised",
+        status=EpistemicStatus.SUPPORTED,
+        created_at="2026-01-01T00:00:02Z",
+        action_id=UUID(int=815),
+        module_id="M09",
+        predecessor_revision_hash=source.revision_hash,
+    )
+    payloads = (
+        LedgerNodeAdded(node=source),
+        LedgerNodeAdded(node=dependent),
+        LedgerEdgeAdded(
+            edge=LedgerEdge(
+                edge_id=UUID(int=816),
+                source=source.ref,
+                target=dependent.ref,
+                relation=LedgerRelation.SUPPORTS,
+            )
+        ),
+        LedgerNodeRevised(successor=successor),
+        LedgerDependentsMarkedStale(
+            source_ref=source.ref if marker_source == "predecessor" else successor.ref,
+            affected_refs=(dependent.ref,),
+        ),
+    )
+    events = tuple(engine.make_event(run.run_id, item, module_id="M09") for item in payloads)
+    engine.append(run.run_id, run.version, events)
+    expected = engine.inspect(run.run_id)
+    engine.snapshot(run.run_id)
+    path = engine.store.path
+    engine.store.close()
+    engine.store = SQLiteStore(path)
+    assert engine.replay(run.run_id) == expected
+    assert engine.replay_from_snapshot(run.run_id) == expected
+
+
+@pytest.mark.integration
 def test_terminal_status_without_context_is_rejected_atomically(
     engine: FrontierReasoningEngine,
 ) -> None:
@@ -257,6 +324,66 @@ def test_terminal_status_without_context_is_rejected_atomically(
     with pytest.raises(ValueError, match="terminal context"):
         engine.append(run.run_id, run.version, (terminal,))
     assert engine.inspect(run.run_id).version == run.version
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("mutation", ["budget", "ledger", "state"])
+def test_finalization_rejects_stop_decisions_staled_by_authoritative_changes(
+    engine: FrontierReasoningEngine, mutation: str
+) -> None:
+    run = engine.create_run({"stale-stop": mutation})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    runtime = Wave2Runtime(engine)
+    runtime.record_decision(run.run_id, decision)
+    if mutation == "budget":
+        payload: EventPayload = BudgetConsumed(usage=ResourceVector(iterations=1))
+    elif mutation == "ledger":
+        payload = LedgerNodeAdded(
+            node=make_node(
+                node_id=UUID(int=850),
+                revision=1,
+                node_type=LedgerNodeType.FACT,
+                content="late fact",
+                status=EpistemicStatus.SUPPORTED,
+                created_at="2026-01-01T00:00:00Z",
+                action_id=UUID(int=851),
+                module_id="M09",
+            )
+        )
+    else:
+        payload = ValueSet(key="late", value=True)
+    current = engine.inspect(run.run_id)
+    engine.append(
+        run.run_id,
+        current.version,
+        (engine.make_event(run.run_id, payload, module_id="late-change"),),
+    )
+    with pytest.raises(ValueError, match="stale"):
+        runtime.finalize(run.run_id, decision)
 
 
 @pytest.mark.integration
@@ -299,7 +426,16 @@ def test_snapshot_assisted_path_replays_only_post_snapshot_events(
 
 
 @pytest.mark.integration
-def test_historic_wave1_fixture_replays_and_snapshot_verifies(tmp_path: object) -> None:
+@pytest.mark.parametrize(
+    ("fixture_name", "expected_hash"),
+    (
+        ("wave1_history.json", "11c0e48f4e2ac232a4f6160d63c69933e1dbd5f9aa79a7bbdda292a17fd3ecc3"),
+        ("wave2_history.json", "ca12efe637299d1ef1f425146cad2cee028b5a50412d47c091b2b1cb90335ac8"),
+    ),
+)
+def test_historic_fixture_replays_and_snapshot_verifies(
+    tmp_path: object, fixture_name: str, expected_hash: str
+) -> None:
     import json
     from pathlib import Path
 
@@ -307,7 +443,8 @@ def test_historic_wave1_fixture_replays_and_snapshot_verifies(tmp_path: object) 
     from fre.runtime.events import StoredEvent
     from fre.runtime.reducer import RunReducer, RunState
 
-    fixture = json.loads(Path("tests/fixtures/wave1_history.json").read_text(encoding="utf-8"))
+    fixture = json.loads(Path("tests/fixtures", fixture_name).read_text(encoding="utf-8"))
+    assert fixture["state_hash"] == expected_hash
     events = tuple(StoredEvent.model_validate(item, strict=False) for item in fixture["events"])
     run_id = events[0].run_id
     state = RunReducer().reduce(run_id, events)
@@ -359,6 +496,7 @@ def test_historic_wave1_fixture_replays_and_snapshot_verifies(tmp_path: object) 
         ),
     )
     assert store.verify_snapshot(run_id, RunReducer()).state_hash == fixture["state_hash"]
+    assert store.load_snapshot(run_id, RunReducer()).state_hash == fixture["state_hash"]
     assert store.replay_from_snapshot(run_id, RunReducer()).state_hash == fixture["state_hash"]
 
 

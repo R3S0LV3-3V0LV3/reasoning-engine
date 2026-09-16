@@ -25,6 +25,7 @@ from fre.domain.ledger import (
     ContradictionState,
     DanglingLedgerReference,
     EpistemicStatus,
+    InvalidContradictionResolution,
     InvalidLedgerRelation,
     LedgerCycleError,
     LedgerEdge,
@@ -188,6 +189,47 @@ def test_relation_specific_cycles_and_contradiction_resolution() -> None:
     with pytest.raises(DanglingLedgerReference):
         service.resolve_contradiction(base, resolution, dangling)
     assert service.validate_graph(base).valid
+
+
+def test_contradiction_resolution_validates_affected_reference_set_atomically() -> None:
+    service = EpistemicLedger()
+    resolver, left, right = node(10), node(11), node(12)
+    base = LedgerProjection()
+    for item in (resolver, left, right):
+        base = service.append_node(base, item)
+    conflict = edge(30, left, right, LedgerRelation.CONTRADICTS)
+    base = service.append_edge(base, conflict)
+    resolution_edge = edge(31, resolver, left, LedgerRelation.RESOLVES)
+
+    def make_resolution(
+        affected: tuple[LedgerNodeRef, ...], transitions: tuple[LedgerNodeRef, ...]
+    ) -> ContradictionResolution:
+        return ContradictionResolution(
+            contradiction_edge_ids=(conflict.edge_id,),
+            resolver_ref=resolver.ref,
+            affected_refs=affected,
+            status_transitions=tuple((ref, EpistemicStatus.SUPPORTED) for ref in transitions),
+            outcome="resolved",
+            action_id=uid(90),
+            module_id="M09",
+        )
+
+    result = service.resolve_contradiction(
+        base,
+        make_resolution((left.ref, right.ref), (left.ref, right.ref)),
+        resolution_edge,
+    )
+    assert service.effective_status(result, left.ref) is EpistemicStatus.SUPPORTED
+    assert service.effective_status(result, right.ref) is EpistemicStatus.SUPPORTED
+    unknown = LedgerNodeRef(node_id=uid(999), revision=1)
+    for invalid in (
+        make_resolution((left.ref, left.ref), (left.ref,)),
+        make_resolution((left.ref,), (right.ref,)),
+        make_resolution((unknown,), (unknown,)),
+    ):
+        with pytest.raises((InvalidContradictionResolution, DanglingLedgerReference)):
+            service.resolve_contradiction(base, invalid, resolution_edge)
+    assert all(item.relation is not LedgerRelation.RESOLVES for item in base.edges)
 
 
 @pytest.mark.parametrize(

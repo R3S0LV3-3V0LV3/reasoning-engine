@@ -123,6 +123,7 @@ class RepresentationSelector:
         limit = budget.search.max_representation_views
         if limit < 1:
             return RepresentationPlan(
+                problem_spec_hash=canonical_hash(problem),
                 views=(),
                 selection_basis=(policy.version,),
                 omitted_reasons=("view budget is zero",),
@@ -165,6 +166,7 @@ class RepresentationSelector:
         ):
             omitted = (f"{compatible[1][0].kind}: omitted by one-view budget",)
         return RepresentationPlan(
+            problem_spec_hash=canonical_hash(problem),
             views=views,
             selection_basis=(
                 policy.version,

@@ -51,6 +51,7 @@ class RepresentationView(FrozenModel):
 
 
 class RepresentationPlan(FrozenModel):
+    problem_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     views: tuple[RepresentationView, ...]
     selection_basis: tuple[str, ...] = ()
     omitted_reasons: tuple[str, ...] = ()
