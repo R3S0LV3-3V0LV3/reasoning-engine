@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from fre.domain.common import ObjectRef, OutputContract, PermissionSet
+from fre.domain.common import ArtifactRef, ObjectRef, OutputContract, PermissionSet
 from fre.domain.semantic import SourceAnchor, SourceKind
 from fre.domain.task import (
     HorizonClass,
@@ -144,6 +144,34 @@ def test_m01_retains_valid_anchors_orders_evidence_and_preserves_explicit_values
 def test_m01_rejects_any_invalid_model_claimed_anchor() -> None:
     with pytest.raises(InvalidSourceAnchor):
         TaskClassifier().classify(task(), proposal(anchor("/explicit_constraints/99")))
+
+
+@pytest.mark.unit
+def test_m01_accepts_model_anchor_for_envelope_attachment() -> None:
+    attachment = ArtifactRef(artifact_id=UUID(int=7), sha256="a" * 64)
+    envelope = task(attachments=(attachment,))
+    claimed = SourceAnchor(
+        source_kind=SourceKind.ARTIFACT,
+        source_ref=attachment,
+        selector="",
+    )
+
+    signature, record = TaskClassifier().classify(envelope, proposal(claimed))
+
+    assert record.dimensions["ambiguity"].source_anchors == (claimed,)
+    assert any(attachment.sha256 in ref for ref in signature.evidence_refs)
+
+
+@pytest.mark.unit
+def test_m01_rejects_model_anchor_for_unattached_artifact() -> None:
+    claimed = SourceAnchor(
+        source_kind=SourceKind.ARTIFACT,
+        source_ref=ArtifactRef(artifact_id=UUID(int=7), sha256="a" * 64),
+        selector="",
+    )
+
+    with pytest.raises(InvalidSourceAnchor):
+        TaskClassifier().classify(task(), proposal(claimed))
 
 
 @pytest.mark.unit
