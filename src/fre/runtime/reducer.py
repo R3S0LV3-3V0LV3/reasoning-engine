@@ -8,7 +8,7 @@ from pydantic import Field
 from fre.domain.budget import BudgetProjection
 from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.context import ContextCompilationRecord, ContextPacket
-from fre.domain.ledger import LedgerProjection
+from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.stop import StopDecision
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
@@ -123,13 +123,13 @@ class RunReducer:
                 state.ledger, payload.node_ref, payload.status
             )
         elif isinstance(payload, LedgerDependentsMarkedStale):
+            ledger = EpistemicLedger()
+            # Descendant traversal alone treats an unknown source as a leaf, so
+            # resolve it explicitly before accepting an empty affected set.
+            ledger.effective_status(state.ledger, payload.source_ref)
             expected = tuple(
                 sorted(
-                    (
-                        envelope.affected_node_ref
-                        for envelope in state.ledger.stale_envelopes
-                        if payload.source_ref in envelope.changed_dependency_refs
-                    ),
+                    ledger.descendants(state.ledger, payload.source_ref),
                     key=lambda ref: (str(ref.node_id), ref.revision),
                 )
             )
@@ -141,6 +141,12 @@ class RunReducer:
             )
             if supplied != expected:
                 raise ValueError("stale-dependent marker does not match ledger projection")
+            updated_ledger = state.ledger
+            for affected_ref in supplied:
+                updated_ledger = ledger.mark_status(
+                    updated_ledger, affected_ref, EpistemicStatus.STALE
+                )
+            changes["ledger"] = updated_ledger
         elif isinstance(payload, LedgerContradictionResolved):
             changes["ledger"] = EpistemicLedger().resolve_contradiction(
                 state.ledger, payload.resolution, payload.resolution_edge

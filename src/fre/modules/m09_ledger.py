@@ -384,9 +384,13 @@ class EpistemicLedger:
             raise InvalidContradictionResolution(
                 "resolver relation does not match resolution record"
             )
+        nodes = self._node_map(projection)
+        if _ref_key(edge.source) not in nodes or _ref_key(edge.target) not in nodes:
+            raise DanglingLedgerReference("resolution edge references an unknown ledger revision")
         result = projection.model_copy(
             update={"edges": tuple(sorted((*projection.edges, edge), key=_edge_key))}
         )
+        self.validate_graph(result, raise_on_error=True)
         for ref, status in resolution.status_transitions:
             result = self.mark_status(result, ref, status)
         return result.model_copy(
