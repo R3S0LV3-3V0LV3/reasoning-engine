@@ -142,4 +142,11 @@ recorded after the numbered rows.
 | 9 | Raw transport and canonical validated proposals are distinct registered artifacts; reuse reads only the proposal | Empty/fenced/enveloped raw responses and idempotent reuse | Proven |
 | 10 | Reservation commits before invocation; completion coherently registers, accounts, and records without clamping over-reported usage | Concurrent acquisition, accounting overflow, cancellation recovery, replay, and snapshot cases | Proven |
 | 11 | Repair-budget refusal preserves the initial failed record and does not claim a repair | One-call repair-refusal case | Proven |
+| 15 | Untrusted constraint statuses cannot establish PASS or FAIL; only named deterministic verifier results can do so, while HARD and ERROR semantics remain distinct | Full verification-mode/status matrix and trusted-result cases | Proven |
+| 16 | Relation endpoints, self-relations, and duplicates are validated after canonical item collection, independently of proposal order | Forward-reference, missing endpoint, self-relation, and duplicate cases | Proven |
+| 17 | Material contradictions atomically persist contested nodes, a CONTRADICTS edge, a diagnostic, and a concrete-ledger-backed blocker | M03/M09/M13 batch, rollback, replay, and snapshot cases | Proven |
+| 18 | Problem item kinds are closed and unsupported kinds are rejected | Unsupported-kind semantic validation case | Proven |
+| 19 | Fallback constraints retain validated EXPLICIT_INPUT provenance anchored to their exact explicit-constraint index | Fallback anchor resolution case | Proven |
+| 20 | Acceptance verification modes are validated and required unavailable criteria produce concrete-ledger-backed blockers | Invalid-mode and unavailable-required blocker cases | Proven |
+| 21 | Source-supported objective priority and evaluator identity are preserved without invention; lexicographic ordering rejects duplicate or incomplete priorities | Objective preservation and ordering cases | Proven |
 | 30 | Prompt/schema and repair-parent ownership are rejected before reservation | Cross-module pre-spend rejection | Proven |
