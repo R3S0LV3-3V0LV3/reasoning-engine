@@ -1,0 +1,3399 @@
+Implement **Wave 3 only** of the Frontier Reasoning Engine.
+
+Waves 0–2 have already been implemented, remediated, accepted, and frozen as the deterministic substrate. Wave 3 must add the semantic front end without weakening, bypassing, or silently reinterpreting any accepted invariant.
+
+The controlling Wave 3 specification is:
+
+```text
+FRE_WAVE_3_BUILD_AUTHORITATIVE_PLAN_ENHANCED.txt
+```
+
+This handoff is the execution companion to that plan. Where this handoff is less detailed, the build-authoritative plan remains controlling.
+
+The Wave 3 objective is:
+
+```text
+Prompt / output-schema registry
+        ↓
+Provider-neutral StructuredModelPort integration
+        ↓
+SemanticModelRuntime
+        ↓
+M01 — Task Classifier
+        ↓
+existing frozen M02 — Budget Allocator
+        ↓
+M03 — Problem Formaliser
+        ↓
+M04 — Representation Selector
+        ↓
+deterministic RepresentationArtifact projections
+        ↓
+replayable Wave 3 canonical state
+```
+
+Do not begin Wave 4.
+
+Do not implement candidate generation, constraint propagation, Pareto analysis, decision selection, synthesis, falsification, information acquisition, retrieval, a full scheduler/orchestrator, product CLI, MCP, HTTP, deployment, or provider-specific integration.
+
+# 1. Establish and verify the authoritative baseline
+
+Before modifying code, inspect the complete repository.
+
+Verify:
+
+- repository identity;
+- current branch;
+- current HEAD;
+- remotes;
+- working-tree cleanliness;
+- accepted Waves 0–2 implementation presence;
+- Python and uv versions;
+- `pyproject.toml`;
+- `uv.lock`;
+- package layout;
+- event registry;
+- `RunReducer`;
+- SQLite event/snapshot persistence;
+- artifact store;
+- M09;
+- M02;
+- Budget Meter;
+- M12;
+- M13;
+- deterministic fake adapters;
+- unit/property/integration tests;
+- foundation-freeze fixtures;
+- dependency-boundary tests;
+- ADRs;
+- configuration;
+- prompt/resource package layout if already present.
+
+The verified planning baseline was:
+
+```text
+repository:
+R3S0LV3-3V0LV3/reasoning-engine
+
+planning foundation branch:
+codex/process-wave-2-instructions-documents
+
+planning foundation commit:
+7e57cc202e436ab6807c02d65a6daade43db84f9
+
+remote:
+https://github.com/R3S0LV3-3V0LV3/reasoning-engine.git
+```
+
+The exact SHA is not authoritative if the accepted foundation has since been merged, rebased, or persisted under another functionally equivalent commit.
+
+The functional accepted Waves 0–2 implementation is authoritative.
+
+The planning-time baseline gate was:
+
+```text
+uv sync --all-groups --frozen         PASS
+Ruff format                           PASS
+Ruff lint                             PASS
+strict mypy                           PASS
+unit                                  40 passed
+property                               6 passed
+integration                           20 passed
+complete suite                        66 passed
+make quality                          PASS
+compileall                            PASS
+git diff --check                      PASS
+```
+
+Do not assume these counts remain current.
+
+Re-establish the actual baseline.
+
+If the accepted Waves 0–2 foundation is materially absent, stop:
+
+```text
+BASELINE_NOT_PERSISTED
+```
+
+If materially conflicting user work exists, if a frozen semantic must be weakened, if a provider-specific core dependency becomes necessary, if historic semantics must change incompatibly, or if Wave 4 behavior is required, stop:
+
+```text
+PLAN_DRIFT_DETECTED
+```
+
+Do not reset, delete, overwrite, or silently absorb user-owned changes.
+
+# 2. Read the complete governing corpus before implementation
+
+Read the controlling files fully to EOF.
+
+At minimum:
+
+```text
+FRE_WAVE_3_BUILD_AUTHORITATIVE_PLAN_ENHANCED.txt
+
+Frontier Reasoning Engine Build Plan.txt
+FRE_ARCHITECTURE_V1.md
+FRE_MODULE_MANIFEST.yaml
+CODEX_BUILD_HANDOFF.md
+
+FRE_WAVE_2_BUILD_AUTHORITATIVE_PLAN_ENHANCED.txt
+CODEX_BUILD_HANDOFF_WAVE_2_ENHANCED.txt
+
+README.md
+docs/waves1-2-foundation-freeze-matrix.md
+docs/adr/
+```
+
+Also inspect all current implementation code relevant to:
+
+```text
+domain contracts
+ports
+runtime
+events
+reducer
+SQLite storage
+artifacts
+M09
+M02
+Budget Meter
+M12
+M13
+fake structured-model adapter
+configuration
+tests
+fixtures
+```
+
+Do not implement Wave 3 from remembered context, summaries, headings, or this handoff alone.
+
+# 3. Authority order
+
+Apply:
+
+```text
+1. FRE_WAVE_3_BUILD_AUTHORITATIVE_PLAN_ENHANCED.txt / approved Wave 3 execution contract
+2. accepted frozen Waves 0–2 executable contracts and invariant tests
+3. Frontier Reasoning Engine Build Plan.txt
+4. FRE_ARCHITECTURE_V1.md
+5. FRE_MODULE_MANIFEST.yaml
+6. CODEX_BUILD_HANDOFF.md
+7. established implementation conventions
+```
+
+Wave 3 may extend the frozen substrate.
+
+It may not silently reinterpret it.
+
+A change to an accepted Waves 0–2 semantic must be:
+
+- explicit;
+- versioned;
+- backward-compatible where required;
+- covered by historic replay/snapshot tests;
+- architecturally justified.
+
+If that cannot be achieved inside Wave 3, stop `PLAN_DRIFT_DETECTED`.
+
+# 4. Re-run the frozen baseline gate
+
+Before implementation run:
+
+```bash
+uv sync --all-groups --frozen
+
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy --strict src tests
+
+uv run pytest tests/unit
+uv run pytest tests/property
+uv run pytest tests/integration
+uv run pytest
+
+make quality
+
+uv run python -m compileall -q src tests
+git diff --check
+```
+
+Record exact:
+
+```text
+passed
+failed
+skipped
+deselected
+warnings
+```
+
+for every suite.
+
+Do not begin Wave 3 while a pre-existing frozen-substrate invariant is failing.
+
+# 5. Create the complete Wave 3 requirements matrix
+
+Before implementing Wave 3 module behavior create:
+
+```text
+docs/wave3-requirements-matrix.md
+```
+
+Track at minimum:
+
+```text
+ID
+SOURCE
+SECTION
+REQUIREMENT
+IMPLEMENTATION OWNER
+PUBLIC CONTRACT
+EVENT(S)
+PROMPT ID / VERSION
+OUTPUT SCHEMA ID / VERSION
+DECISIVE TEST
+INITIAL STATUS
+FINAL STATUS
+```
+
+The matrix must cover:
+
+- prompt registry;
+- output-schema registry;
+- deterministic prompt rendering;
+- prompt version/hash integrity;
+- schema version/hash integrity;
+- StructuredModelPort result semantics;
+- fake-model registry;
+- SemanticModelRuntime;
+- semantic-call idempotency;
+- raw response artifacts;
+- model-call provenance;
+- model-call budget reservation/settlement;
+- unknown usage semantics;
+- repair budgeting;
+- exactly one repair;
+- deterministic fallback routing;
+- SourceAnchor;
+- epistemic origin labels;
+- M01;
+- M01→M02 integration;
+- M03;
+- M03→M09 integration;
+- M03→M13 blocker compatibility;
+- M04;
+- deterministic representation builders;
+- Wave 3 events;
+- event atomicity;
+- reducer evolution;
+- historic hash compatibility;
+- snapshot compatibility;
+- replay;
+- differential replay;
+- M12 Wave 3 integration;
+- Wave 3 metrics;
+- dependency boundaries;
+- golden scenarios;
+- frozen Waves 0–2 regression obligations;
+- every minimum acceptance item in the authoritative Wave 3 plan;
+- all Wave 4+ prohibitions.
+
+No required row may remain unresolved at completion.
+
+# 6. Wave 3 architectural principles
+
+Wave 3 introduces model-assisted semantics but does not make model output authoritative.
+
+The canonical path is:
+
+```text
+nondeterministic semantic proposal
+        ↓
+strict structured schema
+        ↓
+deterministic semantic validation
+        ↓
+invariant validation
+        ↓
+typed event validation
+        ↓
+atomic event commit
+        ↓
+pure deterministic reduction
+```
+
+A model response is never canonical state merely because it parses.
+
+Keep distinct:
+
+```text
+raw model response
+parsed structured proposal
+accepted canonical domain state
+```
+
+Replay must never re-call the model.
+
+# 7. Prompt registry
+
+Implement one deterministic central prompt registry.
+
+Do not scatter production prompts as anonymous module-local strings.
+
+Each prompt definition must bind:
+
+```text
+prompt_id
+prompt_version
+module_id
+operation
+provider-neutral model_role
+input_contract_version
+output_schema_id
+output_schema_version
+optional safety/profile identifier
+template
+template_hash
+```
+
+Initial prompt identities:
+
+```text
+m01.classify@1.0
+m01.classify.repair@1.0
+
+m03.formalise@1.0
+m03.formalise.repair@1.0
+
+m04.adjudicate@1.0
+m04.adjudicate.repair@1.0
+```
+
+Only create a repair prompt for an operation whose policy actually permits repair.
+
+`template_hash` must use canonical hashing over a preimage that excludes the hash itself and includes every material behavior-affecting prompt field.
+
+Registry key:
+
+```text
+(prompt_id, prompt_version)
+```
+
+Identical re-registration may be idempotent.
+
+A materially different prompt under the same identity must fail with a typed integrity/version error.
+
+Prompt rendering must be deterministic.
+
+Do not include:
+
+- wall-clock time;
+- random values;
+- filesystem enumeration order;
+- incidental map order;
+- unrelated run history;
+- arbitrary accumulated conversation;
+- previous model prose that is not canonically referenced.
+
+Use the smallest relevant canonical context.
+
+Persist prompt ID/version/template hash in every semantic call record.
+
+# 8. Output-schema registry
+
+Implement one deterministic output-schema registry.
+
+Registry key:
+
+```text
+(schema_id, schema_version)
+```
+
+Each registered schema must identify:
+
+```text
+schema_id
+schema_version
+Pydantic model
+deterministic schema hash
+module/operation compatibility
+```
+
+Initial schemas:
+
+```text
+m01.classification-output@1.0
+m03.problem-formalisation-output@1.0
+m04.representation-adjudication-output@1.0
+```
+
+Same key + identical canonical schema may be idempotent.
+
+Same key + materially different schema must fail.
+
+A structurally invalid model response must not produce an M01/M03/M04 proposal.
+
+The raw invalid response may remain a persisted artifact.
+
+# 9. Provider-neutral StructuredModelPort
+
+Extend the accepted provider-neutral `StructuredModelPort`.
+
+Do not create a second competing model interface unless the accepted architecture requires it.
+
+A semantic request should include concepts equivalent to:
+
+```text
+role
+canonical messages
+output schema identity/type
+limits
+idempotency key
+```
+
+Support typed result states equivalent to:
+
+```text
+SUCCESS
+INVALID_STRUCTURED_OUTPUT
+UNAVAILABLE
+TRANSIENT_FAILURE
+PERMANENT_FAILURE
+```
+
+Preserve:
+
+```text
+adapter identifier
+model identifier
+raw response
+optional decoded payload
+optional input-token usage
+optional output-token usage
+optional measured duration
+diagnostics
+status
+```
+
+Adapter/model IDs are opaque provenance strings.
+
+Domain and modules may not branch on provider product names.
+
+Failure semantics:
+
+```text
+transport failure ≠ evidence
+UNAVAILABLE ≠ evidence
+schema failure ≠ evidence
+permanent failure ≠ evidence
+```
+
+If usage is unavailable:
+
+```text
+actual usage = unknown
+```
+
+Do not fabricate token counts.
+
+# 10. Deterministic fake structured-model registry
+
+Extend/reuse the accepted fake structured-model adapter.
+
+The fake registry must support deterministic fixtures for:
+
+```text
+valid structured result
+malformed structured result
+malformed → repaired valid
+malformed → repaired malformed
+UNAVAILABLE
+TRANSIENT_FAILURE where tested
+PERMANENT_FAILURE where tested
+low-confidence valid M01 result
+contradictory M03 output
+semantically invalid but schema-valid output
+M04 attempted unregistered representation
+M04 attempted incompatible representation
+```
+
+Expose deterministic call identities/counts.
+
+Replay tests must prove the call count does not increase during replay.
+
+# 11. SemanticModelRuntime
+
+Implement a narrow semantic-call runtime.
+
+This is not the Wave 7 orchestrator.
+
+For each semantic call:
+
+1. resolve prompt definition;
+2. verify prompt integrity;
+3. resolve output schema;
+4. verify schema integrity;
+5. deterministically render minimal canonical input;
+6. compute canonical semantic input hash;
+7. derive idempotency key;
+8. check persisted result for exact identity;
+9. return the persisted result if reusable;
+10. otherwise reserve model-call/token budget;
+11. invoke provider-neutral StructuredModelPort exactly once;
+12. persist raw response as content-addressed artifact;
+13. settle/release budget;
+14. classify/validate the structured result;
+15. persist model-call provenance;
+16. return the parsed proposal or typed failure for module semantic validation.
+
+The semantic-call identity must include enough information to prevent incorrect reuse across prompt/schema/policy changes.
+
+Conceptually:
+
+```text
+run_id
++ module_id
++ operation
++ canonical_input_hash
++ module_version
++ policy_hash
++ prompt_id
++ prompt_version
++ template_hash
++ output_schema_id
++ output_schema_version
+```
+
+Repeated execution with identical identity should reuse the persisted call result unless an explicitly versioned refresh policy says otherwise.
+
+Replay never invokes this runtime.
+
+# 12. Model-call persistence
+
+Use explicit events such as:
+
+```text
+ModelCallRecorded
+ModelCallFailed
+```
+
+or accepted equivalent types.
+
+A model-call record must preserve enough provenance to reconstruct:
+
+```text
+prompt ID/version/hash
+output schema ID/version/hash
+canonical input hash
+module version
+policy hash
+model role
+adapter/model opaque identifiers
+raw response artifact ref
+parsed proposal when structurally valid
+status
+reported usage if available
+policy charge
+idempotency key
+repair-parent ID where applicable
+```
+
+Model-call events are provenance/operational records.
+
+They do not themselves assert epistemic truth.
+
+A valid model-call record may remain in history even if the semantic proposal is subsequently rejected.
+
+# 13. Budget integration for semantic calls
+
+No initial or repair model call may bypass the frozen Budget Meter.
+
+Before a call reserve:
+
+```text
+1 LLM call
+maximum permitted input token capacity
+maximum permitted output token capacity
+other required resource-vector values
+```
+
+After the call:
+
+- settle known actual use;
+- release unused reservation;
+- preserve reported usage separately from policy charge.
+
+If the adapter does not report token usage:
+
+- actual usage stays unknown;
+- policy charge may conservatively use the reserved amount;
+- do not claim reserved tokens were observed actual usage.
+
+A repair call is a second real call.
+
+It consumes a second LLM-call budget unit.
+
+If there is insufficient budget for the initial call:
+
+- do not call;
+- use deterministic fallback or blocker.
+
+If there is insufficient budget for repair:
+
+- do not overspend;
+- use fallback or blocker.
+
+# 14. Structured-output validation, repair, and fallback
+
+Every model-assisted operation follows:
+
+```text
+transport result
+→ strict Pydantic output-schema validation
+→ module semantic validation
+→ invariant/event validation
+→ canonical event batch
+```
+
+If schema-invalid:
+
+1. persist the invalid raw output;
+2. allow at most one repair when operation policy permits and budget remains;
+3. supply the original canonical request, invalid artifact ref, and concise validation errors;
+4. meter repair as a separate model call;
+5. validate the repaired payload from the beginning.
+
+Maximum repair attempts:
+
+```text
+1
+```
+
+No third call.
+
+A schema-valid but semantically invalid response must still be rejected.
+
+Repair of semantic-invalid output is allowed only if explicitly enabled by versioned operation policy.
+
+Repair and fallback are different:
+
+```text
+repair
+= another model call
+
+fallback
+= deterministic code
+```
+
+Do not manually patch malformed model output and then claim it was valid model output.
+
+Persist the path taken.
+
+# 15. Deterministic fallback requirements
+
+M01 fallback:
+
+```text
+conservative complete TaskSignature when safely possible
+or
+typed ClassificationBlocked
+```
+
+M03 fallback:
+
+```text
+explicit/mechanically derivable ProblemSpec only
++
+UNRESOLVED / blocker for unsupported semantics
+```
+
+M04 fallback:
+
+```text
+deterministic compatibility selection
++
+TEXT_TABLE_FALLBACK when specialized builder unavailable
+```
+
+Fallback must never:
+
+- invent confidence;
+- invent source anchors;
+- reuse malformed payload as accepted semantics;
+- fabricate a complete semantic structure;
+- turn model failure into negative evidence.
+
+# 16. SourceAnchor
+
+Implement/reuse a shared strict source-anchor contract.
+
+Support concepts equivalent to:
+
+```text
+source object/artifact ref
+source kind
+structured field / JSON-pointer selector
+optional character start/end
+optional stable excerpt hash
+```
+
+For original task text use:
+
+```text
+TaskEnvelope ref
++ task-text selector
++ character range
+```
+
+For structured TaskEnvelope fields use deterministic field selectors.
+
+For attachment-derived explicit claims require an artifact ref and a valid extracted-text span where available.
+
+Do not infer attachment semantics merely from attachment existence.
+
+Anchor validation must prove:
+
+- source ref resolves;
+- selector resolves;
+- spans are valid;
+- excerpt hash matches when present;
+- source is within the module's permitted canonical input.
+
+# 17. Epistemic origin labels
+
+Use:
+
+```text
+EXPLICIT_INPUT
+SUPPORTED_INFERENCE
+WORKING_ASSUMPTION
+UNRESOLVED
+CONTRADICTED
+```
+
+These describe the origin/status of extracted problem content.
+
+They are distinct from M09 epistemic status.
+
+`EXPLICIT_INPUT` requires a valid source anchor supporting that interpretation.
+
+No anchor:
+
+```text
+cannot be EXPLICIT_INPUT
+```
+
+`SUPPORTED_INFERENCE` must retain support refs/basis/confidence where available.
+
+`WORKING_ASSUMPTION` must retain reason, policy basis, refs/context, and confidence where available.
+
+`UNRESOLVED` must remain unresolved rather than being assigned an invented value.
+
+`CONTRADICTED` must preserve the conflict and use M09 contradiction semantics where appropriate.
+
+# 18. M01 — Task Classifier
+
+Implement M01 as the semantic classifier that produces the `TaskSignature` consumed by the frozen M02.
+
+M01 classifies.
+
+M01 does not solve.
+
+M01 does not allocate the tier.
+
+Execution:
+
+```text
+deterministic metadata extraction
+→ constrained structured-model proposal
+→ deterministic semantic validation
+→ conservative policy adjustment/fallback
+```
+
+Inputs:
+
+```text
+TaskEnvelope
+ClassificationPolicy
+attachment metadata
+execution permissions
+deterministic task metadata
+```
+
+Outputs:
+
+```text
+TaskSignature
+classification record/provenance
+dimension confidence
+raw/effective values where needed
+diagnostics
+fallback status
+model-call ref where used
+M09 ledger events/refs for material semantic judgments
+```
+
+# 19. M01 policy and harder-is-higher axes
+
+Use versioned policy:
+
+```text
+wave3-m01/1.0
+```
+
+Default confidence threshold:
+
+```text
+0.70
+```
+
+All M02-relevant difficulty dimensions must point harder-is-higher:
+
+```text
+consequence
+irreversibility
+ambiguity
+evidence scarcity
+search-space difficulty
+```
+
+M01 must not preserve a reversibility axis in the M02 allocation vector that points in the opposite direction.
+
+Where source/model output expresses reversibility:
+
+```text
+irreversibility =
+maximum_reversibility_score
+- reversibility
+```
+
+or the equivalent deterministic ordinal transform.
+
+Approved ordinal transform:
+
+```text
+reversibility LOW      → irreversibility CRITICAL
+reversibility MEDIUM   → irreversibility HIGH
+reversibility HIGH     → irreversibility MEDIUM
+reversibility CRITICAL → irreversibility LOW
+```
+
+Property-test it.
+
+# 20. M01 deterministic extraction precedence
+
+Before a semantic model call extract mechanically where possible:
+
+```text
+requested output form
+attachment count/types
+execution permissions
+explicit constraints
+recognized explicit classification metadata
+deterministic policy risk signals
+```
+
+Deterministic explicit values outrank conflicting model proposals.
+
+A model cannot rewrite:
+
+- explicit permissions;
+- known attachment existence/types;
+- requested output form;
+- explicit constraints;
+- explicit valid user-supplied consequence/irreversibility classification;
+- deterministic policy floors.
+
+# 21. M01 risk floors
+
+A weighted score must not be the sole tier authority.
+
+The effective policy is:
+
+```text
+semantic classification
+        ↓
+deterministic mandatory risk floors
+        ↓
+rule-based escalation
+        ↓
+optional weighted score for remaining borderline cases
+        ↓
+frozen M02 allocation
+```
+
+A model response cannot lower a deterministic floor.
+
+Approved Wave 3 default permission floors:
+
+```text
+external-write permission/capability:
+    consequence >= HIGH
+    irreversibility >= HIGH
+
+network permission without external writes:
+    irreversibility >= MEDIUM
+```
+
+These are versioned policy defaults, not universal truth.
+
+Frozen M02 still applies its own authoritative allocation floors.
+
+# 22. M01 model proposal
+
+For each material semantic classification dimension request:
+
+```text
+estimated value
+confidence
+conservative upper value
+supporting source anchor/ref
+concise rationale
+```
+
+Do not persist hidden chain-of-thought.
+
+Validate that the conservative upper value is not easier than the estimate under the relevant ordering.
+
+# 23. M01 low-confidence rule
+
+When confidence is below the configured threshold:
+
+```text
+effective value =
+max(
+    estimated value,
+    validated conservative upper value,
+    configured low-confidence floor
+)
+```
+
+using the policy's difficulty ordering.
+
+Approved defaults:
+
+```text
+confidence threshold:
+0.70
+
+low-confidence ordinal difficulty floor:
+HIGH
+
+low-confidence search-space floor:
+OPEN
+```
+
+Do not hard-code an implicit universal "+1" escalation.
+
+Lower confidence must never result in a lower effective difficulty classification.
+
+# 24. M01 fallback
+
+If semantic classification is unavailable or remains invalid after the one permitted repair:
+
+preserve deterministic explicit state.
+
+Approved unresolved fallbacks:
+
+```text
+unresolved ordinal difficulty:
+CRITICAL
+
+unresolved search space:
+OPEN
+
+unresolved horizon:
+LONG
+
+fallback confidence:
+None
+```
+
+A policy-default task family may be used only when required by the contract and when doing so cannot reduce M02 safety.
+
+Fallback-derived values must be labeled as policy fallback.
+
+Do not attribute them to source or model evidence.
+
+If a safe complete TaskSignature cannot be constructed:
+
+```text
+ClassificationBlocked
+```
+
+# 25. M01 events and provenance
+
+Use explicit events such as:
+
+```text
+TaskClassified
+ClassificationDiagnosticRecorded
+```
+
+Use existing M09 events for material epistemic classification claims.
+
+Do not create a second provenance graph.
+
+Where classification and required M09 provenance are logically inseparable, commit them atomically.
+
+# 26. M01→M02 integration
+
+The frozen M02 remains allocation authority.
+
+M01 produces TaskSignature.
+
+M02 consumes it.
+
+Binding property:
+
+> If one or more M02-relevant difficulty dimensions become harder and none become easier, allocated minimum tier cannot decrease.
+
+Prove:
+
+- reversibility→irreversibility normalization;
+- harder-is-higher across every relevant dimension;
+- low confidence cannot lower tier;
+- risk floors cannot be lowered by model output;
+- explicit classifications cannot be lowered;
+- fallback classification cannot under-allocate;
+- weighted scoring cannot override mandatory floors.
+
+# 27. M03 — Problem Formaliser
+
+Implement M03 as the semantic formaliser.
+
+Its central responsibility is:
+
+> compile the task into an explicit decision problem without converting inference into fact.
+
+Execution:
+
+```text
+structured-model semantic extraction
+→ SourceAnchor validation
+→ epistemic-label validation
+→ contradiction validation
+→ ProblemSpec semantic validation
+→ atomic canonical events
+```
+
+Inputs:
+
+```text
+TaskEnvelope
+TaskSignature
+BudgetPlan
+LedgerProjection
+relevant source artifacts
+ProblemFormalisationPolicy
+```
+
+Outputs:
+
+```text
+ProblemSpec
+item-level provenance
+ContradictionDiagnostic(s)
+ProblemBlocker(s)
+formalisation diagnostics
+M09 ledger node/edge events
+```
+
+# 28. M03 ProblemSpec contents
+
+Preserve/extend accepted contracts for:
+
+```text
+objectives
+hard constraints
+soft preferences
+decision variables
+fixed parameters
+unknowns
+observables
+assumptions
+candidate scope where already represented
+acceptance criteria
+output contract/requirements
+consequence/irreversibility metadata
+typed problem relations
+```
+
+Do not duplicate semantically equivalent existing fields.
+
+# 29. M03 explicit epistemic labeling
+
+Every material extracted item must carry a compatible origin label:
+
+```text
+EXPLICIT_INPUT
+SUPPORTED_INFERENCE
+WORKING_ASSUMPTION
+UNRESOLVED
+CONTRADICTED
+```
+
+An inferred item must never be emitted as explicit fact/input.
+
+An assumption must never become fact merely because later modules repeat it.
+
+# 30. M03 hard-constraint semantics
+
+A hard constraint must preserve independently:
+
+```text
+constraint_kind
+verification_mode
+verification_status
+predicate or semantic criterion
+source refs
+epistemic/source provenance
+```
+
+Constraint kinds:
+
+```text
+HARD
+SOFT
+```
+
+Verification modes:
+
+```text
+DETERMINISTIC
+MODEL
+HUMAN
+UNAVAILABLE
+```
+
+Verification statuses:
+
+```text
+PASS
+FAIL
+UNKNOWN
+ERROR
+```
+
+Binding rule:
+
+```text
+HARD + UNKNOWN remains HARD + UNKNOWN
+```
+
+Do not demote it to:
+
+```text
+SOFT
+PREFERENCE
+IGNORED
+PASS
+```
+
+because the verifier is model-based, human, unavailable, or not yet executable.
+
+`ERROR` is not `FAIL`.
+
+M03 does not preempt future M06 feasibility propagation.
+
+# 31. M03 objectives
+
+Each objective should preserve:
+
+```text
+stable ID
+description
+direction
+unit where applicable
+priority only when explicitly supplied
+evaluator ref where available
+source refs
+origin label
+```
+
+Do not invent numeric weights.
+
+Support compatible directions such as:
+
+```text
+MIN
+MAX
+TARGET
+LEXICOGRAPHIC
+QUALITATIVE
+```
+
+If direction cannot be determined safely:
+
+```text
+UNRESOLVED / blocker
+```
+
+Do not guess.
+
+# 32. M03 variables, fixed parameters, unknowns, observables
+
+Keep distinct:
+
+```text
+decision variable
+fixed parameter
+unknown
+observable
+```
+
+A fixed explicit value remains fixed unless revised by source state.
+
+Do not classify all task nouns as decision variables.
+
+Unknowns should preserve:
+
+```text
+description
+domain/range where known
+decision relevance where known
+resolvability
+possible resolution route
+```
+
+Observables are not automatically decision variables.
+
+# 33. M03 acceptance criteria
+
+Every required acceptance criterion must be one of:
+
+```text
+currently evaluable
+externally verifiable later
+blocked/unavailable
+```
+
+Do not fabricate a verifier.
+
+Do not leave required criteria as untyped vague prose.
+
+# 34. M03 contradiction handling
+
+When source material conflicts:
+
+- preserve both source-backed claims;
+- represent contradiction;
+- use M09 `CONTRADICTS` where appropriate;
+- emit `ProblemContradictionRecorded` / diagnostic;
+- create a material blocker when safe formalisation depends on resolution.
+
+Do not:
+
+- average conflicting values;
+- silently discard one source;
+- ask the model to choose the "most likely" and then represent it as fact;
+- invoke M09 `RESOLVES` merely to make the contradiction disappear.
+
+Contradiction resolution remains the frozen explicit M09 lifecycle.
+
+# 35. M03 ambiguity and assumptions
+
+Low-impact ambiguity may become `WORKING_ASSUMPTION` only when versioned policy explicitly permits.
+
+The assumption must record:
+
+```text
+why needed
+policy basis
+support/context refs
+confidence where available
+decision relevance where available
+```
+
+Material ambiguity:
+
+```text
+UNRESOLVED
+and/or
+ProblemBlocker
+```
+
+No hidden assumptions.
+
+# 36. M03 fallback
+
+If model unavailable or repair fails:
+
+produce a deliberately sparse, honest formalisation.
+
+Preserve mechanically:
+
+```text
+explicit structured constraints
+requested output contract
+explicit objective statements only where mechanically identifiable
+attachment existence/metadata
+known permissions
+```
+
+Everything requiring unsupported semantic interpretation should remain:
+
+```text
+UNRESOLVED
+and/or
+BLOCKED
+```
+
+Do not fabricate a rich complete ProblemSpec.
+
+# 37. M03→M09 integration
+
+Map semantic content through the frozen ledger:
+
+```text
+source-backed explicit fact
+→ appropriate explicit FACT/input node
+
+supported inference
+→ INFERENCE
+
+working assumption
+→ ASSUMPTION
+
+unknown
+→ UNKNOWN
+
+contradiction
+→ relevant nodes + CONTRADICTS edge
+```
+
+Preserve M09:
+
+- revision hashes;
+- predecessor linkage;
+- relation rules;
+- contradiction history;
+- provenance;
+- confidence semantics.
+
+A model proposal is not automatically `SUPPORTED`.
+
+# 38. M03→M13 blocker compatibility
+
+Every material unresolved blocker that may influence stopping must expose concrete:
+
+```text
+LedgerNodeRef
+```
+
+provenance.
+
+This must be directly usable by frozen M13's ledger-trigger provenance contract.
+
+# 39. M03 events and atomicity
+
+Use explicit events such as:
+
+```text
+ProblemFormalised
+ProblemBlockerRecorded
+ProblemContradictionRecorded
+```
+
+Use M09 events for ledger changes.
+
+Where logically inseparable:
+
+```text
+ProblemFormalised
++ required ledger nodes
++ required ledger edges
++ blockers
++ contradiction diagnostic
+```
+
+must validate as one canonical batch.
+
+If a required anchor/ref/ledger edge is invalid:
+
+```text
+commit none of the canonical formalisation batch
+```
+
+# 40. M04 — Representation Selector
+
+Implement M04 as a deterministic-first representation selector.
+
+Representations are projections.
+
+They are not truth stores.
+
+Inputs:
+
+```text
+ProblemSpec
+TaskSignature
+BudgetPlan
+RepresentationRegistry
+RepresentationSelectionPolicy
+relevant ledger/source refs
+```
+
+Outputs:
+
+```text
+RepresentationPlan
+RepresentationArtifact(s)
+selection diagnostics
+fallback records
+```
+
+# 41. M04 representation registry
+
+Create a versioned initial registry including canonical kinds:
+
+```text
+TYPED_CONSTRAINT_SET
+DECISION_TABLE
+PARETO_OBJECTIVE_MATRIX
+DEPENDENCY_DAG
+CAUSAL_GRAPH
+STATE_MACHINE
+EVENT_LOG
+PROPERTY_GRAPH
+HYPERGRAPH
+SCENARIO_TREE
+MORPHOLOGICAL_SPACE
+TEXT_TABLE_FALLBACK
+```
+
+Preserve historic enum values where backward decoding requires it.
+
+Each representation definition must declare:
+
+```text
+kind
+registry version
+required features
+supported operations
+builder ID/version
+expected build cost
+expected reasoning/query benefit
+limitations
+stable registry priority
+fallback behavior
+```
+
+# 42. M04 deterministic problem-feature extraction
+
+Derive mechanically from ProblemSpec where possible:
+
+```text
+variable count/type
+discrete/continuous structure
+objective count
+multi-objective structure
+constraint density
+dependency relations
+causal/intervention relations
+temporal relations
+state-transition structure
+scenario uncertainty
+unknowns
+component-interaction potential
+```
+
+Do not use a model to invent features that are directly derivable.
+
+# 43. M04 compatibility scoring
+
+Compatibility scoring must be deterministic.
+
+For fixed:
+
+```text
+ProblemSpec
+TaskSignature
+BudgetPlan
+registry version
+selection policy version
+```
+
+produce identical:
+
+```text
+score
+score components
+purpose
+limitations
+```
+
+Normalize scores to `[0, 1]`.
+
+Do not hide the selection behind one unexplained opaque scalar.
+
+Registry enumeration order must not affect semantic selection.
+
+# 44. M04 selection policy and tie band
+
+Approved selection policy:
+
+```text
+version:
+wave3-m04/1.0
+
+absolute secondary-view tie band:
+0.05
+
+optional model adjudication:
+disabled by default
+
+fallback:
+TEXT_TABLE_FALLBACK
+```
+
+Deterministic ordering:
+
+```text
+1. score descending
+2. registry priority
+3. stable representation kind
+```
+
+When the top two compatible scores differ by no more than:
+
+```text
+0.05
+```
+
+and the frozen BudgetPlan permits at least two views:
+
+```text
+top      → PRIMARY
+second   → AUXILIARY
+```
+
+provided both meet the minimum compatibility threshold.
+
+Do not force an arbitrary single view merely because one score is slightly higher.
+
+If only one view is permitted:
+
+choose deterministically by the ordering above and record that the second compatible view was omitted because of the view budget.
+
+Never exceed:
+
+```text
+BudgetPlan.search.max_representation_views
+```
+
+or the accepted equivalent.
+
+# 45. M04 optional model adjudication
+
+Adjudication is optional and disabled by default.
+
+It may execute only when:
+
+- policy enables it;
+- deterministic scoring leaves material semantic ambiguity;
+- model budget remains.
+
+The adjudicator receives only:
+
+```text
+deterministically allowed compatible candidates
+scores/components
+purposes/limitations
+relevant ProblemSpec summary
+```
+
+It may select/explain only among those candidates.
+
+Reject adjudication output that:
+
+- introduces an unregistered kind;
+- selects a deterministically incompatible kind;
+- exceeds view budget;
+- duplicates a view;
+- modifies ProblemSpec;
+- changes compatibility scores;
+- invents source state.
+
+If adjudication fails/unavailable:
+
+```text
+use deterministic selection
+```
+
+# 46. M04 RepresentationPlan
+
+Each selected view must record:
+
+```text
+representation kind
+PRIMARY / AUXILIARY role
+compatibility score
+score components
+intended purpose
+source object refs
+builder ID/version
+registry version
+selection-policy version
+expected benefit
+expected cost
+limitations
+conditions requiring reselection
+selection basis/provenance
+optional adjudication model-call ref
+```
+
+Do not create duplicate semantically equivalent view entries.
+
+# 47. M04 deterministic RepresentationArtifact builders
+
+Builders create structural projections only.
+
+They may normalize canonical ProblemSpec state into:
+
+- tables;
+- nodes/edges;
+- matrices;
+- state/event structures;
+- other registry-defined structural forms.
+
+They must not:
+
+- solve optimization;
+- compute a Pareto frontier;
+- execute CSP/ILP search;
+- infer causal truth;
+- propagate candidate feasibility;
+- run scenario simulation;
+- generate candidate solutions.
+
+Every artifact must bind:
+
+```text
+requested kind
+actual/fallback kind
+builder version
+registry version
+selection-policy version
+exact ProblemSpec hash
+source snapshot identity
+relevant source/ledger revision refs
+canonical projection content
+projection hash
+optional physical artifact ref
+fallback reason
+limitations
+```
+
+For identical canonical source state + builder version + configuration:
+
+```text
+same canonical artifact bytes/hash
+```
+
+# 48. M04 staleness and fallback
+
+Representation artifacts are immutable.
+
+Changed source state:
+
+```text
+old artifact remains historical/stale
+new artifact is created
+```
+
+Do not mutate old artifacts.
+
+If a specialized builder is unavailable:
+
+```text
+TEXT_TABLE_FALLBACK
+```
+
+with:
+
+```text
+requested kind
+actual fallback kind
+reason
+limitations
+```
+
+Do not fail the entire run when a safe fallback exists.
+
+# 49. Wave 3 event vocabulary
+
+Define explicit registered production events.
+
+At minimum:
+
+```text
+ModelCallRecorded
+ModelCallFailed
+
+TaskClassified
+ClassificationDiagnosticRecorded
+
+ProblemFormalised
+ProblemBlockerRecorded
+ProblemContradictionRecorded
+
+RepresentationPlanSelected
+RepresentationArtifactCompiled
+```
+
+Use existing M09 events for ledger mutations.
+
+Do not create a production `GenericWave3Event`.
+
+Every event obeys frozen envelope semantics:
+
+```text
+event_id
+run_id
+schema_version
+action_id
+module_id
+module_version
+canonical_input_hash
+UTC timestamp
+typed payload
+```
+
+# 50. Event atomicity and pre-reduction
+
+Preserve complete-batch preview/reduction before SQLite append.
+
+Test mixed valid/invalid Wave 3 batches.
+
+Examples:
+
+```text
+ProblemFormalised
++ valid ledger node
++ invalid CONTRADICTS edge
+→ canonical formalisation batch commits nothing
+```
+
+```text
+RepresentationPlanSelected
++ RepresentationArtifactCompiled with invalid source hash/ref
+→ canonical representation batch commits nothing
+```
+
+An already independently committed model-call provenance record may remain valid history even if the later canonical semantic batch is rejected.
+
+Define those atomic boundaries explicitly.
+
+SQLite optimistic concurrency remains final race authority.
+
+# 51. RunState and reducer evolution
+
+Extend event-derived RunState with:
+
+```text
+model-call records
+TaskSignature
+classification record
+classification diagnostics
+ProblemSpec
+problem blockers
+contradiction diagnostics
+RepresentationPlan
+RepresentationArtifact records/refs/hashes
+```
+
+M01/M03/M04 must not directly mutate RunState.
+
+Approved default:
+
+```text
+reducer version remains 1.0
+```
+
+because Wave 3 adds registered events without changing historical event semantics.
+
+If implementation reveals a reducer-version bump is required for correctness:
+
+```text
+stop PLAN_DRIFT_DETECTED
+```
+
+rather than silently violating the approved compatibility assumption.
+
+# 52. Historic state-hash compatibility
+
+Adding Wave 3 optional fields must not change historic Waves 0–2 state/snapshot hashes merely because new default fields exist.
+
+Use the approved compatibility strategy:
+
+```text
+if no Wave 3 state exists:
+omit Wave 3 extensions from historic snapshot/hash payload
+```
+
+Wave 3 snapshots include Wave 3 fields explicitly.
+
+Do not rewrite historic events.
+
+# 53. Snapshot compatibility
+
+After Wave 3:
+
+```text
+Wave 1 snapshots
+Wave 2 snapshots
+Wave 3 snapshots
+```
+
+must follow explicit compatible verification rules.
+
+Use prefix-correct snapshot verification.
+
+Do not compare an old snapshot against a semantically different later-state hash view and call it corruption.
+
+# 54. Replay purity
+
+Wave 3 replay performs:
+
+```text
+zero initial model calls
+zero repair calls
+zero tool calls
+zero retrieval
+zero network
+zero semantic generation
+zero new representation generation
+zero new artifact generation
+```
+
+Replay reconstructs from committed events/artifacts.
+
+The fake-model call counter must remain unchanged during replay.
+
+# 55. Three-path differential replay
+
+Extend the frozen replay gate:
+
+### Path A
+
+```text
+typed StoredEvent sequence
+→ pure reducer fold
+```
+
+### Path B
+
+```text
+SQLite serialization
+→ close
+→ reopen
+→ public event deserialization
+→ public replay
+```
+
+### Path C
+
+```text
+verified snapshot
+→ only events after snapshot
+```
+
+Compare canonical bytes/hashes for:
+
+```text
+RunState
+TaskSignature
+BudgetPlan/BudgetProjection
+LedgerProjection
+ProblemSpec
+RepresentationPlan
+RepresentationArtifact refs/hashes
+ContextPacket where compiled
+StopDecision where present
+```
+
+No path may invoke the semantic model.
+
+# 56. M09 integration
+
+Preserve all frozen M09 invariants.
+
+Wave 3 may create new ledger state through existing M09 events only.
+
+Do not weaken:
+
+```text
+revision hashes
+predecessor links
+relation-specific acyclicity
+contradiction lifecycle
+status transitions
+stale propagation
+confidence-envelope semantics
+structured confidence
+provenance
+```
+
+A model output is not automatically `FACT` or `SUPPORTED`.
+
+# 57. M02 and Budget Meter integration
+
+M01 feeds frozen M02.
+
+M02 remains budget authority.
+
+The semantic runtime uses the frozen Budget Meter.
+
+Do not modify historic M02 allocation-policy semantics.
+
+M01 classification policy and M02 tier policy remain distinct.
+
+# 58. M12 Wave 3 integration
+
+M12 now receives newly available semantic front-end state.
+
+Extend context availability for:
+
+```text
+ProblemSpec
+objectives
+hard constraints/statuses
+acceptance criteria
+problem blockers
+important assumptions
+RepresentationPlan
+representation state where profile requires it
+```
+
+Approved Wave 3 compiler version:
+
+```text
+2.0
+```
+
+Use compiler 2.0 only when Wave 3 state participates in the packet.
+
+Historic packet fixtures retain historic compiler versions/hashes.
+
+Do not silently change historic M12 packet hashes.
+
+# 59. M13 compatibility
+
+M13 remains deterministic and frozen in stop precedence.
+
+M03 blockers must be representable with concrete `LedgerNodeRef` provenance.
+
+A model failure alone is not negative evidence.
+
+If deterministic fallback safely succeeds:
+
+```text
+continue according to policy
+```
+
+If required semantic state cannot be safely obtained:
+
+```text
+create a provenance-rich blocker
+```
+
+Do not alter frozen M13 bounded marginal-value semantics.
+
+# 60. Configuration
+
+Add strict versioned Wave 3 configuration.
+
+At minimum:
+
+### M01
+
+```text
+classification_policy_version
+confidence thresholds
+low-confidence floors
+risk floors
+reversibility mapping
+fallback values
+```
+
+Approved defaults:
+
+```text
+classification policy:
+wave3-m01/1.0
+
+default confidence threshold:
+0.70
+
+unresolved ordinal fallback:
+CRITICAL
+
+unresolved search-space fallback:
+OPEN
+
+unresolved horizon fallback:
+LONG
+
+fallback confidence:
+None
+
+external-write floor:
+consequence HIGH
+irreversibility HIGH
+
+network-without-write floor:
+irreversibility MEDIUM
+```
+
+### Semantic runtime
+
+```text
+repair enabled/disabled per operation
+maximum repairs = 1
+refresh policy where supported
+```
+
+### M04
+
+```text
+registry version
+selection policy version
+tie band = 0.05
+minimum compatibility threshold
+adjudication enabled = false by default
+registry priorities
+fallback kind = TEXT_TABLE_FALLBACK
+```
+
+### M12
+
+```text
+Wave 3 compiler version = 2.0
+```
+
+No provider-specific model names in core Wave 3 policy.
+
+Unknown configuration keys should continue to fail under strict config semantics.
+
+# 61. Determinism
+
+For fixed:
+
+```text
+TaskEnvelope
+stored model-call result(s)
+policy/configuration
+prompt/schema versions
+module versions
+registry versions
+builder versions
+event stream
+```
+
+Wave 3 must reconstruct exactly:
+
+```text
+TaskSignature
+BudgetPlan
+ProblemSpec
+M09 changes
+RepresentationPlan
+RepresentationArtifact hashes
+ContextPacket hash where compiled
+StopDecision where applicable
+```
+
+No result may depend on:
+
+```text
+wall clock during replay
+random values
+filesystem order
+dict insertion order
+set iteration order
+new model output
+```
+
+# 62. Typed error semantics
+
+Use typed machine-readable failures.
+
+Prompt/schema concepts:
+
+```text
+PromptNotFound
+PromptVersionConflict
+PromptIntegrityError
+OutputSchemaNotFound
+OutputSchemaVersionConflict
+OutputSchemaIntegrityError
+```
+
+Semantic runtime:
+
+```text
+StructuredModelUnavailable
+InvalidStructuredOutput
+StructuredOutputRepairFailed
+SemanticValidationError
+ModelBudgetUnavailable
+```
+
+Source/provenance:
+
+```text
+InvalidSourceAnchor
+InvalidEpistemicLabel
+```
+
+M01:
+
+```text
+ClassificationInvariantViolation
+ClassificationBlocked
+InvalidClassificationPolicy
+```
+
+M03:
+
+```text
+InvalidProblemSpec
+ProblemFormalisationBlocked
+InvalidHardConstraint
+InvalidAcceptanceCriterion
+ContradictionDiagnostic
+```
+
+M04:
+
+```text
+UnknownRepresentationKind
+RepresentationIncompatible
+InvalidRepresentationRegistry
+InvalidRepresentationSelectionPolicy
+RepresentationBuildError
+RepresentationFallbackUsed
+```
+
+Names may adapt to repository conventions.
+
+Do not encode machine-significant failures only as free-form text.
+
+# 63. Security and information minimization
+
+Semantic calls receive only required canonical inputs.
+
+Do not send by default:
+
+```text
+entire database
+entire conversation transcript
+unrelated artifacts
+secrets
+credentials
+unredacted irrelevant state
+```
+
+Respect the frozen permission model.
+
+Wave 3 introduces no new external side effects.
+
+Do not add:
+
+```text
+retrieval
+write-capable external tool
+unrestricted shell
+provider-specific network integration
+```
+
+Logs must not dump raw sensitive payloads unnecessarily.
+
+# 64. Dependency policy
+
+No new runtime dependency is expected.
+
+Prefer:
+
+```text
+existing project infrastructure
+→ Python standard library
+→ existing Pydantic/PyYAML/test stack
+```
+
+Do not add:
+
+```text
+provider SDK
+agent framework
+prompt framework
+workflow framework
+ORM
+graph framework
+vector database
+retrieval framework
+```
+
+unless the authoritative plan genuinely requires it and the gain is material.
+
+Any new dependency must be explicitly justified.
+
+# 65. Dependency-boundary gate
+
+Mechanically verify:
+
+```text
+domain !→ runtime
+domain !→ modules
+domain !→ concrete adapters
+
+M01 !→ concrete adapters/provider SDKs
+M03 !→ concrete adapters/provider SDKs
+M04 !→ concrete adapters/provider SDKs
+
+deterministic representation builders !→ model/tool ports
+
+replay !→ model
+replay !→ tool
+replay !→ retrieval
+replay !→ network
+```
+
+Prompt registry may refer only to provider-neutral roles.
+
+# 66. Observability
+
+Add derived operational metrics as needed.
+
+At minimum:
+
+```text
+prompt ID/version
+output schema ID/version
+semantic call status
+repair used
+fallback used
+schema failure count
+semantic validation failure count
+```
+
+M01:
+
+```text
+classification mode
+raw/effective dimensions
+confidence availability
+risk-floor activation
+```
+
+M03:
+
+```text
+item counts by epistemic origin label
+hard constraints by verification mode/status
+blocker count
+contradiction count
+```
+
+M04:
+
+```text
+feature summary
+compatibility scores
+selected view count
+tie-band activation
+adjudication used
+fallback representation count
+```
+
+Metrics/logs are not canonical truth.
+
+# 67. Testing strategy
+
+Use:
+
+```text
+tests/unit/
+tests/property/
+tests/integration/
+tests/golden/
+tests/fixtures/
+```
+
+### Unit tests
+
+Cover:
+
+- all new contracts;
+- prompt/schema registries;
+- prompt rendering;
+- model statuses;
+- SemanticModelRuntime;
+- repair/fallback;
+- SourceAnchor;
+- epistemic labels;
+- M01 validators;
+- M03 validators;
+- M04 scoring/selection/builders;
+- every new event;
+- reducer transitions;
+- typed errors.
+
+### Property tests
+
+Use Hypothesis where materially valuable for:
+
+```text
+M01 reversibility→irreversibility
+harder-is-higher dimensions
+M01→M02 tier monotonicity
+mandatory risk-floor invariance
+confidence degradation non-deescalation
+
+EXPLICIT_INPUT anchoring
+hard-constraint non-demotion
+HARD + UNKNOWN preservation
+generated source-ref invariants
+
+M04 registry-order invariance
+view-limit invariance
+tie-band determinism
+representation hash invariance
+
+Wave 3 replay equivalence where appropriate
+```
+
+### Integration tests
+
+Use:
+
+```text
+real temporary SQLite
+real temporary artifact store
+deterministic fake model
+fake clock
+fake UUID
+```
+
+No integration test requires network.
+
+No test writes to default user runtime state.
+
+# 68. Golden scenarios
+
+Implement at least:
+
+### A — normal semantic front end
+
+```text
+clear task
+→ valid M01
+→ valid M02
+→ valid M03
+→ one obvious M04 view
+→ replay identical
+```
+
+### B — low-confidence classification
+
+```text
+low-confidence valid semantic output
+→ conservative effective classification
+→ M02 tier does not decrease
+```
+
+### C — mandatory risk floor
+
+```text
+model proposes easier value
+→ deterministic floor wins
+```
+
+### D — contradictory explicit inputs
+
+```text
+two anchored conflicting claims
+→ M03 CONTRADICTED
+→ M09 CONTRADICTS
+→ diagnostic
+→ blocker if material
+→ no silent resolution
+```
+
+### E — semantic hard constraint
+
+```text
+HARD
+mode MODEL/HUMAN/UNAVAILABLE
+status UNKNOWN
+→ remains HARD
+```
+
+### F — model unavailable
+
+```text
+UNAVAILABLE
+→ M01 fallback
+→ M03 sparse fallback/blocker
+→ M04 deterministic selection
+→ no fabricated certainty
+```
+
+### G — malformed then repaired valid
+
+```text
+invalid initial output
+→ raw artifact
+→ one repair
+→ valid repaired output
+→ semantic validation
+→ canonical result
+```
+
+### H — malformed then repaired malformed
+
+```text
+invalid initial
+→ invalid repair
+→ no third call
+→ fallback/blocker
+```
+
+### I — close M04 scores with view budget 2
+
+```text
+top two within 0.05
+→ PRIMARY + AUXILIARY
+```
+
+### J — close scores with view budget 1
+
+```text
+top two within 0.05
+→ deterministic one-view selection
+→ omission reason
+```
+
+### K — unsupported builder
+
+```text
+specialized builder unavailable
+→ TEXT_TABLE_FALLBACK
+```
+
+### L — invalid optional adjudication
+
+```text
+adjudicator proposes unregistered/incompatible kind
+→ reject proposal
+→ deterministic selection
+```
+
+# 69. Required M01 acceptance matrix
+
+Prove at minimum:
+
+```text
+1. deterministic explicit metadata extraction
+2. complete valid TaskSignature
+3. reversibility→irreversibility deterministic
+4. consequence harder-is-higher
+5. irreversibility harder-is-higher
+6. ambiguity harder-is-higher
+7. evidence scarcity harder-is-higher
+8. search-space monotonicity
+9. deterministic risk floor
+10. model cannot lower risk floor
+11. weighted score cannot lower mandatory floor
+12. low-confidence conservative escalation
+13. valid high-confidence classification retained
+14. evidence/source refs resolve
+15. deterministic explicit value outranks conflicting model value
+16. valid structured output accepted
+17. malformed structured output rejected
+18. at most one repair
+19. repaired valid accepted only after revalidation
+20. repeated invalid output triggers fallback
+21. unavailable model triggers fallback
+22. fallback preserves deterministic explicit metadata
+23. fallback does not fabricate confidence
+24. same stored result + policy → same TaskSignature
+25. replay reconstructs TaskSignature without model
+26. M01→M02 monotonicity
+27. harder effective signature cannot lower tier
+28. lower confidence cannot accidentally lower tier
+```
+
+# 70. Required M03 acceptance matrix
+
+Prove at minimum:
+
+```text
+29. EXPLICIT_INPUT has valid source anchor
+30. unanchored model item cannot be EXPLICIT_INPUT
+31. SUPPORTED_INFERENCE remains inference
+32. WORKING_ASSUMPTION remains assumption
+33. UNRESOLVED remains unresolved
+34. CONTRADICTED represented
+35. contradiction emits diagnostic
+36. contradiction not silently resolved
+37. M09 CONTRADICTS relation created where appropriate
+38. hard deterministic constraint remains hard
+39. hard model-verification constraint remains hard
+40. hard human-verification constraint remains hard
+41. hard unavailable-verification constraint remains hard
+42. HARD + UNKNOWN preserved
+43. ERROR is not FAIL
+44. objective direction normalized only when supported
+45. unresolved objective direction not invented
+46. decision variable distinct from fixed parameter
+47. unknown represented explicitly
+48. observable represented explicitly
+49. acceptance criterion has verification path or blocker
+50. material ambiguity creates unresolved/blocking state
+51. low-impact authorized assumption stays WORKING_ASSUMPTION
+52. valid model formalisation accepted
+53. schema-invalid formalisation gets at most one repair
+54. semantically invalid formalisation rejected
+55. repair failure invokes conservative fallback
+56. unavailable model invokes conservative fallback
+57. fallback does not invent semantic certainty
+58. replay reconstructs identical ProblemSpec
+59. replay invokes no model
+60. M03 blocker exposes concrete LedgerNodeRef
+```
+
+# 71. Required M04 acceptance matrix
+
+Prove at minimum:
+
+```text
+61. representation registry validates
+62. deterministic feature extraction
+63. deterministic compatibility scores
+64. dependency-heavy problem favors dependency-compatible view
+65. temporal problem favors temporal/event/state view
+66. causal/intervention problem favors causal view
+67. multi-objective problem recognizes objective-matrix compatibility
+68. primary view has purpose
+69. auxiliary view has purpose
+70. limitations recorded
+71. selection basis/provenance recorded
+72. source refs valid
+73. view budget respected
+74. close top scores retain two when allowed
+75. close top scores reduce deterministically to one when required
+76. registry input order does not alter semantic selection
+77. adjudication cannot introduce unregistered kind
+78. adjudication cannot override deterministic incompatibility
+79. unavailable/invalid adjudication falls back deterministically
+80. unsupported builder yields typed fallback
+81. same source state + builder version → same artifact hash
+82. changed source state does not mutate old artifact
+83. stale representation identifiable
+84. representation remains projection, not authority
+85. replay reconstructs plan/artifact refs without model
+```
+
+# 72. Cross-cutting Wave 3 acceptance matrix
+
+Prove at minimum:
+
+```text
+86. prompt registry deterministic
+87. prompt version/template hash persisted
+88. same prompt identity cannot silently map to different template
+89. model-call idempotency stable
+90. raw response artifact separate from parsed proposal
+91. parsed proposal cannot enter canonical state before semantic validation
+92. invalid raw output may persist without becoming canonical state
+93. repair consumes budget
+94. repair cannot run without budget
+95. model UNAVAILABLE is not negative evidence
+96. transport/permanent failure is not negative evidence
+97. no provider branching in domain or M01/M03/M04
+98. Wave 1 historic replay remains valid
+99. Wave 2 historic replay remains valid
+100. Wave 1 historic snapshot compatibility remains valid
+101. Wave 2 historic snapshot compatibility remains valid
+102. historic Waves 0–2 hashes remain compatible
+103. Wave 3 pure replay equals SQLite replay
+104. Wave 3 snapshot replay equals full fold
+105. replay performs zero model/repair calls
+106. M12 checkpoint includes Wave 3 state correctly
+107. M13 blocker provenance remains ledger-linked
+108. frozen M09 invariants remain green
+109. frozen M02/Budget invariants remain green
+110. all accepted Waves 0–2 regression tests remain green
+```
+
+This matrix is a minimum, not a maximum.
+
+# 73. Additional prompt/model acceptance
+
+Also prove where not already covered:
+
+```text
+prompt duplicate identity behavior
+schema duplicate identity behavior
+prompt hash changes on material template change
+schema hash changes on material schema change
+deterministic prompt rendering
+minimal-context boundaries
+raw invalid artifact retention
+repair-parent linkage
+unknown usage vs policy charge distinction
+semantic-invalid/schema-valid rejection
+persisted call reuse
+changed prompt/schema prevents wrong reuse
+fake-model call count unchanged during replay
+```
+
+# 74. Combined Wave 3 gate
+
+Using:
+
+```text
+real temporary SQLite
+real temporary artifact store
+deterministic fake structured model
+fake clock
+fake UUID
+```
+
+execute:
+
+```text
+TaskEnvelope
+        ↓
+M01
+        ↓
+TaskSignature
+        ↓
+frozen M02
+        ↓
+BudgetPlan
+        ↓
+M03
+        ↓
+ProblemSpec + M09 state
+        ↓
+M04
+        ↓
+RepresentationPlan + deterministic RepresentationArtifact(s)
+        ↓
+M12 checkpoint/HANDOFF using Wave 3 state
+        ↓
+snapshot
+        ↓
+close/reopen
+        ↓
+Path A pure fold
+Path B SQLite replay
+Path C snapshot + subsequent events
+        ↓
+identical canonical Wave 3 state/hashes
+```
+
+The combined gate must prove:
+
+```text
+classification monotonicity
+irreversibility orientation
+risk-floor enforcement
+low-confidence non-deescalation
+source-anchored explicitness
+inference/fact separation
+hard-constraint non-demotion
+HARD + UNKNOWN
+contradiction surfacing
+representation determinism
+tie-band complementary views
+view-budget enforcement
+zero-call replay
+historic replay compatibility
+```
+
+# 75. Frozen substrate regression requirements
+
+Explicitly rerun/prove:
+
+```text
+canonical serialization
+semantic canonical ordering
+recursive immutability
+event schema/version validation
+SQLite transactionality
+Wave 1 replay
+Wave 1 snapshots
+Wave 2 replay
+Wave 2 snapshots
+historic fixture hashes
+M09 revision-chain integrity
+M09 contradiction lifecycle
+M09 confidence-envelope semantics
+M02 policy provenance
+M02 monotonicity
+Budget Meter hard ceilings
+Budget Meter reservations
+Budget burn rate
+M12 packet determinism
+M12 compression order
+M12 delta exact reconstruction
+M13 bounded stopping
+M13 terminal context
+three-path differential replay
+PEP 561 packaging
+dependency boundaries
+zero-call historic replay
+```
+
+Wave 3 is not complete if a frozen Waves 0–2 invariant regresses.
+
+# 76. Performance expectations
+
+Correctness and provenance dominate optimization.
+
+Avoid pathological implementations.
+
+Expected rough behavior:
+
+```text
+M01 deterministic extraction     O(task metadata size)
+M01 validation                   O(classification dimensions)
+M03 validation                   O(problem items + refs + relevant ledger edges)
+M04 feature extraction           O(problem size)
+M04 scoring                      O(registry size × feature count)
+representation compilation       O(source projection size)
+prompt rendering                 O(relevant canonical input size)
+```
+
+Do not add complex caches prematurely.
+
+Semantic-call idempotent reuse is the primary call-level optimization.
+
+# 77. ADR and documentation updates
+
+Add/update only materially necessary ADRs.
+
+Expected Wave 3 ADR topics:
+
+```text
+prompt/schema registry and hash identity
+model output as untrusted proposal
+single repair + deterministic fallback
+SourceAnchor and epistemic labels
+M01 monotone classification and irreversibility
+M04 tie band and projection authority
+stored semantic outputs and zero-call replay
+```
+
+Do not duplicate existing ADRs.
+
+Update README truthfully to indicate:
+
+```text
+Waves 0–2: frozen deterministic substrate
+Wave 3: semantic front end implemented
+Wave 4+: not implemented
+```
+
+Do not modify authoritative root specifications unless explicitly required by the approved plan.
+
+# 78. Do not implement Wave 4
+
+Explicitly forbidden:
+
+```text
+M05 Candidate / Hypothesis Generator
+M06 Constraint Propagator / Dominance Pruner
+M10 Decision Engine
+```
+
+Do not implement:
+
+```text
+candidate generation operators
+progressive widening
+candidate search
+candidate structural fingerprint algorithms beyond existing future-facing contracts
+candidate feasibility propagation
+Pareto-front computation
+interval dominance
+sensitivity
+ablation
+robustness
+regret
+selection policy execution
+```
+
+# 79. Do not implement Waves 5–8
+
+Do not implement:
+
+```text
+M07 synthesis
+M08 falsification
+M11 information acquisition
+retrieval
+adaptive scheduler
+full orchestrator
+T5 reconciliation
+product CLI
+MCP
+HTTP
+deployment
+```
+
+Do not broaden scope.
+
+# 80. Quality gate
+
+After implementation run:
+
+```bash
+uv sync --all-groups --frozen
+
+uv run ruff format --check .
+uv run ruff check .
+
+uv run mypy --strict src tests
+
+uv run pytest tests/unit
+uv run pytest tests/property
+uv run pytest tests/integration
+uv run pytest
+
+make quality
+
+uv build
+
+uv run python -m compileall -q src tests
+
+git diff --check
+```
+
+Report exact:
+
+```text
+passed
+failed
+skipped
+deselected
+warnings
+```
+
+for unit/property/integration/complete suite.
+
+Do not suppress strict mypy failures.
+
+Do not selectively skip failing invariant tests.
+
+Do not weaken tests to obtain green status.
+
+# 81. Package verification
+
+Build the wheel.
+
+Verify:
+
+```text
+fre/py.typed
+```
+
+remains present.
+
+If prompts/schemas/templates are runtime package resources, verify those resources are present in the wheel.
+
+Where practical, install the wheel in an isolated temporary environment and verify:
+
+```text
+import fre
+```
+
+plus prompt/schema registry loading.
+
+# 82. Implementation order
+
+Recommended order:
+
+1. inspect repository;
+2. verify frozen foundation;
+3. rerun baseline gate;
+4. create `codex/wave-3-semantic-front-end`;
+5. create Wave 3 requirements matrix;
+6. add shared SourceAnchor / epistemic-origin / model-call contracts;
+7. implement output-schema registry;
+8. implement prompt registry;
+9. implement deterministic prompt rendering/integrity;
+10. extend StructuredModelPort result semantics if required;
+11. extend fake structured-model registry;
+12. implement SemanticModelRuntime;
+13. integrate model-call budget reservation/settlement;
+14. implement raw artifact/model-call persistence;
+15. implement one-repair lifecycle;
+16. implement deterministic fallback routing;
+17. define Wave 3 event vocabulary;
+18. extend RunState/reducer;
+19. implement historic hash compatibility;
+20. implement M01;
+21. test M01;
+22. prove M01→M02 monotonicity;
+23. implement M03;
+24. test source anchoring/epistemic labels/constraints;
+25. integrate M03 with M09/M13;
+26. implement M04 registry;
+27. implement deterministic features/scoring;
+28. implement tie-band selection;
+29. implement optional bounded adjudication;
+30. implement deterministic builders;
+31. implement representation hashing/staleness/fallback;
+32. test M04;
+33. extend M12 to Wave 3 state using compiler version 2.0;
+34. extend metrics;
+35. add golden scenarios;
+36. extend three-path differential replay;
+37. run frozen substrate regression gate;
+38. run complete Wave 3 acceptance gate;
+39. inspect diff for Wave 4 leakage;
+40. resolve all requirements-matrix rows;
+41. build and inspect wheel;
+42. create coherent Wave 3 commit;
+43. verify exact commit in fresh worktree;
+44. push review branch;
+45. open normal PR against main;
+46. stop before Wave 4.
+
+# 83. Defect-remediation policy
+
+For every defect:
+
+1. identify the violated invariant;
+2. locate the lowest correct architectural layer;
+3. fix it there;
+4. add/strengthen regression coverage;
+5. rerun the narrow affected test;
+6. rerun the full quality/regression gate.
+
+Never weaken:
+
+```text
+frozen Waves 0–2 semantics
+event authority
+immutability
+canonical ordering
+provenance
+prompt versioning
+structured output validation
+semantic validation
+budget enforcement
+source anchoring
+epistemic labels
+hard-constraint semantics
+HARD + UNKNOWN
+M09 contradiction semantics
+provider neutrality
+representation projection authority
+replay purity
+historic snapshot compatibility
+```
+
+merely to make tests pass.
+
+# 84. Git persistence
+
+Recommended branch:
+
+```text
+codex/wave-3-semantic-front-end
+```
+
+Expected planning base:
+
+```text
+7e57cc202e436ab6807c02d65a6daade43db84f9
+```
+
+Recommended commit:
+
+```text
+Implement Wave 3 semantic front end
+```
+
+Recommended PR title:
+
+```text
+Implement Wave 3 semantic front end
+```
+
+Target:
+
+```text
+main
+```
+
+Do not merge automatically.
+
+Do not deploy.
+
+Do not publish.
+
+Because the accepted Wave 2 fix delta may not independently be on `main`, the Wave 3 PR may include that already-accepted foundation delta if still necessary.
+
+Report truthfully:
+
+```text
+repository
+base/foundation commit
+Wave 3 branch
+Wave 3 commit
+working tree
+remote
+push state
+PR URL/state
+```
+
+Do not fabricate remote persistence.
+
+# 85. Fresh-worktree verification
+
+After the coherent Wave 3 commit exists, create a fresh temporary worktree from that exact commit.
+
+Run:
+
+```bash
+uv sync --all-groups --frozen
+uv run mypy --strict src tests
+uv run pytest
+```
+
+Then run a Wave 3 replay smoke test proving:
+
+```text
+same canonical Wave 3 state/hashes
+zero model invocation during replay
+```
+
+Do not claim fresh-worktree verification unless actually performed.
+
+# 86. Completion conditions
+
+Emit:
+
+```text
+GOAL_EXECUTION_COMPLETE
+```
+
+only when all applicable conditions are genuinely satisfied:
+
+```text
+accepted Waves 0–2 foundation present
+baseline gate green
+Wave 3 requirements matrix complete
+
+prompt registry implemented
+output-schema registry implemented
+prompt identity/version/hash deterministic
+prompt conflicts rejected
+prompt rendering deterministic
+schema identity/version/hash deterministic
+
+StructuredModelPort provider-neutral
+typed result statuses implemented
+raw output stored separately
+model-call provenance persisted
+semantic-call idempotency proven
+budget reservations used for model calls
+unknown actual usage not fabricated
+one repair maximum
+repair metered
+deterministic fallback paths proven
+
+SourceAnchor implemented
+EXPLICIT_INPUT requires valid anchor
+epistemic labels enforced
+
+M01 implemented
+deterministic metadata precedence
+reversibility→irreversibility conversion
+all allocation axes harder-is-higher
+risk floors enforced
+weighted score not sole authority
+low-confidence conservative handling
+unavailable-model fallback
+malformed-output fallback
+M01→M02 monotonicity proven
+
+M03 implemented
+source anchors validated
+inference never emitted as explicit input
+assumptions visible
+unknowns remain unresolved
+contradictions surfaced
+hard constraints never demoted
+HARD + UNKNOWN preserved
+ERROR != FAIL
+objectives safely normalized
+variables/fixed parameters distinct
+acceptance criteria verifiable or blocked
+material ambiguity unresolved/blocked
+M09 integration valid
+M13 blocker provenance valid
+fallback sparse and honest
+
+M04 implemented
+registry versioned
+features deterministic
+compatibility scores deterministic
+score components persisted
+tie-band versioned at 0.05
+two close views retained when allowed
+one-view tie break deterministic
+view budget enforced
+optional adjudication constrained and disabled by default
+builders deterministic
+representation projections immutable
+projection hashes stable
+staleness identifiable
+TEXT_TABLE_FALLBACK works
+
+Wave 1 replay/snapshots green
+Wave 2 replay/snapshots green
+historic hashes preserved
+Wave 3 three-path differential replay green
+replay performs zero model/repair calls
+M09 frozen invariants green
+M02/Budget frozen invariants green
+M12 Wave 3 integration green
+M13 compatibility green
+dependency boundaries green
+PEP 561/package resource verification green
+
+Ruff format green
+Ruff lint green
+strict mypy green
+unit green
+property green
+integration green
+complete suite green
+make quality green
+uv build green
+compileall green
+git diff --check green
+
+no Wave 4+ functionality introduced
+coherent Wave 3 commit exists
+working tree clean
+fresh-worktree verification passes
+remote/push/PR status truthfully reported
+no blocking deviation remains
+```
+
+# 87. Final report
+
+Return exactly:
+
+```text
+IMPLEMENTED
+
+FILES CHANGED
+
+TESTS
+
+INVARIANTS VERIFIED
+
+MODULE ACCEPTANCE
+
+DEVIATIONS
+
+OPEN DECISIONS
+
+REPOSITORY STATUS
+
+NEXT WAVE
+```
+
+Under `IMPLEMENTED`, report separately:
+
+```text
+Prompt Registry
+Output-Schema Registry
+Structured Model Integration
+Semantic Model Runtime
+Model Call Persistence / Budgeting
+Repair / Fallback
+Source Anchoring / Epistemic Labels
+M01
+M01→M02 Integration
+M03
+M03→M09 / M13 Integration
+M04
+M12 Wave 3 Integration
+Reducer / Replay / Snapshot Compatibility
+Metrics
+Documentation
+```
+
+Under `TESTS`, include:
+
+```text
+Python version
+uv version
+
+baseline Waves 0–2 unit/property/integration/total
+
+final unit/property/integration/total
+
+passed
+failed
+skipped
+deselected
+warnings
+
+Ruff
+mypy
+make quality
+uv build
+compileall
+git diff --check
+
+Wave 1 replay
+Wave 1 snapshot compatibility
+Wave 2 replay
+Wave 2 snapshot compatibility
+Wave 3 differential replay
+zero-call replay
+PEP 561/package-resource verification
+fresh-worktree gate
+```
+
+Under `INVARIANTS VERIFIED`, explicitly report:
+
+1. event-log authority;
+2. frozen substrate compatibility;
+3. canonical serialization;
+4. semantic canonical ordering;
+5. recursive immutability;
+6. prompt registry determinism;
+7. prompt version/hash provenance;
+8. output-schema registry determinism;
+9. model-result/canonical-state separation;
+10. semantic-call idempotency;
+11. bounded repair;
+12. model-call budget enforcement;
+13. replay purity;
+14. source-anchor integrity;
+15. EXPLICIT_INPUT anchoring;
+16. epistemic-origin labeling;
+17. M01 harder-is-higher axes;
+18. irreversibility orientation;
+19. M01→M02 monotonicity;
+20. mandatory risk floors;
+21. low-confidence conservative escalation;
+22. deterministic M01 fallback;
+23. M03 source anchoring;
+24. inference/fact separation;
+25. assumption visibility;
+26. unresolved-state integrity;
+27. contradiction surfacing;
+28. hard-constraint non-demotion;
+29. HARD + UNKNOWN preservation;
+30. ERROR != FAIL;
+31. acceptance-criterion integrity;
+32. M09 compatibility;
+33. M13 blocker provenance;
+34. M04 registry integrity;
+35. deterministic feature extraction;
+36. deterministic compatibility scoring;
+37. close-score complementary-lens policy;
+38. view-budget enforcement;
+39. bounded adjudication;
+40. representation projection authority;
+41. representation hash determinism;
+42. representation staleness;
+43. representation fallback;
+44. M12 Wave 3 integration;
+45. historic Wave 1 replay/snapshots;
+46. historic Wave 2 replay/snapshots;
+47. Wave 3 differential replay;
+48. snapshot compatibility;
+49. provider neutrality;
+50. dependency boundaries;
+51. typed-package/resource packaging.
+
+Under `MODULE ACCEPTANCE`, report:
+
+```text
+Prompt Registry — PASS / FAIL
+Output-Schema Registry — PASS / FAIL
+StructuredModel integration — PASS / FAIL
+SemanticModelRuntime — PASS / FAIL
+M01 — PASS / FAIL
+M01→M02 — PASS / FAIL
+M03 — PASS / FAIL
+M03→M09 — PASS / FAIL
+M03→M13 blocker compatibility — PASS / FAIL
+M04 — PASS / FAIL
+M12 Wave 3 integration — PASS / FAIL
+Frozen substrate regression — PASS / FAIL
+Combined Wave 3 gate — PASS / FAIL
+```
+
+For each, list decisive tests/invariants.
+
+Under `DEVIATIONS`, use only:
+
+```text
+NONE
+BENIGN IMPLEMENTATION DETAIL
+ARCHITECTURAL DEVIATION
+BLOCKING DEVIATION
+```
+
+Do not silently accept an architectural deviation.
+
+Under `OPEN DECISIONS`, list only decisions materially blocking Wave 4.
+
+If none:
+
+```text
+None.
+```
+
+Under `REPOSITORY STATUS`, report:
+
+```text
+repository
+branch
+base/foundation commit
+Wave 3 commit
+working tree
+remote
+push state
+PR/review state
+fresh-worktree verification
+```
+
+Under `NEXT WAVE`, provide a plan only for Wave 4:
+
+```text
+M05 Candidate / Hypothesis Generator
+M06 Constraint Propagator and Dominance Pruner
+M10 Decision Engine
+
+progressive widening
+operator registry
+structural fingerprints
+four-valued feasibility
+exact / interval Pareto
+sensitivity
+ablation
+robustness
+regret
+explicit decision policy
+fake-model candidate fixtures
+```
+
+Do not implement Wave 4.
