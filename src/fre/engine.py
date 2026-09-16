@@ -71,6 +71,21 @@ class FrontierReasoningEngine:
     def append(
         self, run_id: UUID, expected_version: int, events: tuple[UncommittedEvent, ...]
     ) -> tuple[StoredEvent, ...]:
+        # Preview the complete batch through the pure reducer before persistence.
+        # SQLite expected-version append remains the race-arbitration authority.
+        preview = self.inspect(run_id)
+        if preview.version != expected_version:
+            return self.store.append(run_id, expected_version, events)
+        for offset, event in enumerate(events, 1):
+            stored = StoredEvent.model_validate(
+                {
+                    **event.model_dump(),
+                    "created_at": event.created_at,
+                    "sequence": expected_version + offset,
+                },
+                strict=True,
+            )
+            preview = self.reducer.apply(preview, stored)
         return self.store.append(run_id, expected_version, events)
 
     def inspect(self, run_id: UUID) -> RunState:

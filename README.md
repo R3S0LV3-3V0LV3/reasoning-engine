@@ -11,3 +11,13 @@ This bundle converts the supplied conceptual and module-level drafts into a buil
 ## Recommended use
 
 Place all three files at the root of the new repository or under `docs/`, then give Codex `CODEX_BUILD_HANDOFF.md` as the execution instruction while keeping the architecture and manifest in context.
+
+## Implemented waves
+
+- Waves 0–1: strict canonical contracts, typed events, SQLite WAL persistence, snapshots,
+  content-addressed artifacts, deterministic adapters, and replay.
+- Wave 2: event-derived hash-linked epistemic ledger, monotone allocation and executable budget
+  meter, deterministic context packets/deltas, confidence-bounded stopping, and a minimal terminal
+  lifecycle coordinator.
+
+Wave 3 and later semantic/model-assisted modules remain intentionally unimplemented.

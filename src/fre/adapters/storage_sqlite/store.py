@@ -172,7 +172,7 @@ class SQLiteStore:
                 (
                     str(state.run_id),
                     state.version,
-                    canonical_json(state).decode(),
+                    canonical_json(state.snapshot_payload()).decode(),
                     state_hash,
                     reducer_version,
                     utc_now().isoformat(),

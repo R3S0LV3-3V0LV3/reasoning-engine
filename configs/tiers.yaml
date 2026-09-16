@@ -1,9 +1,48 @@
 schema_version: "1.0"
+policy_version: "wave2-default/1.0"
+deployment_maximum_tier: T5
+tier_floors:
+  consequence: {LOW: T0, MEDIUM: T1, HIGH: T3, CRITICAL: T4}
+  irreversibility: {LOW: T0, MEDIUM: T1, HIGH: T2, CRITICAL: T4}
+  ambiguity: {LOW: T0, MEDIUM: T1, HIGH: T2, CRITICAL: T3}
+  evidence_scarcity: {LOW: T0, MEDIUM: T1, HIGH: T2, CRITICAL: T3}
+  search_space: {CLOSED: T0, BOUNDED: T1, OPEN: T3}
+t5_escalation: {consequence: CRITICAL, irreversibility: CRITICAL}
 tiers:
-  T0: {max_iterations: 1, max_candidates: 1}
-  T1: {max_iterations: 2, max_candidates: 2}
-  T2: {max_iterations: 4, max_candidates: 4}
-  T3: {max_iterations: 6, max_candidates: 6}
-  T4: {max_iterations: 10, max_candidates: 10}
-  T5: {max_iterations: 14, max_candidates: 24}
-
+  T0:
+    limits: {max_iterations: 1, max_llm_calls: 1, max_tool_calls: 0, max_input_tokens: 8192, max_output_tokens: 2048, max_candidates: 1, max_concurrent_actions: 1, max_runtime_seconds: 60}
+    search: {initial_candidate_count: 1, max_candidate_depth: 1, max_representation_views: 1, synthesis_order_limit: 1, falsifier_operator_limit: 0, independent_validation_branches: 0, sensitivity_samples: 0}
+    acquisition_threshold: 1.0
+  T1:
+    limits: {max_iterations: 2, max_llm_calls: 2, max_tool_calls: 0, max_input_tokens: 16384, max_output_tokens: 4096, max_candidates: 2, max_concurrent_actions: 1, max_runtime_seconds: 120}
+    search: {initial_candidate_count: 2, max_candidate_depth: 1, max_representation_views: 1, synthesis_order_limit: 1, falsifier_operator_limit: 1, independent_validation_branches: 0, sensitivity_samples: 0}
+    acquisition_threshold: 1.0
+  T2:
+    limits: {max_iterations: 4, max_llm_calls: 6, max_tool_calls: 1, max_input_tokens: 65536, max_output_tokens: 16384, max_candidates: 4, max_concurrent_actions: 2, max_runtime_seconds: 300}
+    search: {initial_candidate_count: 4, max_candidate_depth: 2, max_representation_views: 1, synthesis_order_limit: 1, falsifier_operator_limit: 2, independent_validation_branches: 0, sensitivity_samples: 16}
+    acquisition_threshold: 0.75
+  T3:
+    limits: {max_iterations: 6, max_llm_calls: 12, max_tool_calls: 2, max_input_tokens: 131072, max_output_tokens: 32768, max_candidates: 6, max_concurrent_actions: 3, max_runtime_seconds: 600}
+    search: {initial_candidate_count: 6, max_candidate_depth: 3, max_representation_views: 2, synthesis_order_limit: 2, falsifier_operator_limit: 4, independent_validation_branches: 0, sensitivity_samples: 32}
+    acquisition_threshold: 0.5
+  T4:
+    limits: {max_iterations: 10, max_llm_calls: 24, max_tool_calls: 5, max_input_tokens: 262144, max_output_tokens: 65536, max_candidates: 10, max_concurrent_actions: 4, max_runtime_seconds: 1200}
+    search: {initial_candidate_count: 10, max_candidate_depth: 4, max_representation_views: 2, synthesis_order_limit: 3, falsifier_operator_limit: 10, independent_validation_branches: 1, sensitivity_samples: 64}
+    acquisition_threshold: 0.35
+  T5:
+    limits: {max_iterations: 14, max_llm_calls: 48, max_tool_calls: 10, max_input_tokens: 524288, max_output_tokens: 131072, max_candidates: 24, max_concurrent_actions: 4, max_runtime_seconds: 1800}
+    search: {initial_candidate_count: 24, max_candidate_depth: 4, max_representation_views: 2, synthesis_order_limit: 3, falsifier_operator_limit: 10, independent_validation_branches: 2, sensitivity_samples: 128}
+    acquisition_threshold: 0.25
+context:
+  compiler_version: "1.0"
+  markdown_renderer_version: "1.0"
+  compression_policy_version: "1.0"
+  profile_size_targets: {FULL: 262144, STANDARD: 65536, HANDOFF: 32768}
+stop:
+  policy_version: "1.0"
+  threshold: 0.0
+  stability_window: 2
+  continue_on_interval_overlap: true
+burn_rate:
+  version: "1.0"
+  trailing_usage_event_window: 3
