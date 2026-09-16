@@ -85,6 +85,7 @@ class TaskClassifier:
     ) -> tuple[TaskSignature, ClassificationRecord]:
         policy = policy or ClassificationPolicy()
         metadata = envelope.user_metadata
+        available_artifacts = frozenset(attachment.sha256 for attachment in envelope.attachments)
         explicit: dict[str, Ordinal4] = {}
         for key in ("consequence", "irreversibility", "ambiguity", "evidence_scarcity"):
             value = metadata.get(key)
@@ -112,7 +113,7 @@ class TaskClassifier:
             deterministic_anchors: tuple[SourceAnchor, ...] = (),
         ) -> Ordinal4:
             for anchor in proposed_anchors:
-                validate_source_anchor(anchor, envelope)
+                validate_source_anchor(anchor, envelope, available_artifacts)
             is_explicit = name in explicit
             estimate = explicit.get(name, proposed or policy.fallback_ordinal)
             effective = harder(estimate, floor)
