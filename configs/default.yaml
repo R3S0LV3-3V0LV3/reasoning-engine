@@ -1,0 +1,5 @@
+schema_version: "1.0"
+database_path: .fre/fre.sqlite3
+artifact_path: .fre/artifacts
+snapshot_interval: 50
+
