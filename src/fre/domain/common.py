@@ -5,13 +5,19 @@ import json
 import math
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Never, Protocol
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 type JsonScalar = bool | int | float | str | None
 type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+
+
+class SupportsIndex(Protocol):
+    def __index__(self) -> int: ...
+
+
 SchemaVersion = Annotated[str, Field(pattern=r"^[1-9]\d*\.\d+$")]
 UtcDateTime = Annotated[
     AwareDatetime,
@@ -19,10 +25,98 @@ UtcDateTime = Annotated[
 ]
 
 
+class FrozenDict(dict[Any, Any]):
+    """A recursively immutable mapping that retains normal JSON serialization."""
+
+    def _immutable(self) -> Never:
+        raise TypeError("canonical domain mappings are immutable")
+
+    def __delitem__(self, key: Any) -> Never:
+        self._immutable()
+
+    def __setitem__(self, key: Any, value: Any) -> Never:
+        self._immutable()
+
+    def clear(self) -> Never:
+        self._immutable()
+
+    def pop(self, key: Any, default: Any = None) -> Never:
+        self._immutable()
+
+    def popitem(self) -> Never:
+        self._immutable()
+
+    def setdefault(self, key: Any, default: Any = None) -> Never:
+        self._immutable()
+
+    def update(self, *args: Any, **kwargs: Any) -> Never:
+        self._immutable()
+
+
+class FrozenList(list[Any]):
+    """A recursively immutable list retaining list-compatible serialization."""
+
+    def _immutable(self) -> Never:
+        raise TypeError("canonical domain sequences are immutable")
+
+    def __delitem__(self, key: Any) -> Never:
+        self._immutable()
+
+    def __setitem__(self, key: Any, value: Any) -> Never:
+        self._immutable()
+
+    def append(self, value: Any) -> Never:
+        self._immutable()
+
+    def clear(self) -> Never:
+        self._immutable()
+
+    def extend(self, values: Any) -> Never:
+        self._immutable()
+
+    def insert(self, index: SupportsIndex, value: Any) -> Never:
+        self._immutable()
+
+    def pop(self, index: SupportsIndex = -1) -> Never:
+        self._immutable()
+
+    def remove(self, value: Any) -> Never:
+        self._immutable()
+
+    def reverse(self) -> Never:
+        self._immutable()
+
+    def sort(self, *args: Any, **kwargs: Any) -> Never:
+        self._immutable()
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, FrozenModel):
+        return value
+    if isinstance(value, dict):
+        return FrozenDict({key: _deep_freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return FrozenList(_deep_freeze(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_deep_freeze(item) for item in value)
+    if isinstance(value, set | frozenset):
+        return frozenset(_deep_freeze(item) for item in value)
+    return value
+
+
 class FrozenModel(BaseModel):
     """Strict, immutable base for domain values."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def recursively_freeze(self) -> "FrozenModel":
+        for field_name in type(self).model_fields:
+            value = getattr(self, field_name)
+            frozen = _deep_freeze(value)
+            if frozen is not value:
+                object.__setattr__(self, field_name, frozen)
+        return self
 
 
 class PersistentModel(FrozenModel):
@@ -100,11 +194,19 @@ def _normalise(value: Any) -> JsonValue:
             raise ValueError("naive timestamps are not canonical")
         return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     if isinstance(value, dict):
-        return {str(key): _normalise(item) for key, item in value.items()}
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("canonical JSON mapping keys must be strings")
+        return {key: _normalise(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalise(item) for item in value]
     if isinstance(value, (set, frozenset)):
-        return sorted((_normalise(item) for item in value), key=repr)
+        normalised = (_normalise(item) for item in value)
+        return sorted(
+            normalised,
+            key=lambda item: json.dumps(
+                item, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+            ),
+        )
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError("NaN and infinity are not canonical JSON")
     if value is None or isinstance(value, bool | int | float | str):
@@ -125,3 +227,11 @@ def canonical_json(value: Any) -> bytes:
 
 def canonical_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
+
+
+def canonical_unordered[CanonicalT](
+    values: tuple[CanonicalT, ...],
+) -> tuple[CanonicalT, ...]:
+    """Normalize a semantically set-like tuple by canonical bytes and remove duplicates."""
+    unique = {canonical_json(value): value for value in values}
+    return tuple(unique[key] for key in sorted(unique))

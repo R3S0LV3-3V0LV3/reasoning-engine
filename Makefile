@@ -1,4 +1,4 @@
-.PHONY: format lint type test check
+.PHONY: format lint type test check quality
 format:
 	uv run ruff format .
 lint:
@@ -9,4 +9,4 @@ type:
 test:
 	uv run pytest
 check: lint type test
-
+quality: check

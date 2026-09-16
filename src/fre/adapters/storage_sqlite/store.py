@@ -172,7 +172,7 @@ class SQLiteStore:
                 (
                     str(state.run_id),
                     state.version,
-                    canonical_json(state).decode(),
+                    canonical_json(state.snapshot_payload()).decode(),
                     state_hash,
                     reducer_version,
                     utc_now().isoformat(),
@@ -192,10 +192,43 @@ class SQLiteStore:
         raw_state = json.loads(row["state_json"])
         if canonical_hash(raw_state) != row["state_hash"]:
             raise SnapshotIntegrityError("snapshot content hash mismatch")
-        rebuilt = reducer.reduce(run_id, self.load(run_id))
+        snapshot_sequence = int(row["sequence"])
+        rebuilt = reducer.reduce(
+            run_id,
+            tuple(event for event in self.load(run_id) if event.sequence <= snapshot_sequence),
+        )
         if rebuilt.version != row["sequence"] or rebuilt.state_hash != row["state_hash"]:
             raise SnapshotIntegrityError("snapshot does not match event replay")
         return rebuilt
+
+    def load_snapshot(self, run_id: UUID, reducer: RunReducer) -> RunState:
+        """Load and integrity-check the latest snapshot without folding prior events."""
+        row = self._connection.execute(
+            "SELECT * FROM snapshots WHERE run_id = ? ORDER BY sequence DESC LIMIT 1",
+            (str(run_id),),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"no snapshot for run: {run_id}")
+        if row["reducer_version"] != reducer.version:
+            raise SnapshotIntegrityError("snapshot reducer version mismatch")
+        raw_state = json.loads(row["state_json"])
+        if canonical_hash(raw_state) != row["state_hash"]:
+            raise SnapshotIntegrityError("snapshot content hash mismatch")
+        state = RunState.model_validate(raw_state, strict=False)
+        if (
+            state.run_id != run_id
+            or state.version != row["sequence"]
+            or state.state_hash != row["state_hash"]
+        ):
+            raise SnapshotIntegrityError("snapshot metadata does not match snapshot state")
+        return state
+
+    def replay_from_snapshot(self, run_id: UUID, reducer: RunReducer) -> RunState:
+        """Reconstruct from a verified snapshot plus only its subsequent events."""
+        state = self.load_snapshot(run_id, reducer)
+        for event in self.load(run_id, after_sequence=state.version):
+            state = reducer.apply(state, event)
+        return state
 
     def execute_for_test(self, sql: str, parameters: Iterable[object] = ()) -> None:
         """Execute corruption SQL for integrity-test fixtures only."""
