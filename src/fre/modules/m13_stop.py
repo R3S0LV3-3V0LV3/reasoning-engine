@@ -52,6 +52,7 @@ class StopController:
             inputs.acceptance is AcceptanceStatus.SATISFIED
             and inputs.validation in {ValidationStatus.COMPLETE, ValidationStatus.NOT_APPLICABLE}
             and not inputs.required_work
+            and inputs.stable
         ):
             disposition, reasons = StopDisposition.COMPLETE, {StopReasonCode.ACCEPTANCE_COMPLETE}
         elif exhausted and inputs.required_work:
@@ -121,13 +122,29 @@ class StopController:
             policy_version=policy.version,
             reason_codes=ordered,
             reasons=tuple(REASON_TEXT[item] for item in ordered),
-            ledger_trigger_refs=inputs.epistemic_trigger_refs,
+            ledger_trigger_refs=tuple(
+                sorted(
+                    inputs.epistemic_trigger_refs, key=lambda ref: (str(ref.node_id), ref.revision)
+                )
+            ),
             budget_projection_hash=inputs.budget.projection_hash,
             burn_rate_projection_hash=inputs.burn_rate.projection_hash
             if inputs.burn_rate
             else None,
             marginal_value_method=inputs.value.method_version if inputs.value else None,
+            marginal_value_source_refs=tuple(sorted(inputs.value.source_refs))
+            if inputs.value
+            else (),
+            marginal_value_ledger_refs=tuple(
+                sorted(
+                    inputs.value.ledger_refs,
+                    key=lambda ref: (str(ref.node_id), ref.revision),
+                )
+            )
+            if inputs.value
+            else (),
             cost_method=inputs.cost.method_version if inputs.cost else None,
+            cost_source_refs=tuple(sorted(inputs.cost.source_refs)) if inputs.cost else (),
             context_request=(
                 ContextCompilationRequest(
                     profile=CompilerProfile.HANDOFF, size_target=32768, terminal=True

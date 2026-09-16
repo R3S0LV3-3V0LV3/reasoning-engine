@@ -132,6 +132,9 @@ class BudgetMeter:
         events = projection.usage_events
         current_events = events[-window_size:]
         previous_events = events[-2 * window_size : -window_size]
+        source_event_range = (
+            (len(events) - len(current_events) + 1, len(events)) if current_events else None
+        )
         values: dict[str, ResourceBurnRate] = {}
         if projection.plan is None:
             raise BudgetExceeded("budget has not been allocated")
@@ -140,6 +143,8 @@ class BudgetMeter:
             current_total = sum(getattr(item, name) for item in current_events)
             previous_total = sum(getattr(item, name) for item in previous_events)
             current_rate = current_total / len(current_events) if current_events else None
+            iteration_total = sum(item.iterations for item in current_events)
+            iteration_rate = current_total / iteration_total if iteration_total else None
             previous_rate = previous_total / len(previous_events) if previous_events else None
             if len(current_events) < 2:
                 availability = RateAvailability.INSUFFICIENT_DATA
@@ -162,11 +167,12 @@ class BudgetMeter:
                 committed=getattr(projection.committed, name),
                 remaining=getattr(remaining, name),
                 consumption_per_usage_event=current_rate,
+                consumption_per_iteration=iteration_rate,
                 previous_window_rate=previous_rate,
                 trend=trend,
                 projected_iterations_to_exhaustion=(
-                    getattr(remaining, name) / current_rate
-                    if current_rate and current_rate > 0
+                    getattr(remaining, name) / iteration_rate
+                    if iteration_rate and iteration_rate > 0
                     else None
                 ),
                 ceiling_proximity=(
@@ -181,11 +187,13 @@ class BudgetMeter:
             "window_size": window_size,
             "resources": values,
             "source_event_hash": source_hash,
+            "source_event_range": source_event_range,
         }
         return BudgetBurnRate(
             version="burn-rate/1.0",
             window_size=window_size,
             resources=values,
             source_event_hash=source_hash,
+            source_event_range=source_event_range,
             projection_hash=canonical_hash(preimage),
         )

@@ -126,6 +126,13 @@ class BudgetAllocator:
             raise DeploymentPolicyConflict("deployment maximum is below the mandatory tier floor")
         definition = policy.tiers[tier]
         limits = self._clamp(definition.limits, deployment.resource_ceilings)
+        if (
+            limits.max_candidates < definition.search.initial_candidate_count
+            or limits.max_llm_calls < definition.search.independent_validation_branches
+        ):
+            raise DeploymentPolicyConflict(
+                "deployment resource ceilings cannot satisfy mandatory tier obligations"
+            )
         plan = BudgetPlan(
             tier=tier,
             limits=limits,
@@ -160,4 +167,9 @@ class BudgetAllocator:
             raise InvalidBudgetRevision("revision falls below committed plus reserved usage")
         if TIER_ORDER[plan.tier] < TIER_ORDER[projection.plan.tier]:
             raise InvalidBudgetRevision("budget revisions may not lower the committed tier")
+        if (
+            plan.search.independent_validation_branches
+            < projection.plan.search.independent_validation_branches
+        ):
+            raise InvalidBudgetRevision("budget revision lowers mandatory validation floor")
         return projection.model_copy(update={"plan": plan, "policy_hash": policy_hash})

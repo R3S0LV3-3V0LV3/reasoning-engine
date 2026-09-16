@@ -5,7 +5,14 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
-from fre.domain.common import ArtifactRef, ConfidenceAssessment, FrozenModel, JsonValue
+from fre.domain.common import (
+    ArtifactRef,
+    ConfidenceAssessment,
+    FrozenModel,
+    JsonValue,
+    UtcDateTime,
+    canonical_unordered,
+)
 
 
 class LedgerNodeType(StrEnum):
@@ -65,7 +72,7 @@ class LedgerNode(FrozenModel):
     confidence: ConfidenceAssessment | None = None
     source_refs: tuple[ArtifactRef, ...] = ()
     schema_version: str = "1.0"
-    created_at: str
+    created_at: UtcDateTime
     created_by_action: UUID
     producing_module: str
     provenance_refs: tuple[str, ...] = ()
@@ -76,6 +83,8 @@ class LedgerNode(FrozenModel):
     def validate_predecessor(self) -> "LedgerNode":
         if (self.revision == 1) != (self.predecessor_revision_hash is None):
             raise ValueError("only the first revision may omit predecessor_revision_hash")
+        object.__setattr__(self, "source_refs", canonical_unordered(self.source_refs))
+        object.__setattr__(self, "provenance_refs", tuple(sorted(set(self.provenance_refs))))
         return self
 
     @property

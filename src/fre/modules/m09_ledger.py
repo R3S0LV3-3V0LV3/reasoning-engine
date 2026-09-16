@@ -1,6 +1,7 @@
 """M09 deterministic epistemic ledger projection and command validation."""
 
 from collections import deque
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fre.domain.common import canonical_hash
@@ -14,6 +15,7 @@ from fre.domain.ledger import (
     InvalidContradictionResolution,
     InvalidLedgerRelation,
     InvalidRevisionError,
+    InvalidStatusTransition,
     LedgerCycleError,
     LedgerEdge,
     LedgerNode,
@@ -46,12 +48,19 @@ def make_node(
     node_type: LedgerNodeType,
     content: object,
     status: EpistemicStatus,
-    created_at: str,
+    created_at: str | datetime,
     action_id: UUID,
     module_id: str,
     predecessor_revision_hash: str | None = None,
     confidence: object = None,
 ) -> LedgerNode:
+    normalized_created_at = (
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if isinstance(created_at, str)
+        else created_at
+    )
+    if normalized_created_at.tzinfo is None or normalized_created_at.utcoffset() is None:
+        raise ValueError("ledger timestamps must be timezone-aware")
     data = {
         "node_id": node_id,
         "revision": revision,
@@ -59,7 +68,7 @@ def make_node(
         "content": content,
         "epistemic_status": status,
         "confidence": confidence,
-        "created_at": created_at,
+        "created_at": normalized_created_at.astimezone(UTC),
         "created_by_action": action_id,
         "producing_module": module_id,
         "predecessor_revision_hash": predecessor_revision_hash,
@@ -126,6 +135,17 @@ class EpistemicLedger:
             raise InvalidLedgerRelation(
                 "RESOLVES is accepted only by atomic contradiction resolution"
             )
+        if edge.relation is LedgerRelation.SUPERSEDES:
+            source = nodes[_ref_key(edge.source)]
+            target = nodes[_ref_key(edge.target)]
+            if (
+                source.node_id != target.node_id
+                or source.revision != target.revision + 1
+                or source.predecessor_revision_hash != target.revision_hash
+            ):
+                raise InvalidRevisionError(
+                    "SUPERSEDES must bind consecutive revisions of one logical node"
+                )
         if edge.relation in DEPENDENCY_RELATIONS and edge.source == edge.target:
             raise LedgerCycleError("direct dependency cycle")
         candidate = projection.model_copy(
@@ -219,6 +239,30 @@ class EpistemicLedger:
     ) -> LedgerProjection:
         if _ref_key(ref) not in self._node_map(projection):
             raise DanglingLedgerReference("unknown ledger revision")
+        current = self.effective_status(projection, ref)
+        allowed = {
+            EpistemicStatus.SUPPORTED: {
+                EpistemicStatus.SUPPORTED,
+                EpistemicStatus.CONTESTED,
+                EpistemicStatus.REFUTED,
+                EpistemicStatus.STALE,
+            },
+            EpistemicStatus.PROVISIONAL: set(EpistemicStatus),
+            EpistemicStatus.CONTESTED: {
+                EpistemicStatus.CONTESTED,
+                EpistemicStatus.SUPPORTED,
+                EpistemicStatus.REFUTED,
+                EpistemicStatus.STALE,
+            },
+            EpistemicStatus.REFUTED: {
+                EpistemicStatus.REFUTED,
+                EpistemicStatus.STALE,
+            },
+            EpistemicStatus.UNRESOLVED: set(EpistemicStatus),
+            EpistemicStatus.STALE: set(EpistemicStatus),
+        }
+        if status not in allowed[current]:
+            raise InvalidStatusTransition(f"invalid status transition: {current} -> {status}")
         overlays = dict(projection.status_overlays)
         overlays[ref] = status
         ordered = tuple(sorted(overlays.items(), key=lambda item: _ref_key(item[0])))
@@ -241,18 +285,66 @@ class EpistemicLedger:
         result = result.model_copy(
             update={"edges": tuple(sorted((*result.edges, supersedes), key=_edge_key))}
         )
-        descendants = self.descendants(projection, predecessor.ref)
+        adjacency = self._adjacency(projection)
+        distances: dict[LedgerNodeRef, int] = {}
+        queue: deque[tuple[LedgerNodeRef, int]] = deque(
+            (item, 1) for item in adjacency.get(predecessor.ref, ())
+        )
+        while queue:
+            descendant, distance = queue.popleft()
+            previous_distance = distances.get(descendant)
+            if previous_distance is not None and previous_distance <= distance:
+                continue
+            distances[descendant] = distance
+            queue.extend((item, distance + 1) for item in adjacency.get(descendant, ()))
+        descendants = tuple(sorted(distances, key=_ref_key))
         envelopes: list[DependencyConfidenceEnvelope] = []
         for descendant in descendants:
             result = self.mark_status(result, descendant, EpistemicStatus.STALE)
-            direct = predecessor.ref in self.ancestors(projection, descendant)
+            direct_prerequisites = {
+                prerequisite
+                for prerequisite, dependents in adjacency.items()
+                if descendant in dependents
+            }
+            directly_changed = int(predecessor.ref in direct_prerequisites)
+            previous_score = predecessor.confidence.score if predecessor.confidence else None
+            current_score = successor.confidence.score if successor.confidence else None
+            confidence_delta = (
+                (current_score - previous_score, current_score - previous_score)
+                if previous_score is not None and current_score is not None
+                else None
+            )
+            independence_groups = tuple(
+                sorted(
+                    {
+                        edge.independence_group
+                        for edge in projection.edges
+                        if edge.relation in DEPENDENCY_RELATIONS
+                        and edge.independence_group is not None
+                        and _normalised(edge) == (predecessor.ref, descendant)
+                    }
+                )
+            )
             envelopes.append(
                 DependencyConfidenceEnvelope(
                     affected_node_ref=descendant,
-                    changed_dependency_refs=(predecessor.ref,),
-                    maximum_dependency_depth=1,
-                    direct_dependencies_changed=int(direct),
-                    direct_dependency_fraction=1.0 if direct else 0.0,
+                    changed_dependency_refs=(predecessor.ref, successor.ref),
+                    maximum_dependency_depth=distances[descendant],
+                    previous_confidence_range=(previous_score, previous_score)
+                    if previous_score is not None
+                    else None,
+                    current_confidence_range=(current_score, current_score)
+                    if current_score is not None
+                    else None,
+                    confidence_delta_interval=confidence_delta,
+                    direct_dependencies_changed=directly_changed,
+                    direct_dependency_fraction=(
+                        directly_changed / len(direct_prerequisites)
+                        if direct_prerequisites
+                        else 0.0
+                    ),
+                    independence_groups=independence_groups,
+                    source_event_refs=(str(successor.created_by_action),),
                 )
             )
         return result.model_copy(update={"stale_envelopes": (*result.stale_envelopes, *envelopes)})

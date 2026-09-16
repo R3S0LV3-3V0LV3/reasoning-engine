@@ -5,7 +5,7 @@ from typing import cast
 from uuid import UUID
 
 from fre.domain.budget import BudgetRemaining
-from fre.domain.common import JsonValue, canonical_hash, canonical_json
+from fre.domain.common import JsonValue, canonical_hash, canonical_json, canonical_unordered
 from fre.domain.context import (
     CompilerProfile,
     ContextCompilationResult,
@@ -20,7 +20,7 @@ from fre.domain.context import (
     DeltaOperationType,
     RejectedItem,
 )
-from fre.domain.ledger import EpistemicStatus, LedgerNode, LedgerProjection
+from fre.domain.ledger import EpistemicStatus, LedgerNode, LedgerNodeRef, LedgerProjection
 from fre.modules.m09_ledger import EpistemicLedger
 
 DEFAULT_TARGETS = {
@@ -53,6 +53,11 @@ class ContextCompiler:
         next_action: str | None = None,
         terminal_disposition: str | None = None,
     ) -> ContextCompilationResult:
+        eligible_rules = self.policy.profile_rule_eligibility[profile]
+        applied: list[str] = ["C01"] if "C01" in eligible_rules else []
+        deduplicated_constraints = canonical_unordered(hard_constraints)
+        deduplicated_rejections = canonical_unordered(rejected_items)
+        deduplicated_blockers = tuple(sorted(set(unresolved_blockers)))
         current_by_id: dict[UUID, LedgerNode] = {}
         for node in ledger.nodes:
             if (
@@ -60,7 +65,12 @@ class ContextCompiler:
                 or node.revision > current_by_id[node.node_id].revision
             ):
                 current_by_id[node.node_id] = node
-        nodes = ledger.nodes if profile is CompilerProfile.FULL else tuple(current_by_id.values())
+        if profile is CompilerProfile.FULL:
+            nodes = ledger.nodes
+        else:
+            nodes = tuple(current_by_id.values())
+            if "C02" in eligible_rules:
+                applied.append("C02")
         items = tuple(
             sorted(
                 (
@@ -70,6 +80,11 @@ class ContextCompiler:
                         status=self.ledger.effective_status(ledger, node.ref),
                         content=node.content,
                         provenance_refs=node.provenance_refs,
+                        predecessor_ref=(
+                            LedgerNodeRef(node_id=node.node_id, revision=node.revision - 1)
+                            if node.revision > 1
+                            else None
+                        ),
                     )
                     for node in nodes
                     if profile is not CompilerProfile.HANDOFF
@@ -83,20 +98,21 @@ class ContextCompiler:
                 key=lambda item: (str(item.ref.node_id), item.ref.revision),
             )
         )
-        applied = ("C01", "C02") if profile is not CompilerProfile.FULL else ("C01",)
+        if "C04" in eligible_rules:
+            applied.append("C04")
+        if "C05" in eligible_rules:
+            applied.append("C05")
         packet = ContextPacket(
             run_id=run_id,
             snapshot_version=snapshot_version,
             profile=profile,
             compiler_version=self.compiler_version,
             compression_policy_version=self.policy.compression_policy_version,
-            applied_rule_ids=applied,
-            hard_constraints=tuple(
-                sorted(hard_constraints, key=lambda value: canonical_json(value))
-            ),
+            applied_rule_ids=tuple(applied),
+            hard_constraints=deduplicated_constraints,
             ledger_items=items,
-            rejected_items=tuple(sorted(rejected_items, key=lambda item: (item.ref, item.reason))),
-            unresolved_blockers=tuple(sorted(unresolved_blockers)),
+            rejected_items=deduplicated_rejections,
+            unresolved_blockers=deduplicated_blockers,
             budget_remaining=budget_remaining,
             next_action=next_action,
             terminal_disposition=terminal_disposition,
@@ -198,6 +214,9 @@ def generate_delta(base: ContextPacket, target: ContextPacket) -> ContextDeltaPa
 
 
 def apply_delta(base: ContextPacket, delta: ContextDeltaPacket) -> ContextPacket:
+    delta_preimage = delta.model_dump(exclude={"delta_hash"})
+    if canonical_hash(delta_preimage) != delta.delta_hash:
+        raise ValueError("delta hash does not match its canonical preimage")
     if base.packet_hash != delta.base_packet_hash:
         raise ContextDeltaBaseMismatch("delta base hash does not match the supplied packet")
     data = copy.deepcopy(base.model_dump(mode="json"))
@@ -210,6 +229,10 @@ def apply_delta(base: ContextPacket, delta: ContextDeltaPacket) -> ContextPacket
         else:
             data[key] = operation.value
     result = ContextPacket.model_validate(data, strict=False)
-    if result.packet_hash != delta.target_packet_hash:
+    recomputed_target_hash = canonical_hash(result.model_dump(exclude={"packet_hash"}))
+    if (
+        result.packet_hash != delta.target_packet_hash
+        or recomputed_target_hash != delta.target_packet_hash
+    ):
         raise ValueError("delta did not reconstruct the declared target hash")
     return result

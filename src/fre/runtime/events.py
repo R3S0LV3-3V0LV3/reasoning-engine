@@ -68,7 +68,7 @@ class LedgerContradictionResolved(FrozenModel):
 class BudgetAllocated(FrozenModel):
     plan: BudgetPlan
     policy_version: str
-    policy_hash: str
+    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_artifact_ref: ArtifactRef | None = None
 
 
@@ -130,8 +130,8 @@ EventPayload = (
     | StopDecisionRecorded
     | TerminalContextAssociated
 )
-EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
-    payload.__name__: payload
+EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
+    (payload.__name__, "1.0"): payload
     for payload in (
         RunCreated,
         RunStatusChanged,
@@ -159,19 +159,21 @@ EVENT_PAYLOADS: dict[str, type[EventPayload]] = {
 class UncommittedEvent(FrozenModel):
     event_id: UUID
     run_id: UUID
-    event_type: str
+    event_type: str = Field(min_length=1)
     action_id: UUID
-    module_id: str
+    module_id: str = Field(min_length=1)
     schema_version: SchemaVersion = "1.0"
-    module_version: str
+    module_version: str = Field(min_length=1)
     input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: UtcDateTime
     payload: dict[str, JsonValue]
 
     def validated_payload(self) -> EventPayload:
-        payload_type = EVENT_PAYLOADS.get(self.event_type)
+        payload_type = EVENT_PAYLOADS.get((self.event_type, self.schema_version))
         if payload_type is None:
-            raise ValueError(f"unregistered event type: {self.event_type}")
+            raise ValueError(
+                f"unregistered event type/schema: {self.event_type}@{self.schema_version}"
+            )
         # Payloads are canonical JSON values, so UUIDs and other rich types are
         # deliberately decoded from their wire representations here.
         return payload_type.model_validate(self.payload, strict=False)

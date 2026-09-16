@@ -95,3 +95,40 @@ def test_context_compilation_is_idempotent(value: int) -> None:
     )
     assert first.canonical_bytes == second.canonical_bytes
     assert first.markdown == second.markdown
+
+
+@given(st.permutations(("alpha", "beta", "gamma")))
+def test_semantically_unordered_context_inputs_have_identical_bytes(
+    blocker_order: list[str],
+) -> None:
+    allocator = BudgetAllocator()
+    plan, digest = allocator.allocate(signature(0, 0), default_tier_policy(), DeploymentLimits())
+    remaining = BudgetMeter().remaining(BudgetProjection(plan=plan, policy_hash=digest))
+    compiler = ContextCompiler()
+    baseline = compiler.compile(
+        run_id=UUID(int=999),
+        snapshot_version=2,
+        ledger=LedgerProjection(),
+        budget_remaining=remaining,
+        profile=CompilerProfile.HANDOFF,
+        unresolved_blockers=("alpha", "beta", "gamma"),
+    )
+    permuted = compiler.compile(
+        run_id=UUID(int=999),
+        snapshot_version=2,
+        ledger=LedgerProjection(),
+        budget_remaining=remaining,
+        profile=CompilerProfile.HANDOFF,
+        unresolved_blockers=tuple(blocker_order),
+    )
+    assert baseline.canonical_bytes == permuted.canonical_bytes
+    assert baseline.packet.packet_hash == permuted.packet.packet_hash
+
+
+def test_semantically_authoritative_sequences_remain_distinguishable() -> None:
+    from fre.domain.common import canonical_hash
+    from fre.domain.context import ContextCompressionPolicy
+
+    first = ContextCompressionPolicy(ordered_rule_ids=("C01", "C02", "C05"))
+    second = ContextCompressionPolicy(ordered_rule_ids=("C02", "C01", "C05"))
+    assert canonical_hash(first) != canonical_hash(second)

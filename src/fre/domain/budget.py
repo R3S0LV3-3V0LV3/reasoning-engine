@@ -69,6 +69,14 @@ class BudgetPlan(FrozenModel):
     stop_threshold: float
     policy_version: str
 
+    @model_validator(mode="after")
+    def search_fits_hard_limits(self) -> "BudgetPlan":
+        if self.search.initial_candidate_count > self.limits.max_candidates:
+            raise ValueError("initial candidate count exceeds hard candidate ceiling")
+        if self.search.independent_validation_branches > self.limits.max_llm_calls:
+            raise ValueError("mandatory validation branches exceed hard call ceiling")
+        return self
+
 
 class TierDefinition(FrozenModel):
     limits: BudgetLimits
@@ -106,7 +114,7 @@ class BudgetReservation(FrozenModel):
 
 class BudgetProjection(FrozenModel):
     plan: BudgetPlan | None = None
-    policy_hash: str | None = None
+    policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     committed: ResourceVector = ResourceVector()
     reservations: tuple[BudgetReservation, ...] = ()
     usage_events: tuple[ResourceVector, ...] = ()
@@ -148,6 +156,7 @@ class ResourceBurnRate(FrozenModel):
     committed: int
     remaining: int
     consumption_per_usage_event: float | None
+    consumption_per_iteration: float | None
     previous_window_rate: float | None
     trend: BurnTrend
     projected_iterations_to_exhaustion: float | None
@@ -159,6 +168,7 @@ class BudgetBurnRate(FrozenModel):
     window_size: int
     resources: dict[str, ResourceBurnRate]
     source_event_hash: str
+    source_event_range: tuple[int, int] | None
     projection_hash: str
 
 

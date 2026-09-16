@@ -48,9 +48,9 @@ class ValidationStatus(StrEnum):
 
 
 class IntervalEstimate(FrozenModel):
-    lower: float
-    point: float | None = None
-    upper: float
+    lower: float = Field(allow_inf_nan=False)
+    point: float | None = Field(default=None, allow_inf_nan=False)
+    upper: float = Field(allow_inf_nan=False)
     method_version: str
     source_refs: tuple[str, ...] = ()
 
@@ -107,8 +107,28 @@ class StopDecision(FrozenModel):
     budget_projection_hash: str
     burn_rate_projection_hash: str | None = None
     marginal_value_method: str | None = None
+    marginal_value_source_refs: tuple[str, ...] = ()
+    marginal_value_ledger_refs: tuple[LedgerNodeRef, ...] = ()
     cost_method: str | None = None
+    cost_source_refs: tuple[str, ...] = ()
     context_request: ContextCompilationRequest | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_and_epistemic_provenance(self) -> "StopDecision":
+        terminal = self.disposition is not StopDisposition.CONTINUE
+        if terminal != (self.context_request is not None):
+            raise ValueError("terminal decisions require exactly one context request")
+        if self.context_request is not None and (
+            not self.context_request.terminal or self.context_request.profile.value != "HANDOFF"
+        ):
+            raise ValueError("terminal context request must use the HANDOFF profile")
+        epistemic = {
+            StopReasonCode.UNRESOLVABLE_BLOCKER,
+            StopReasonCode.RESOLVABLE_UNKNOWN,
+        }
+        if epistemic.intersection(self.reason_codes) and not self.ledger_trigger_refs:
+            raise ValueError("epistemic stop reasons require ledger trigger references")
+        return self
 
 
 class StopError(ValueError):

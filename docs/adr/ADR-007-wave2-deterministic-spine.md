@@ -22,3 +22,8 @@ order and overflow is explicit. Deltas are content-addressed transfer optimisati
 M13 applies fixed hard-terminal precedence before confidence-bounded soft value/cost comparison.
 It requests terminal context; the minimal `Wave2Runtime` coordinates compilation, artifact storage,
 association, and terminal status without introducing the later scheduler/orchestrator.
+
+Collections declare their ordering semantics: event streams, revision chains, compression rules,
+and delta operations preserve semantic sequence; set-like references, query results, blockers,
+rejections, and metrics use deterministic type-appropriate canonical ordering before hashing or
+projection. Canonical mapping keys are strings and recursively sorted during serialization.

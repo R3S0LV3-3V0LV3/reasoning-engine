@@ -21,3 +21,16 @@ Place all three files at the root of the new repository or under `docs/`, then g
   lifecycle coordinator.
 
 Wave 3 and later semantic/model-assisted modules remain intentionally unimplemented.
+
+## Frozen deterministic foundation
+
+Waves 0–2 are the accepted deterministic substrate for subsequent development. Wave 3+ changes
+must preserve canonical serialization, typed events, replay and snapshot compatibility, artifact
+identity, epistemic revision semantics, budget accounting, context packet and stop semantics, and
+dependency boundaries unless a deliberate versioned migration is approved.
+
+Terminal context artifacts are content-addressed before their event batch commits. A failed batch
+may therefore leave unreferenced physical objects, but those objects have no event authority, no
+canonical reference, and cannot make a run terminal.
+
+The original architecture-bundle README is preserved at `docs/README_BUNDLE_V1.md`.

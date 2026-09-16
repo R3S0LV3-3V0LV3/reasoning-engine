@@ -13,7 +13,7 @@ from fre.domain.budget import (
     ReservationConflict,
     ResourceVector,
 )
-from fre.domain.common import ConfidenceAssessment, canonical_hash
+from fre.domain.common import ConfidenceAssessment, canonical_hash, canonical_json
 from fre.domain.context import (
     CompilerProfile,
     ContextDeltaBaseMismatch,
@@ -253,7 +253,9 @@ def test_context_profiles_hash_markdown_overflow_and_delta() -> None:
         outputs[0].packet.model_dump(exclude={"packet_hash"})
     )
     delta = generate_delta(outputs[0].packet, outputs[1].packet)
-    assert apply_delta(outputs[0].packet, delta) == outputs[1].packet
+    reconstructed = apply_delta(outputs[0].packet, delta)
+    assert reconstructed == outputs[1].packet
+    assert canonical_json(reconstructed) == outputs[1].canonical_bytes
     with pytest.raises(ContextDeltaBaseMismatch):
         apply_delta(outputs[2].packet, delta)
     with pytest.raises(ContextOverflow):

@@ -97,6 +97,9 @@ class FrontierReasoningEngine:
     def replay(self, run_id: UUID) -> RunState:
         return self.inspect(run_id)
 
+    def replay_from_snapshot(self, run_id: UUID) -> RunState:
+        return self.store.replay_from_snapshot(run_id, self.reducer)
+
     def verify(self, run_id: UUID) -> RunState:
         return self.store.verify_snapshot(run_id, self.reducer)
 

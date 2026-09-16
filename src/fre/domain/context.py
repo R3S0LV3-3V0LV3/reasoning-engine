@@ -25,6 +25,14 @@ class CompilerProfile(StrEnum):
 class ContextCompressionPolicy(FrozenModel):
     compression_policy_version: str = "1.0"
     ordered_rule_ids: tuple[str, ...] = ("C01", "C02", "C03", "C04", "C05")
+    profile_rule_eligibility: dict[CompilerProfile, tuple[str, ...]] = Field(
+        default_factory=lambda: {
+            CompilerProfile.FULL: ("C01", "C03", "C05"),
+            CompilerProfile.STANDARD: ("C01", "C02", "C03", "C04", "C05"),
+            CompilerProfile.HANDOFF: ("C01", "C02", "C03", "C04", "C05"),
+        }
+    )
+    size_metric: str = "CANONICAL_UTF8_BYTES"
     mandatory_retention_classes: tuple[str, ...] = (
         "hard_constraints",
         "stale_items",
@@ -48,6 +56,7 @@ class ContextItem(FrozenModel):
     status: str
     content: JsonValue
     provenance_refs: tuple[str, ...] = ()
+    predecessor_ref: LedgerNodeRef | None = None
 
 
 class RejectedItem(FrozenModel):
@@ -75,7 +84,19 @@ class ContextPacket(FrozenModel):
     acquisition_projection_availability: Availability = Availability.NOT_PRODUCED
     next_action: str | None = None
     terminal_disposition: str | None = None
-    packet_hash: str
+    packet_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ContextCompilationRecord(FrozenModel):
+    packet_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    profile: CompilerProfile
+    compiler_version: str
+    compression_policy_version: str
+    applied_rule_ids: tuple[str, ...]
+    renderer_version: str
+    canonical_byte_size: int = Field(ge=0)
+    json_artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    markdown_artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ContextCompilationResult(FrozenModel):
@@ -104,13 +125,13 @@ class DeltaOperation(FrozenModel):
 
 
 class ContextDeltaPacket(FrozenModel):
-    base_packet_hash: str
-    target_packet_hash: str
+    base_packet_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_packet_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     compiler_version: str
     compression_policy_version: str
     profile: CompilerProfile
     operations: tuple[DeltaOperation, ...]
-    delta_hash: str
+    delta_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ContextError(ValueError):
