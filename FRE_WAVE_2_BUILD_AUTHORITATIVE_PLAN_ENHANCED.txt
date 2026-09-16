@@ -1,0 +1,2941 @@
+Frontier Reasoning Engine — Wave 2 Build-Authoritative Codex Plan
+Status: BUILD-AUTHORITATIVE WAVE-2 BASELINE
+Scope: Wave 2 only
+Target: Deterministic control spine
+Modules: M09 Epistemic Ledger, M02 Budget Allocator, Budget Meter, M12 Context Compiler, M13 Marginal-Value Stop Controller
+Prerequisite: Accepted and persisted Wave 0–1 foundation
+
+======================================================================
+1. OBJECTIVE
+======================================================================
+
+Implement Wave 2 of the Frontier Reasoning Engine as the deterministic control spine that sits on top of the already-accepted Wave 0–1 event-sourced substrate.
+
+Wave 2 must add:
+
+- M09 — Epistemic Ledger;
+- M02 — Budget Allocator;
+- executable Budget Meter;
+- M12 — Context Compiler;
+- M13 — Marginal-Value Stop Controller;
+- deterministic ledger, budget, context, and stop projections;
+- the minimum synthetic Wave 2 runtime/coordinator necessary to prove the combined acceptance gate;
+- complete unit, property, integration, replay, backward-compatibility, and finite-termination tests.
+
+Wave 2 must not add semantic or model-assisted reasoning.
+
+The target state is:
+
+Accepted Wave 0–1 event substrate
+        ↓
+M09 authoritative epistemic projection
+        ↓
+M02 deterministic tier/budget allocation
+        ↓
+Budget Meter enforcing hard ceilings
+        ↓
+M12 deterministic context compilation
+        ↓
+M13 deterministic continue/terminate policy
+        ↓
+Replay-equivalent deterministic state
+        ↓
+Wave 3-ready semantic front end
+
+The Wave 2 output is not an LLM demo, not an agent loop, and not a scheduler.
+
+It is a deterministic, replayable control layer that guarantees:
+
+- append-only epistemic history;
+- immutable claim revisions;
+- graph-valid provenance;
+- monotone resource allocation;
+- executable hard ceilings;
+- deterministic context packets;
+- transparent stop/continue decisions;
+- finite termination under bounded resources;
+- provider-neutral execution;
+- exact replay of all Wave 2 state from stored events.
+
+======================================================================
+2. AUTHORITY AND CONFLICT RESOLUTION
+======================================================================
+
+The repository’s authoritative specification files remain controlling.
+
+When implementation details conflict, apply this order:
+
+1. the build-authoritative project plan;
+2. accepted Wave 0–1 public contracts and invariant tests already present in the repository;
+3. FRE_ARCHITECTURE_V1.md;
+4. FRE_MODULE_MANIFEST.yaml;
+5. CODEX_BUILD_HANDOFF.md;
+6. implementation conventions chosen by Codex.
+
+Do not silently weaken a binding contract to simplify implementation.
+
+If a substantive conflict is discovered that would require:
+
+- changing an accepted public contract;
+- weakening event authority;
+- weakening provenance;
+- weakening graph invariants;
+- weakening budget enforcement;
+- introducing provider-specific behavior;
+- introducing Wave 3+ functionality;
+- changing source/storage boundaries materially;
+
+stop with:
+
+PLAN_DRIFT_DETECTED
+
+and report the exact conflict.
+
+Local implementation choices are permitted only when they:
+
+- preserve the public contract;
+- preserve every invariant;
+- remain provider-neutral;
+- remain deterministic;
+- remain inside Wave 2;
+- are recorded as a benign implementation detail or ADR when architecturally material.
+
+======================================================================
+3. REQUIRED BASELINE
+======================================================================
+
+Before implementation, verify that the checkout contains the complete accepted Wave 0–1 foundation.
+
+The exact historical commit SHA is not authoritative if the repository has been rebased, squash-merged, or otherwise persisted under another SHA.
+
+The functional baseline is authoritative.
+
+The repository must contain, at minimum:
+
+- Python >=3.12 project;
+- uv-managed dependency environment;
+- pyproject.toml;
+- uv.lock;
+- src/fre package;
+- strict Pydantic v2 canonical domain contracts;
+- immutable persistent models;
+- UTC timestamp normalization;
+- canonical UTF-8 JSON;
+- deterministic SHA-256 hashing;
+- typed uncommitted/stored event envelopes;
+- explicit event registry;
+- RunCreated;
+- RunStatusChanged;
+- ArtifactRegistered;
+- generic test events;
+- pure deterministic RunReducer;
+- SQLite WAL event persistence;
+- optimistic expected-version append;
+- atomic event batches;
+- snapshot persistence;
+- reducer-version tracking;
+- snapshot hash verification;
+- SHA-256 content-addressed artifact storage;
+- fake clock;
+- fake UUID factory;
+- fake structured-model adapter;
+- fake tool adapter;
+- minimal Wave 1 SDK;
+- unit tests;
+- property tests;
+- integration tests;
+- dependency-boundary tests.
+
+Before Wave 2 implementation run the existing Wave 0–1 quality gate.
+
+If the accepted Wave 0–1 implementation is absent, stop:
+
+BASELINE_NOT_PERSISTED
+
+Do not silently reconstruct Wave 0–1 as part of Wave 2.
+
+If Wave 0–1 is present but its tests now fail, restore the accepted baseline before proceeding.
+
+======================================================================
+4. WAVE 2 BOUNDARY
+======================================================================
+
+Wave 2 includes only:
+
+- M09 Epistemic Ledger;
+- M02 Budget Allocator;
+- Budget Meter;
+- M12 Context Compiler;
+- M13 Marginal-Value Stop Controller;
+- minimal deterministic coordination required to prove their lifecycle;
+- required event/reducer/domain/configuration extensions;
+- required deterministic projections;
+- required observability;
+- required Wave 2 tests;
+- required ADR/documentation updates.
+
+Wave 2 explicitly excludes:
+
+- M01 Task Classifier implementation;
+- M03 Problem Formaliser implementation;
+- M04 Representation Selector implementation;
+- M05 Candidate Generator;
+- M06 Constraint Propagator;
+- M07 Synthesis Search;
+- M08 Falsifier;
+- M10 Decision Engine;
+- M11 Information Controller;
+- prompt-driven semantic extraction;
+- real model-provider integrations;
+- real retrieval;
+- external research;
+- Pareto algorithms;
+- sensitivity algorithms;
+- ablation algorithms;
+- regret algorithms;
+- adaptive scheduler;
+- full orchestrator;
+- T5 branch reconciliation;
+- product CLI;
+- MCP;
+- HTTP service;
+- deployment.
+
+Future-facing contracts may exist only where required to keep current interfaces stable.
+
+No misleading no-op Wave 3+ implementation is permitted.
+
+======================================================================
+5. BINDING WAVE 2 ARCHITECTURAL DECISIONS
+======================================================================
+
+5.1 Event log remains authoritative
+
+Wave 2 state must derive from committed events.
+
+Ledger projections, budget projections, compiled context metadata, stop projections, and metrics are rebuildable.
+
+No module directly mutates canonical run state.
+
+5.2 Pure deterministic core
+
+M09, M02, Budget Meter, M12, and M13 are deterministic.
+
+They must not require:
+
+- model calls;
+- tool calls;
+- network access;
+- retrieval;
+- nondeterministic clocks;
+- random UUIDs;
+- filesystem enumeration order;
+- unordered set iteration.
+
+Persistent identifiers/timestamps must use existing injected deterministic clock/UUID facilities in tests.
+
+5.3 Immutable epistemic history
+
+Ledger nodes are immutable revisions.
+
+Repairs or updates create successor revisions.
+
+Status changes are evented.
+
+Historical claims are never rewritten.
+
+5.4 Ledger is a typed property graph, not one globally acyclic DAG
+
+Only dependency/support relations participate in cycle rules.
+
+Contradictions may be symmetric.
+
+Supersession is temporal.
+
+5.5 Confidence is structured
+
+Do not universally enforce:
+
+child_confidence <= weakest_parent_confidence
+
+Independent evidence may increase confidence.
+
+Upstream revision causes downstream staleness; it does not mechanically rewrite descendant confidence.
+
+When dependency changes make a descendant STALE, M09 must additionally derive an advisory
+DependencyConfidenceEnvelope. The envelope exists to tell downstream evaluators why trust may
+have eroded and approximately how much of the dependency surface changed without turning that
+signal into an authoritative confidence clamp. It is a deterministic projection, never a
+replacement ConfidenceAssessment and never sufficient on its own to mark a claim REFUTED.
+
+5.5A Contradiction resolution is explicit and atomic
+
+CONTRADICTS may remain open indefinitely only while genuinely unresolved. A RESOLVES relation
+must not be committed as a decorative edge that leaves both sides logically open. Resolving a
+contradiction is an explicit operation that atomically records the resolution relation, the
+resolver/basis, and the resulting epistemic status transitions (or explicit successor revisions).
+Replay must therefore reconstruct both the historical contradiction and its resolved state.
+
+5.5B Ledger revisions are hash-linked
+
+Each logical node's immutable revision chain must be tamper-evident. Every revision records a
+hash of its canonical revision preimage and, for revision > 1, the predecessor revision hash.
+This is a Merkle-style hash link, not a claim that the entire property graph becomes one Merkle
+tree. It enables incremental chain verification and localizes tampering while the existing
+ledger_projection_hash remains the whole-projection integrity check.
+
+5.6 Budget hard ceilings are authoritative
+
+No action may consume beyond committed limits.
+
+Oversubscription is rejected before event commitment.
+
+Hard ceilings, not convergence assumptions, guarantee finite termination.
+
+5.7 Tier allocation is monotone
+
+A harder task signature cannot receive a lower minimum tier than an otherwise-equal easier signature.
+
+Hard floors override weighted heuristics.
+
+Every allocation/revision event must bind the resolved policy version and canonical policy hash
+that produced it. Replay must project the committed plan from event data and must never silently
+recompute an old allocation under whatever policy happens to be current at replay time.
+
+Budget state also exposes an advisory deterministic burn-rate projection derived only from
+committed usage events. Burn rate is not another spending authority; it is a control signal for
+M13 showing consumption velocity and estimated proximity to hard ceilings.
+
+5.8 Context is compiled state
+
+M12 is not a prose summarizer.
+
+Context packets are deterministic state projections.
+
+Compression uses an explicit versioned priority policy so two compliant implementations cannot
+choose different surviving content at the same size target. M12 may additionally emit
+content-addressed delta packets between canonical context packets, but deltas are optimization
+artifacts only: a delta must identify its base and target hashes and deterministically reconstruct
+the complete target packet.
+
+5.9 Stop logic is deterministic policy
+
+M13 uses explicit state, resource, validation, blocker, stability, burn-rate, and marginal-value signals.
+
+It does not assume a scalar global leader. Its soft marginal-value comparison is likewise not
+restricted to one unqualified scalar point estimate: Wave 2 uses confidence-bounded/interval
+estimates with a conservative policy for overlapping intervals. A point estimate is permitted
+only as a degenerate interval.
+
+Epistemic stop reasons must be tied directly to concrete LedgerNodeRef values where the relevant
+claim/unknown/blocker is represented in M09. Generic triggering references may supplement these
+refs but may not replace them for epistemic reasons.
+
+5.10 M12/M13 coordination must not create a dependency cycle
+
+M13 produces StopDecision and, for terminal outcomes, a ContextCompilationRequest.
+
+M12 consumes state plus terminal/next-action information and produces the packet.
+
+A minimal runtime/service layer coordinates the lifecycle.
+
+5.11 Replay compatibility is mandatory
+
+Existing Wave 1 event streams must continue to replay.
+
+If the reducer version changes, compatibility must be explicit and tested.
+
+======================================================================
+6. WAVE 2 REQUIREMENT MATRIX
+======================================================================
+
+Before implementation, create a tracked Wave 2 requirement matrix.
+
+The matrix must contain:
+
+- requirement ID;
+- authoritative source;
+- implementation owner;
+- public contract;
+- event(s);
+- decisive test(s);
+- final status.
+
+The matrix must cover:
+
+- every M09 requirement;
+- every M02 requirement;
+- every Budget Meter requirement;
+- every M12 requirement;
+- every M13 requirement;
+- all event changes;
+- all reducer changes;
+- all persistence/replay changes;
+- all domain-contract extensions;
+- all configuration changes;
+- all provenance requirements;
+- all determinism requirements;
+- all idempotence requirements;
+- all error semantics;
+- all regression obligations;
+- all forbidden Wave 3+ features;
+- the complete Wave 2 acceptance matrix defined later in this plan.
+
+The matrix is part of the implementation gate.
+
+No required row may remain unresolved when Wave 2 is marked complete.
+
+======================================================================
+7. SHARED DOMAIN AND RUNTIME EXTENSIONS
+======================================================================
+
+Before creating new types, inspect existing Wave 1 contracts and reuse semantically equivalent models.
+
+Potential Wave 2 supporting types include:
+
+- LedgerNodeRef;
+- LedgerProjection;
+- GraphValidationResult;
+- LedgerCommand;
+- TierPolicy;
+- TierDefinition;
+- TierFloor;
+- DeploymentLimits;
+- BudgetUsage;
+- BudgetRemaining;
+- BudgetReservation;
+- BudgetProjection;
+- CompilerProfile;
+- ContextCompilationRequest;
+- ContextCompilationResult;
+- ContextOverflowDiagnostic;
+- AcceptanceStatus;
+- ValidationStatus;
+- CancellationState;
+- BlockerState;
+- ActionHistory;
+- MarginalAction;
+- StopPolicy;
+- StopReasonCode;
+- DependencyConfidenceEnvelope;
+- ContradictionResolution;
+- BudgetBurnRate;
+- MarginalValueEstimate / bounded estimate;
+- ContextCompressionPolicy;
+- ContextDeltaPacket;
+- deterministic availability state for future projections.
+
+All new persistent contracts must remain:
+
+- strict;
+- immutable;
+- recursively immutable where nested JSON exists;
+- schema-versioned;
+- UTC-normalized;
+- provenance-aware;
+- canonically serializable.
+
+Do not duplicate existing semantically equivalent types.
+
+======================================================================
+8. WAVE 2 EVENT VOCABULARY
+======================================================================
+
+Add explicit typed events.
+
+Do not use GenericTestEvent for production Wave 2 behavior.
+
+Recommended event vocabulary:
+
+M09:
+- LedgerNodeAdded
+- LedgerEdgeAdded
+- LedgerNodeRevised
+- LedgerNodeStatusChanged
+- LedgerDependentsMarkedStale
+- LedgerContradictionResolved (or an equivalently explicit typed resolution event)
+
+M02 / Budget:
+- BudgetAllocated
+- BudgetRevised
+- BudgetConsumed
+- BudgetReserved
+- BudgetReservationSettled
+- BudgetReservationReleased
+
+BudgetAllocated and BudgetRevised must contain policy_version and policy_hash for the resolved
+policy that produced the plan. If policy material is persisted as an artifact, they may also
+carry policy_artifact_ref.
+
+M12:
+- ContextCompiled
+
+M13:
+- StopDecisionRecorded
+- TerminalContextAssociated
+
+The exact names may adapt to existing repository conventions, but event meaning must remain explicit.
+
+Every Wave 2 event must obey the Wave 1 envelope rules:
+
+- event_id;
+- run_id;
+- sequence after storage;
+- event_type;
+- action_id;
+- module_id;
+- schema_version;
+- module_version;
+- canonical_input_hash;
+- UTC timestamp;
+- typed payload.
+
+Unknown or malformed events must fail before persistence.
+
+======================================================================
+9. REDUCER AND REPLAY EVOLUTION
+======================================================================
+
+Extend RunReducer deliberately.
+
+If the current reducer can accommodate Wave 2 events without a semantic version change, preserve its version.
+
+If reducer semantics materially change, bump the reducer version explicitly.
+
+If bumped:
+
+- document the reason;
+- retain compatibility with Wave 1 events;
+- define snapshot compatibility;
+- add a Wave 1 replay fixture;
+- add a Wave 1 snapshot fixture;
+- prove old streams still reconstruct correctly.
+
+Do not silently invalidate previously valid Wave 1 snapshots.
+
+Wave 2 reducer state should include deterministic projections or references for:
+
+- ledger;
+- budget;
+- context compilation records;
+- stop decisions;
+- terminal context association;
+- Wave 2 metrics.
+
+All collection ordering must be canonical.
+
+Where possible, preview/reduce a complete proposed Wave 2 batch before SQLite append so graph/budget/terminal-lifecycle violations fail before persistence.
+
+SQLite optimistic concurrency remains the authority for race arbitration.
+
+======================================================================
+10. M09 — EPISTEMIC LEDGER
+======================================================================
+
+10.1 Purpose
+
+Provide the authoritative provenance and epistemic-state graph.
+
+M09 is deterministic and shared.
+
+10.2 Node model
+
+Immutable node revisions represent at least:
+
+- FACT
+- OBSERVATION
+- INFERENCE
+- ASSUMPTION
+- HYPOTHESIS
+- PROPOSAL
+- DECISION
+- UNKNOWN
+- CHALLENGE
+- EVIDENCE
+- ARTIFACT
+
+Preserve compatible existing types such as CONTESTED if already present.
+
+Each node revision must retain:
+
+- stable logical node ID;
+- positive revision;
+- node type;
+- content;
+- effective epistemic status;
+- confidence assessment where applicable;
+- source/artifact references;
+- schema version;
+- created_at;
+- created_by_action;
+- producing module;
+- provenance.
+
+10.3 Epistemic statuses
+
+Support:
+
+- SUPPORTED
+- PROVISIONAL
+- CONTESTED
+- REFUTED
+- UNRESOLVED
+- STALE
+
+Do not collapse epistemic status into truth/falsity.
+
+10.4 Relations
+
+Support:
+
+- SUPPORTS
+- DEPENDS_ON
+- DERIVED_FROM
+- CONTRADICTS
+- SUPERSEDES
+- FALSIFIES
+- RESOLVES
+- OBSERVED_IN
+- EVALUATES
+- SELECTS
+- REJECTS
+
+10.5 Dependency normalization
+
+For traversal and cycle detection normalize all dependency relations to prerequisite → dependent.
+
+Recommended normalization:
+
+SUPPORTS:
+stored source → target
+
+DEPENDS_ON:
+stored target → source for dependency traversal
+
+DERIVED_FROM:
+stored target → source for dependency traversal
+
+The implementation must document this rule so ancestor/descendant semantics are unambiguous.
+
+10.6 Acyclicity
+
+Only normalized:
+
+- SUPPORTS
+- DEPENDS_ON
+- DERIVED_FROM
+
+participate in cycle detection.
+
+CONTRADICTS may be bidirectional.
+
+SUPERSEDES is validated independently as temporal revision lineage.
+
+10.7 Edge validation
+
+Reject:
+
+- dangling node references;
+- direct self-dependency;
+- indirect dependency cycle;
+- invalid revision references;
+- invalid supersession;
+- supersession across different stable logical IDs where the model requires same-ID revisions.
+
+10.8 Supersession
+
+Recommended semantics:
+
+new revision → immediate predecessor
+
+Require:
+
+new_revision == predecessor_revision + 1
+
+Preserve all historical revisions.
+
+10.9 Status transitions
+
+Do not rewrite immutable node content to change effective status.
+
+Use explicit status-transition events or equivalent immutable overlays.
+
+10.10 Revision lifecycle
+
+A revision operation should:
+
+1. validate predecessor;
+2. create successor revision;
+3. add SUPERSEDES relation;
+4. compute dependent descendants from the pre-revision graph;
+5. emit deterministic sorted staleness event(s);
+6. mark effective dependent status STALE without rewriting historical content/confidence.
+
+10.11 Confidence
+
+Preserve structured confidence fields such as:
+
+- score;
+- qualitative level;
+- method;
+- calibration group;
+- evidence independence groups;
+- explanation.
+
+M09 validates and stores confidence.
+
+It does not perform universal confidence propagation.
+
+10.11A Advisory dependency confidence envelope
+
+When a committed upstream revision causes descendants to become STALE, derive a
+DependencyConfidenceEnvelope for each affected descendant. This is non-authoritative metadata
+for later evaluators, not a replacement confidence assessment and not a pruning/stop decision.
+
+The envelope should contain, where available:
+
+- affected_node_ref;
+- changed_dependency_refs;
+- dependency_distance / maximum affected dependency depth;
+- previous dependency confidence range;
+- current dependency confidence range;
+- confidence_delta interval when both sides are known;
+- number/fraction of direct dependencies changed;
+- independence-group information relevant to the affected dependencies;
+- method/version;
+- explanation / reason code;
+- source event refs.
+
+Rules:
+
+- UNKNOWN confidence remains unknown; never invent a numeric score.
+- The envelope may indicate NO_NUMERIC_ESTIMATE when only structural impact is known.
+- No consumer may interpret the envelope as child_confidence = envelope.minimum.
+- The envelope is rebuildable from committed ledger state/events.
+- Re-evaluation may replace the descendant's ConfidenceAssessment only through a new authoritative
+  evaluator event, never by the envelope itself.
+
+10.11B Formal contradiction resolution
+
+CONTRADICTS edges represent an open contradiction until an explicit resolution operation is
+committed.
+
+Implement resolve_contradiction (or equivalent) as one atomic command/batch that records:
+
+- the contradiction edge(s) being resolved;
+- a RESOLVES relation tied to a concrete resolver node/evidence/basis;
+- an explicit resolution outcome or explicit status-transition set;
+- the affected LedgerNodeRef values;
+- provenance and action/module refs.
+
+The reducer/runtime must reject a production RESOLVES relation that is committed without the
+corresponding resolution record/status transitions in the same valid batch. Do not infer that one
+side is true merely from the existence of RESOLVES; the outcome is explicit.
+
+Resolution must preserve historical CONTRADICTS edges while the effective projection marks the
+contradiction CLOSED/RESOLVED (or equivalent). queries for contradictions must be able to
+distinguish open from resolved contradictions.
+
+10.12 Queries
+
+Implement deterministic queries:
+
+- append_node
+- append_edge
+- revise_node
+- mark_status
+- ancestors
+- descendants
+- contradictions (with open/resolved filtering)
+- unresolved_dependencies
+- dependency_confidence_envelopes
+- verify_revision_chain
+- query_by_type
+- materialise_projection
+- validate_graph
+
+Definitions:
+
+ancestors = upstream dependency/support prerequisites
+
+descendants = downstream dependents
+
+unresolved_dependencies = dependency-family ancestors whose effective state is not SUPPORTED
+
+All set-like query results must use stable deterministic ordering.
+
+10.13 Projection hash and revision-chain integrity
+
+LedgerProjection must have a stable canonical hash.
+
+The same event stream + projection version must produce the same projection bytes/hash.
+
+Each immutable LedgerNode revision must additionally carry:
+
+- revision_hash;
+- predecessor_revision_hash (null only for the first revision).
+
+Define revision_hash as SHA-256 over a canonical revision preimage that excludes revision_hash
+itself but includes predecessor_revision_hash and the immutable revision payload/provenance fields.
+A successor must match the stored predecessor hash before it can commit.
+
+This forms a hash-linked revision chain per stable logical node. It enables incremental verification
+of newly appended revisions and local tamper detection without claiming that verification of the
+entire multi-node ledger graph is O(1). The whole-projection hash remains the cross-node integrity
+check.
+
+Expose verify_revision_chain(node_id, from_revision=...) or an equivalent deterministic validator.
+
+10.14 Ledger errors
+
+Use typed errors such as:
+
+- LedgerCycleError
+- DanglingLedgerReference
+- InvalidRevisionError
+- InvalidLedgerRelation
+- InvalidStatusTransition
+- InvalidContradictionResolution
+- RevisionHashMismatch
+
+Names may adapt to repository conventions.
+
+10.15 M09 acceptance tests
+
+Prove:
+
+1. append node;
+2. append edge;
+3. immutable revision;
+4. valid dependency DAG;
+5. direct dependency cycle rejected;
+6. indirect dependency cycle rejected;
+7. contradiction edge allowed;
+8. symmetric contradiction allowed;
+9. supersession order enforced;
+10. dangling edge rejected;
+11. ancestor query;
+12. descendant query;
+13. contradiction query;
+14. unresolved dependency query;
+15. revision marks downstream descendants stale;
+16. history preserved;
+17. confidence not universally clamped to weakest parent;
+18. advisory dependency-confidence envelope generated on upstream revision;
+19. envelope does not mutate authoritative descendant confidence;
+20. open contradiction remains queryable;
+21. RESOLVES without required resolution/status record is rejected;
+22. atomic contradiction resolution closes the contradiction while preserving history;
+23. revision_hash deterministic;
+24. predecessor_revision_hash chain enforced;
+25. tampered predecessor/revision hash rejected/detected;
+26. incremental revision-chain verification succeeds;
+27. stable ordering;
+28. deterministic projection hash;
+29. replay equivalence;
+30. invalid graph batch rejected atomically.
+
+Use Hypothesis for generated DAG/cycle/revision-chain properties where useful.
+
+======================================================================
+11. M02 — BUDGET ALLOCATOR
+======================================================================
+
+11.1 Purpose
+
+Translate TaskSignature + versioned policy + deployment limits into an enforceable BudgetPlan.
+
+M02 is deterministic.
+
+M01 does not exist yet.
+
+Use fixed synthetic TaskSignature fixtures in Wave 2.
+
+11.2 Tier model
+
+Support:
+
+- T0
+- T1
+- T2
+- T3
+- T4
+- T5
+
+Tier behavior lives in versioned configuration.
+
+Do not hard-code deploy-specific policy inside module logic.
+
+11.3 Difficulty axes
+
+All axes must point harder-is-higher.
+
+At minimum:
+
+- consequence;
+- irreversibility;
+- ambiguity;
+- search-space complexity;
+- evidence scarcity.
+
+Preserve additional already-defined signature dimensions where relevant.
+
+11.4 Allocation order
+
+Use:
+
+mandatory tier floors
+→ monotone escalation rules
+→ optional baseline score/thresholds
+→ deployment availability/ceilings
+→ explicit BudgetPlan
+
+A weighted score may assist borderline decisions.
+
+It must never override hard floors.
+
+11.5 Monotonicity
+
+For otherwise-equivalent signatures:
+
+if no dimension becomes easier and at least one dimension becomes harder, the allocated minimum tier must not decrease.
+
+Property-test this.
+
+11.6 Recommended bootstrap floors
+
+Use versioned policy configuration.
+
+A practical default is:
+
+consequence:
+LOW → T0
+MEDIUM → T1
+HIGH → T3
+CRITICAL → T4
+
+irreversibility:
+LOW → T0
+MEDIUM → T1
+HIGH → T2
+CRITICAL → T4
+
+ambiguity:
+LOW → T0
+MEDIUM → T1
+HIGH → T2
+CRITICAL → T3
+
+evidence scarcity:
+LOW → T0
+MEDIUM → T1
+HIGH → T2
+CRITICAL → T3
+
+search space:
+CLOSED/POINT → T0
+BOUNDED/LOCAL → T1
+COMBINATORIAL/OPEN → T3
+
+T5 escalation:
+consequence == CRITICAL
+AND irreversibility == CRITICAL
+
+These are bootstrap policy defaults, not learned truth.
+
+11.7 Deployment ceilings
+
+If deployment maximum tier is lower than the mandatory floor, raise a typed deployment-policy conflict.
+
+Do not silently under-allocate.
+
+Resource ceilings may clamp optional capacity only if mandatory tier obligations remain satisfiable.
+
+11.8 Policy provenance
+
+The resolved policy that produced an allocation or revision is part of the audit trail.
+
+Compute:
+
+policy_hash = SHA-256(canonical resolved policy configuration)
+
+after defaults, overrides, tier floors, and deployment policy inputs have been resolved into the
+actual policy object used for allocation.
+
+BudgetAllocated and BudgetRevised must persist:
+
+- policy_version;
+- policy_hash;
+- the complete realized BudgetPlan;
+- optional policy_artifact_ref if the resolved policy is stored as an artifact.
+
+Replay must reconstruct BudgetProjection from committed events and must not rerun allocation under
+the current configuration. Re-evaluating what a historic task *would* receive under a newer policy
+is a separate analytical operation, not replay.
+
+11.9 BudgetPlan contents
+
+Preserve/configure:
+
+- tier;
+- max_iterations;
+- max_llm_calls;
+- max_tool_calls;
+- max_input_tokens;
+- max_output_tokens;
+- max_candidates;
+- max_concurrent_actions;
+- max_runtime_seconds;
+- initial_candidate_count;
+- max_candidate_depth;
+- max_representation_views;
+- synthesis_order_limit;
+- falsifier_operator_limit;
+- independent_validation_branches;
+- sensitivity_samples;
+- acquisition_threshold;
+- stop_threshold;
+- policy_version.
+
+Fields used only by later waves may still be allocated now as inert policy data.
+
+11.10 Recommended bootstrap hard limits
+
+Keep these in versioned configuration, not module code.
+
+T0:
+iterations 1
+LLM 1
+tools 0
+input 8192
+output 2048
+candidates 1
+concurrency 1
+runtime 60s
+
+T1:
+iterations 2
+LLM 2
+tools 0
+input 16384
+output 4096
+candidates 2
+concurrency 1
+runtime 120s
+
+T2:
+iterations 4
+LLM 6
+tools 1
+input 65536
+output 16384
+candidates 4
+concurrency 2
+runtime 300s
+
+T3:
+iterations 6
+LLM 12
+tools 2
+input 131072
+output 32768
+candidates 6
+concurrency 3
+runtime 600s
+
+T4:
+iterations 10
+LLM 24
+tools 5
+input 262144
+output 65536
+candidates 10
+concurrency 4
+runtime 1200s
+
+T5:
+iterations 14
+LLM 48
+tools 10
+input 524288
+output 131072
+candidates 24 total
+concurrency 4
+runtime 1800s
+
+11.11 Recommended search defaults
+
+T0:
+initial candidates 1
+depth 1
+views 1
+synthesis 1
+falsifiers 0
+validation branches 0
+sensitivity 0
+
+T1:
+initial 2
+depth 1
+views 1
+synthesis 1
+falsifiers 1
+validation 0
+sensitivity 0
+
+T2:
+initial 4
+depth 2
+views 1
+synthesis 1
+falsifiers 2
+validation 0
+sensitivity 16
+
+T3:
+initial 6
+depth 3
+views 2
+synthesis 2
+falsifiers 4
+validation 0
+sensitivity 32
+
+T4:
+initial 10
+depth 4
+views 2
+synthesis 3
+falsifiers 10
+validation 1
+sensitivity 64
+
+T5:
+initial 12 per branch / 24 total
+depth 4
+views 2
+synthesis 3
+falsifiers 10
+validation 2
+sensitivity 128
+
+11.12 Recommended acquisition thresholds
+
+T0 1.00
+T1 1.00
+T2 0.75
+T3 0.50
+T4 0.35
+T5 0.25
+
+Default stop net-value threshold: 0.0
+
+11.13 Revisions
+
+Budget revisions may:
+
+- raise tier;
+- redistribute unused optional capacity;
+- reduce future optional work subject to policy.
+
+Budget revisions may not:
+
+- erase usage;
+- reset consumed resources;
+- invalidate existing history;
+- reduce below mandatory tier floor;
+- lower hard limits below committed + reserved usage.
+
+11.14 M02 errors
+
+Use typed errors such as:
+
+- InvalidTierPolicy
+- DeploymentPolicyConflict
+- InvalidBudgetRevision
+
+11.15 M02 acceptance tests
+
+Prove:
+
+1. T0 fixture;
+2. T1 fixture;
+3. T2 fixture;
+4. T3 fixture;
+5. T4 fixture;
+6. T5 fixture;
+7. partial-order monotonicity;
+8. consequence floor overrides low weighted score;
+9. irreversibility floor;
+10. deployment limit applied;
+11. impossible deployment conflict fails;
+12. allocation deterministic;
+13. revision deterministic;
+14. consumed usage preserved;
+15. mandatory validation floor preserved;
+16. BudgetAllocated contains policy_version and canonical policy_hash;
+17. BudgetRevised contains policy_version and canonical policy_hash;
+18. replay under a changed live configuration preserves the historic committed plan/hash;
+19. identical resolved policy produces identical policy_hash.
+
+======================================================================
+12. EXECUTABLE BUDGET METER
+======================================================================
+
+12.1 Purpose
+
+Budget Meter is the sole authority for remaining resources.
+
+No future module may spend outside it.
+
+12.2 Tracked resources
+
+Track, where allocated:
+
+- iterations;
+- LLM calls;
+- tool calls;
+- input tokens;
+- output tokens;
+- candidate count where meaningful;
+- runtime seconds;
+- active concurrent reservations.
+
+12.3 Deterministic formula
+
+For every resource:
+
+remaining =
+allocated
+- committed usage
+- active reservations
+
+No replay-time wall clock is permitted.
+
+Runtime usage is committed explicitly.
+
+12.4 Consumption
+
+Direct usage creates BudgetConsumed event(s).
+
+Exact-ceiling consumption is permitted.
+
+Over-ceiling consumption is rejected before persistence.
+
+Rejected consumption changes nothing.
+
+12.5 Reservations
+
+Implement minimal reservations because Wave 2 must prove oversubscription prevention.
+
+A reservation:
+
+- belongs to an action ID;
+- reserves a complete resource vector;
+- counts against max_concurrent_actions;
+- is evented;
+- is replayable.
+
+12.6 Settlement
+
+Settlement:
+
+- removes the reservation;
+- records actual committed usage;
+- must not exceed reservation;
+- releases unused reserved capacity.
+
+12.7 Release
+
+Failed/cancelled work releases reservation.
+
+Release restores unused capacity.
+
+12.8 Concurrency
+
+Competing reservations from the same snapshot are resolved by optimistic event append.
+
+Only one stale-snapshot writer may succeed.
+
+The loser reloads.
+
+If capacity is exhausted after reload, reservation fails.
+
+12.9 Revision interaction
+
+Budget revision must account for:
+
+committed usage + active reservations
+
+A revision that falls below this total is invalid.
+
+12.9A Advisory burn-rate projection
+
+Derive BudgetBurnRate only from committed budget events. It is advisory control-state for M13,
+not spending authority.
+
+For each tracked resource, expose where mathematically defined:
+
+- committed amount;
+- remaining amount;
+- consumption_per_iteration over a configured deterministic trailing window;
+- consumption_per_usage_event over that window;
+- previous-window consumption rate;
+- trend = INCREASING | STABLE | DECREASING | INSUFFICIENT_DATA;
+- projected_iterations_to_exhaustion when rate > 0;
+- ceiling_proximity ratio;
+- window definition/version;
+- source event range/hash.
+
+The trailing window is defined by committed iteration/event count, never replay-time wall clock.
+If a denominator is zero or data is insufficient, return an explicit unavailable state rather than
+infinity or an invented estimate.
+
+Burn-rate projection must be replay-deterministic and must never modify BudgetRemaining. M13 may
+use it to reason about whether continuing optional work is likely to collide with a hard ceiling.
+
+12.10 Budget Meter errors
+
+Use typed errors such as:
+
+- BudgetExceeded
+- ReservationConflict
+- InvalidReservationSettlement
+- InvalidBudgetRevision
+
+12.11 Budget Meter tests
+
+Prove:
+
+1. meter starts at zero usage;
+2. deterministic consumption;
+3. remaining calculation;
+4. exact ceiling allowed;
+5. overspend rejected;
+6. rejected spend leaves state unchanged;
+7. revision preserves use;
+8. lower invalid revision rejected;
+9. reservation succeeds;
+10. reservation oversubscription rejected;
+11. concurrency cap enforced;
+12. settlement records actual use;
+13. settlement cannot exceed reservation;
+14. release restores capacity;
+15. replay reconstructs same meter;
+16. projection hash deterministic;
+17. burn-rate window deterministic;
+18. burn-rate trend/proximity correct for known event sequences;
+19. zero/insufficient-data burn rate represented explicitly;
+20. burn-rate projection does not alter remaining budget;
+21. no direct mutable counter path exists.
+
+======================================================================
+13. M12 — CONTEXT COMPILER
+======================================================================
+
+13.1 Purpose
+
+Compile canonical state into compact authoritative packets for:
+
+- continuation;
+- inspection;
+- validation;
+- handoff;
+- transfer to another execution surface.
+
+M12 is deterministic.
+
+It is not a generic summarizer.
+
+13.2 Inputs
+
+Compile from:
+
+- RunSnapshot;
+- LedgerProjection;
+- BudgetRemaining;
+- optional ProblemSpec projection;
+- optional CandidateProjection;
+- optional DecisionProjection;
+- optional acquisition state;
+- optional StopDecision / next action;
+- CompilerProfile;
+- size target;
+- compiler version.
+
+Later-wave projections may not exist yet.
+
+Represent absence explicitly:
+
+NOT_PRODUCED
+
+Do not fabricate empty completed results.
+
+13.3 Profiles
+
+Implement:
+
+FULL
+STANDARD
+HANDOFF
+
+13.4 FULL profile
+
+Retain all current decision-relevant state available at the current wave:
+
+- current ledger revisions;
+- effective statuses;
+- provenance;
+- active/rejected state where available;
+- complete available rejection reasons;
+- budget;
+- stop/next-action state;
+- relevant historical links.
+
+13.5 STANDARD profile
+
+Retain:
+
+- active state;
+- decisive supported facts/decisions;
+- assumptions;
+- unresolved items;
+- stale items;
+- compact rejection register with reasons;
+- remaining budget;
+- next/terminal action.
+
+13.6 HANDOFF profile
+
+Retain minimum safe continuation state:
+
+- objective/output contract if available;
+- hard constraints if available;
+- fixed/current decisions if available;
+- verified facts;
+- important assumptions;
+- stale markers;
+- unresolved blockers;
+- active/conditional state if available;
+- rejection reasons needed for safe continuation;
+- remaining budget;
+- next action or terminal disposition.
+
+13.7 Empty future projections
+
+If a future module has not run:
+
+do not represent it as completed-empty.
+
+Represent it as NOT_PRODUCED or equivalent explicit availability state.
+
+13.8 Versioned compression order
+
+Compression order is part of the compiler contract, not an implementation detail.
+
+Define a ContextCompressionPolicy with:
+
+- compression_policy_version;
+- ordered rule IDs;
+- per-profile rule eligibility;
+- mandatory-retention classes;
+- size metric = canonical UTF-8 bytes.
+
+The default Wave 2 rule order is fixed and versioned:
+
+C01 — canonical deduplication of identical entries;
+C02 — remove obsolete superseded revisions while retaining active revision + predecessor link;
+C03 — collapse duplicate/redundant prose or excerpts already represented by canonical refs;
+C04 — trim profile-permitted low-leverage historical detail;
+C05 — stop compression; never cross a mandatory-retention boundary.
+
+Two implementations given the same packet input, profile, size target, and compression policy
+version must choose the same surviving canonical content.
+
+Every ContextCompiled record/packet metadata must carry compression_policy_version and the applied
+rule IDs.
+
+Never remove:
+
+- hard constraint status;
+- stale status;
+- unresolved blocker;
+- rejection reason;
+- decision provenance;
+- remaining budget;
+- next action;
+- terminal disposition.
+
+13.9 Size unit
+
+Use canonical serialized byte length.
+
+Do not use heuristic token estimation in Wave 2.
+
+13.10 Default targets
+
+FULL: 262144 bytes
+STANDARD: 65536 bytes
+HANDOFF: 32768 bytes
+
+Keep targets configurable.
+
+13.11 Overflow
+
+If mandatory retained state cannot fit after permitted compression:
+
+return explicit ContextOverflow diagnostic/error.
+
+Do not silently truncate.
+
+Do not persist a misleading incomplete packet.
+
+13.12 Deterministic ordering
+
+Define stable ordering for all set-like collections:
+
+- ledger refs;
+- constraints;
+- assumptions;
+- rejected items;
+- unresolved items;
+- candidate refs;
+- reasons;
+- triggering refs.
+
+13.13 Packet hash
+
+Avoid self-referential hashing.
+
+Define:
+
+packet_hash =
+SHA-256(
+    canonical packet representation excluding packet_hash
+)
+
+Insert hash after calculating the preimage.
+
+Test the exact rule.
+
+13.14 Artifact hash distinction
+
+If canonical packet JSON is stored as an artifact:
+
+artifact content SHA != conceptual packet_hash necessarily
+
+because packet_hash excludes packet_hash field while artifact hash covers final bytes.
+
+Record both explicitly.
+
+13.15 Markdown
+
+Render deterministic Markdown from the packet.
+
+Rules:
+
+- fixed headings;
+- fixed field order;
+- deterministic values;
+- no volatile timestamps unless part of canonical state;
+- no LLM rendering.
+
+Markdown is presentation only.
+
+Canonical JSON remains authoritative packet content.
+
+13.16 Context persistence
+
+If persisted:
+
+- store canonical JSON artifact;
+- store Markdown artifact separately;
+- register artifacts;
+- emit ContextCompiled;
+- record source snapshot version;
+- profile;
+- compiler version;
+- compression policy version;
+- renderer version;
+- byte sizes;
+- packet hash;
+- artifact hashes.
+
+13.16A Deterministic context delta packets
+
+Support ContextDeltaPacket as a derived optimization for incremental handoff.
+
+A delta packet must contain:
+
+- base_packet_hash;
+- target_packet_hash;
+- compiler_version;
+- compression_policy_version;
+- profile;
+- ordered deterministic patch operations over canonical packet structure;
+- delta_hash;
+- optional base/target artifact refs.
+
+Patch operations use a deterministic versioned schema (for example ADD/REMOVE/REPLACE at canonical
+JSON-pointer-like paths) implemented without making the delta authoritative state.
+
+Requirements:
+
+- apply_delta(base_packet, delta) must reconstruct the target canonical packet byte-for-byte and
+  reproduce target_packet_hash;
+- a mismatched base hash must fail;
+- delta generation for the same base/target/version must be deterministic;
+- generate/persist a delta only when policy says it provides a material size benefit; otherwise
+  use the complete target packet;
+- a terminal HANDOFF packet must always remain independently reconstructable from canonical state;
+  a delta may accelerate transfer but must never be the only durable representation of terminal
+  context;
+- delta artifacts are content-addressed and auditable.
+
+13.17 Stale state
+
+STALE content must not be rendered as verified/current.
+
+Profiles may omit stale history where allowed.
+
+They must never misrepresent stale content.
+
+13.18 M12 tests
+
+Prove:
+
+1. FULL compilation;
+2. STANDARD compilation;
+3. HANDOFF compilation;
+4. fixed input gives fixed canonical packet;
+5. fixed input gives fixed packet hash;
+6. repeated compile idempotent;
+7. deterministic ordering;
+8. deterministic Markdown;
+9. packet hash preimage rule;
+10. packet hash/artifact hash distinction;
+11. rejection reasons preserved;
+12. stale item marked/excluded correctly;
+13. future projection absence not fabricated;
+14. hard constraints preserved when present;
+15. budget remaining preserved;
+16. compression removes only allowed data;
+17. profile transitions preserve required fields;
+18. compression policy version recorded;
+19. compression rule order deterministic and testable;
+20. same target/size/policy produces same survivors;
+21. overflow diagnostic;
+22. deterministic ContextDeltaPacket generation;
+23. wrong base hash rejects delta application;
+24. applying delta reproduces target bytes/hash;
+25. delta is not accepted as sole terminal context authority;
+26. replayed state gives same packet hash.
+
+======================================================================
+14. M13 — MARGINAL-VALUE STOP CONTROLLER
+======================================================================
+
+14.1 Purpose
+
+Return a deterministic continuation/termination decision.
+
+Supported dispositions:
+
+- CONTINUE
+- COMPLETE
+- PARTIAL_BUDGET
+- BLOCKED
+- FAILED_INVARIANT
+- CANCELLED
+
+14.2 Inputs
+
+Use typed inputs:
+
+- BudgetRemaining;
+- ActionHistory;
+- optional DecisionResult / decision availability;
+- optional ranked acquisition availability;
+- AcceptanceStatus;
+- ValidationStatus;
+- CancellationState;
+- BlockerState;
+- StopPolicy;
+- BudgetBurnRate if available;
+- frontier stability signals if available;
+- bounded marginal next-action value/cost signals if available.
+
+Later-wave inputs may not exist yet.
+
+Use explicit NOT_PRODUCED / NOT_APPLICABLE states.
+
+14.3 Hard terminal precedence
+
+Use deterministic precedence.
+
+Recommended order:
+
+1. explicit cancellation → CANCELLED;
+2. unrecoverable invariant failure → FAILED_INVARIANT;
+3. hard ceiling prevents required continuation → PARTIAL_BUDGET;
+4. required unresolvable blocker with no executable alternative → BLOCKED;
+5. mandatory continuation condition → CONTINUE;
+6. acceptance satisfied + validation complete + stable/no qualifying work → COMPLETE;
+7. executable work remains → CONTINUE;
+8. no executable work + unresolved required state → BLOCKED.
+
+Document exact precedence.
+
+14.4 Cancellation
+
+Explicit cancellation yields CANCELLED.
+
+14.5 Invariant failure
+
+Unrecoverable canonical-state or safety invariant yields FAILED_INVARIANT.
+
+14.6 Budget exhaustion
+
+If additional required work is needed but a hard ceiling prevents it:
+
+PARTIAL_BUDGET
+
+Do not return PARTIAL_BUDGET if the run is already legitimately complete.
+
+14.7 Blocker
+
+If required evidence/capability/permission is unavailable and no permitted alternative exists:
+
+BLOCKED
+
+14.8 Mandatory continuation
+
+Subject to hard ceilings, CONTINUE when:
+
+- mandatory tier action remains;
+- resolvable required unknown remains;
+- mandatory validation remains;
+- qualifying acquisition remains;
+- frontier/recommendation is unstable where such state exists.
+
+14.9 Completion
+
+COMPLETE only when:
+
+- required acceptance criteria satisfied;
+- no known required criterion fails;
+- mandatory validation complete;
+- no mandatory continuation remains;
+- state stable enough under active policy;
+- no qualifying next action remains.
+
+14.10 Confidence-bounded marginal-value policy
+
+Do not reduce the soft-stop decision to one unqualified scalar point estimate.
+
+Represent expected value and normalized cost as bounded estimates:
+
+MarginalValueEstimate:
+- lower;
+- point (optional);
+- upper;
+- ConfidenceAssessment;
+- method/version;
+- source/ledger refs.
+
+CostEstimateInterval:
+- lower;
+- point (optional);
+- upper;
+- method/version;
+- source refs.
+
+A point-only signal is represented as the degenerate interval [point, point].
+
+Default conservative comparison:
+
+DEFINITELY_VALUABLE:
+    value.lower >= cost.upper + stop_threshold
+    → optional work may justify CONTINUE
+
+DEFINITELY_NOT_VALUABLE:
+    value.upper < cost.lower + stop_threshold
+    → soft completion may be allowed if all other completion conditions hold
+
+OVERLAP / UNCERTAIN:
+    intervals overlap or confidence is insufficient
+    → default CONTINUE when work is decision-relevant and hard budget remains,
+      unless an explicit versioned policy selects another conservative treatment
+
+Hard terminal/mandatory-continuation rules always outrank this soft heuristic.
+
+BudgetBurnRate may modify the advisory priority of continuing optional work (for example by showing
+that the projected exhaustion horizon is shorter than the expected work horizon), but it cannot
+override a mandatory action or hard ceiling.
+
+These remain heuristic policy estimates. Do not present them as calibrated truth unless they are
+later produced by a calibrated model.
+
+14.11 No scalar leader
+
+M13 must operate correctly when:
+
+- there is a Pareto frontier;
+- there is a provisional recommendation;
+- there is no recommendation;
+- DecisionResult is not yet produced.
+
+14.12 Stability
+
+If used in Wave 2 synthetic fixtures, define deterministic stability using hashes of supplied state.
+
+Recommended default:
+
+stable when the last two non-empty frontier/recommendation hashes are equal.
+
+Keep window configurable.
+
+14.13 Provenance
+
+Every StopDecision records:
+
+- disposition;
+- policy version;
+- reason codes;
+- concise human-readable reason strings from fixed templates;
+- triggering refs;
+- ledger_trigger_refs: concrete LedgerNodeRef values for every epistemic reason where a
+  corresponding ledger node exists;
+- relevant budget projection hash;
+- relevant burn-rate projection hash/version when consulted;
+- marginal-value/cost estimate refs and confidence methods when consulted;
+- context compilation request for terminal outcomes.
+
+For reason codes such as unresolved dependency, unresolved blocker, contested premise, or stale
+evidence, the corresponding ledger_trigger_refs are mandatory. A generic object/action reference
+may supplement but not replace the concrete ledger reference.
+
+No hidden chain-of-thought.
+
+14.14 Reason ordering
+
+Reason codes must have deterministic ordering.
+
+Do not depend on set iteration.
+
+14.15 Terminal context invariant
+
+Every terminal run must produce a final context packet.
+
+Lifecycle:
+
+M13 StopDecision
+        ↓
+ContextCompilationRequest
+        ↓
+M12 final HANDOFF compile
+        ↓
+persist packet artifacts
+        ↓
+ContextCompiled
+        ↓
+TerminalContextAssociated
+        ↓
+terminal RunStatusChanged
+
+14.16 Terminal ordering enforcement
+
+Reducer/runtime must reject final terminal run status if no matching final context association exists in the reduced batch/state.
+
+14.17 M12/M13 dependency separation
+
+M13 must not call M12 directly.
+
+M12 must not import M13 implementation.
+
+Use shared domain contracts and a minimal runtime coordinator.
+
+14.18 Finite termination
+
+Create an adversarial synthetic source that always proposes optional work.
+
+With finite budget:
+
+repeated evaluation must eventually terminate.
+
+Hard budget exhaustion must produce PARTIAL_BUDGET or another appropriate higher-priority terminal state.
+
+This is the real finite-termination proof.
+
+Do not rely on convergence assumptions.
+
+14.19 M13 errors
+
+Use typed errors such as:
+
+- InvalidStopTransition
+- MissingRequiredContext
+- InvalidStopPolicy
+
+14.20 M13 tests
+
+Prove:
+
+1. CANCELLED;
+2. FAILED_INVARIANT;
+3. PARTIAL_BUDGET;
+4. BLOCKED;
+5. COMPLETE;
+6. CONTINUE;
+7. failed required acceptance forbids COMPLETE;
+8. mandatory validation forbids COMPLETE;
+9. exhausted hard budget overrides required continuation;
+10. already-complete state not converted to PARTIAL_BUDGET;
+11. stable no-high-value work can complete;
+12. resolvable required unknown continues;
+13. unresolvable required blocker blocks;
+14. no scalar leader required;
+15. DecisionResult absent handled;
+16. deterministic reason ordering;
+17. policy version recorded;
+18. budget projection hash/provenance recorded;
+19. terminal decision creates compilation request;
+20. terminal status requires context association;
+21. bounded marginal-value comparison handles definitely-valuable case;
+22. bounded marginal-value comparison handles definitely-not-valuable case;
+23. overlapping intervals follow conservative versioned policy;
+24. point estimates behave as degenerate intervals;
+25. burn-rate advisory can influence optional-work reasoning without changing hard budget;
+26. epistemic reason codes carry concrete LedgerNodeRef values;
+27. missing required ledger provenance is rejected;
+28. endless proposer terminates;
+29. replay yields identical StopDecision.
+
+======================================================================
+15. M12 ↔ M13 COORDINATION
+======================================================================
+
+Avoid cyclic implementation.
+
+Use:
+
+M13:
+produces StopDecision
++ optional ContextCompilationRequest
+
+M12:
+consumes snapshot + optional stop/next-action state
+produces ContextPacket
+
+Wave2Runtime:
+coordinates:
+StopDecision
+→ compile context
+→ persist artifacts
+→ associate terminal context
+→ terminal run status
+
+This coordinator is not the Wave 7 orchestrator.
+
+It is a minimal deterministic lifecycle service.
+
+======================================================================
+16. SYNTHETIC WAVE 2 RUNTIME
+======================================================================
+
+Implement the minimum deterministic run path required to prove the combined gate.
+
+Recommended sequence:
+
+1. create/load deterministic run;
+2. use synthetic TaskSignature fixture;
+3. M02 allocate BudgetPlan;
+4. commit budget allocation event;
+5. M09 append ledger nodes;
+6. M09 append dependency edges;
+7. M09 revise upstream node;
+8. mark dependent descendants stale;
+9. consume budget;
+10. reserve budget;
+11. settle/release budget;
+12. M12 compile checkpoint packet;
+13. M13 evaluate CONTINUE or terminal;
+14. commit StopDecisionRecorded;
+15. terminal path requests HANDOFF compilation;
+16. M12 compile final packet;
+17. store/register JSON + Markdown artifacts;
+18. commit ContextCompiled + TerminalContextAssociated;
+19. commit terminal RunStatusChanged;
+20. create snapshot;
+21. close storage;
+22. reopen storage;
+23. replay from authoritative events;
+24. compare reconstructed:
+    - ledger projection/hash;
+    - budget projection;
+    - context packet/hash;
+    - stop decision;
+    - terminal context association.
+
+No model or tool execution may occur.
+
+======================================================================
+17. WAVE 2 PROJECTIONS AND PERSISTENCE
+======================================================================
+
+Event stream remains authoritative.
+
+Prefer event-derived in-memory projections for Wave 2.
+
+Do not add SQLite projection tables merely because the architecture allows them.
+
+Only add persistent projection tables if they provide a concrete correctness/queryability benefit that cannot be achieved cleanly otherwise.
+
+If added:
+
+- document the rationale;
+- mark them rebuildable;
+- provide deterministic rebuild;
+- test rebuild equivalence.
+
+Recommended Wave 2 state projections:
+
+- LedgerProjection;
+- BudgetProjection;
+- ContextCompilationRecord(s);
+- StopDecision record;
+- terminal context association;
+- Wave2Metrics.
+
+======================================================================
+18. CONFIGURATION
+======================================================================
+
+Extend strict versioned configuration.
+
+Configuration contains policy, not executable behavior.
+
+Add/validate:
+
+- T0–T5 tier defaults;
+- tier floors;
+- monotone escalation rules;
+- deployment maximum tier;
+- deployment resource ceilings;
+- budget limits;
+- search policy values;
+- acquisition thresholds;
+- stop threshold;
+- stop stability window;
+- context profile size targets;
+- compiler version;
+- Markdown renderer version;
+- stop-policy version.
+
+Unknown keys should fail under existing strict configuration semantics.
+
+No model names required in Wave 2.
+
+======================================================================
+19. DETERMINISM
+======================================================================
+
+For fixed:
+
+- event stream;
+- configuration;
+- projection versions;
+- compiler version;
+- renderer version;
+- stop-policy version;
+
+replay must reconstruct exactly:
+
+- LedgerProjection;
+- ledger projection hash;
+- BudgetProjection;
+- BudgetRemaining;
+- ContextPacket canonical bytes;
+- ContextPacket hash;
+- deterministic Markdown;
+- ContextDeltaPacket where generated;
+- BudgetBurnRate;
+- StopDecision.
+
+Historic BudgetProjection must remain bound to the policy_hash recorded in its allocation/revision
+events even if the live configuration has changed.
+
+No result may depend on:
+
+- wall-clock during replay;
+- random UUID generation;
+- filesystem ordering;
+- dict insertion order;
+- set iteration order;
+- model/tool output.
+
+19.1 Differential replay verification
+
+Wave 2 must test replay through at least two independently exercised reconstruction paths:
+
+Path A — pure in-memory fold:
+- begin from canonical initial state;
+- apply typed StoredEvent objects directly through the pure reducer/projection folds.
+
+Path B — persisted reconstruction:
+- serialize events through the SQLite event store;
+- close storage;
+- reopen storage;
+- deserialize through the public persistence path;
+- invoke the public replay/reconstruction API.
+
+Compare byte-identical canonical representations/hashes for:
+
+- RunState;
+- LedgerProjection;
+- BudgetProjection;
+- BudgetBurnRate;
+- ContextPacket/hash;
+- StopDecision;
+- terminal context association.
+
+Where snapshot-assisted replay exists, add Path C as an additional comparison against full event
+fold.
+
+The two paths may share domain contracts and reducer semantics, but they must not share the same
+event-loading/serialization path; otherwise the test does not detect persistence/serialization
+divergence. Differential replay supplements, rather than replaces, ordinary replay tests.
+
+======================================================================
+20. ERROR SEMANTICS
+======================================================================
+
+Use typed errors.
+
+At minimum distinguish concepts equivalent to:
+
+Ledger:
+- LedgerCycleError
+- DanglingLedgerReference
+- InvalidRevisionError
+- InvalidLedgerRelation
+- InvalidContradictionResolution
+- RevisionHashMismatch
+
+Budget:
+- BudgetExceeded
+- InvalidBudgetRevision
+- ReservationConflict
+- InvalidReservationSettlement
+- DeploymentPolicyConflict
+
+Context:
+- ContextOverflow
+- InvalidCompilerProfile
+- InvalidContextDelta
+- ContextDeltaBaseMismatch
+
+Stop:
+- InvalidStopTransition
+- MissingRequiredContext
+- InvalidStopPolicy
+
+Do not encode machine-significant failures only in free-form strings.
+
+======================================================================
+21. OBSERVABILITY
+======================================================================
+
+Expose deterministic Wave 2 metrics derived from canonical projections.
+
+At minimum:
+
+Ledger:
+- node count;
+- edge count;
+- effective epistemic status counts.
+
+Budget:
+- allocated resources;
+- committed resources;
+- reserved resources;
+- remaining resources;
+- policy version/hash;
+- advisory burn-rate/trend/proximity projection.
+
+Context:
+- latest profile;
+- canonical byte size;
+- packet hash;
+- artifact hash;
+- compression policy version/applied rule IDs;
+- delta packet size/hash where generated.
+
+Stop:
+- latest disposition;
+- ordered reason codes.
+
+Logs are not canonical state.
+
+Do not persist secrets or raw sensitive artifacts in logs.
+
+======================================================================
+22. ADR AND DOCUMENTATION UPDATES
+======================================================================
+
+Update implementation documentation.
+
+Add/extend ADRs only for material decisions.
+
+Likely ADR topics:
+
+- ledger dependency-direction normalization;
+- relation-specific acyclicity;
+- immutable status overlays;
+- budget hard-ceiling semantics;
+- reservation semantics;
+- context packet preimage hashing;
+- context compression/overflow;
+- hard-budget + heuristic stopping;
+- M12/M13 terminal coordination;
+- reducer compatibility policy if version changes.
+
+Do not duplicate accepted ADRs.
+
+Do not modify authoritative root specifications unless explicitly required.
+
+======================================================================
+23. DEPENDENCY POLICY
+======================================================================
+
+Prefer the existing dependency set.
+
+Expected Wave 2 can be built using:
+
+- Python standard library;
+- Pydantic;
+- PyYAML;
+- existing test/tooling dependencies.
+
+Do not add:
+
+- graph library unless there is a material correctness/simplicity gain;
+- ORM;
+- budgeting framework;
+- templating engine merely for Markdown;
+- workflow framework;
+- scheduler framework;
+- model-provider SDK.
+
+Any new dependency must be explicitly justified.
+
+======================================================================
+24. PERFORMANCE EXPECTATIONS
+======================================================================
+
+Correctness and determinism dominate micro-optimization.
+
+Avoid pathological implementations.
+
+Targets:
+
+- graph traversal approximately O(V+E) in relevant subgraph;
+- cycle detection O(V+E);
+- budget operations O(number of resources);
+- context compilation O(selected projection size);
+- stop evaluation O(number of supplied policy signals).
+
+Do not add caching that complicates replay correctness without measured need.
+
+======================================================================
+25. TEST STRATEGY
+======================================================================
+
+Add tests under:
+
+tests/unit/
+tests/property/
+tests/integration/
+
+Golden tests may be added only where they materially improve deterministic verification.
+
+25.1 Unit tests
+
+Cover:
+
+- domain contracts;
+- every deterministic operation;
+- every error condition;
+- event validation;
+- reducer transitions;
+- query semantics;
+- profile semantics;
+- reason ordering.
+
+25.2 Property tests
+
+Use Hypothesis where it materially helps.
+
+At minimum consider:
+
+- monotone tier allocation;
+- budget consumption invariants;
+- revision preservation;
+- generated DAG acyclicity;
+- cycle rejection;
+- ledger replay equivalence;
+- revision-hash chain integrity;
+- contradiction-resolution atomicity;
+- context idempotence;
+- context hash stability;
+- context delta round-trip;
+- policy-hash replay stability;
+- burn-rate projection stability;
+- bounded marginal-value comparison;
+- hard-budget termination;
+- differential replay equivalence.
+
+25.3 Integration tests
+
+Use real SQLite + temp artifact store.
+
+Exercise all four Wave 2 modules together.
+
+No test writes to default user runtime state.
+
+======================================================================
+26. COMPLETE WAVE 2 ACCEPTANCE MATRIX
+======================================================================
+
+M09 Ledger:
+
+1. append node;
+2. append edge;
+3. immutable revision;
+4. valid dependency DAG;
+5. direct dependency cycle rejected;
+6. indirect dependency cycle rejected;
+7. contradiction edge allowed;
+8. symmetric contradiction allowed;
+9. supersession order enforced;
+10. dangling reference rejected;
+11. ancestor query;
+12. descendant query;
+13. contradiction query;
+14. unresolved dependency query;
+15. revision marks dependent descendants stale;
+16. history preserved;
+17. confidence not universally clamped;
+18. deterministic projection hash;
+19. replay equivalence;
+20. invalid graph batch rejected transactionally.
+
+M02:
+
+21. T0 allocation;
+22. T1 allocation;
+23. T2 allocation;
+24. T3 allocation;
+25. T4 allocation;
+26. T5 allocation;
+27. harder task cannot receive lower tier;
+28. consequence floor overrides low aggregate score;
+29. irreversibility floor;
+30. deployment ceilings applied;
+31. impossible deployment floor conflict rejected;
+32. deterministic plan;
+33. deterministic revision;
+34. consumed usage preserved;
+35. mandatory validation floor preserved.
+
+Budget Meter:
+
+36. zero usage initial state;
+37. deterministic consumption;
+38. correct remaining calculation;
+39. exact ceiling allowed;
+40. overspend rejected;
+41. rejected spend changes nothing;
+42. reservation succeeds;
+43. reservation oversubscription rejected;
+44. concurrency cap enforced;
+45. settlement records actual use;
+46. settlement cannot exceed reservation;
+47. release restores capacity;
+48. invalid lower revision rejected;
+49. replay equivalence;
+50. deterministic meter projection/hash.
+
+M12 Context:
+
+51. FULL compilation;
+52. STANDARD compilation;
+53. HANDOFF compilation;
+54. deterministic canonical ordering;
+55. deterministic packet hash;
+56. repeated compile idempotent;
+57. deterministic Markdown;
+58. packet hash preimage rule;
+59. packet hash/artifact hash distinction;
+60. rejection reasons preserved;
+61. stale claims marked/excluded correctly;
+62. hard constraints retained when present;
+63. budget remaining retained;
+64. absent future projections not fabricated;
+65. compression obeys rules;
+66. profile-required data survives compression;
+67. overflow diagnostic;
+68. replayed state yields identical context hash.
+
+M13 Stop:
+
+69. CONTINUE;
+70. COMPLETE;
+71. PARTIAL_BUDGET;
+72. BLOCKED;
+73. FAILED_INVARIANT;
+74. CANCELLED;
+75. failed required acceptance forbids COMPLETE;
+76. outstanding mandatory validation forbids COMPLETE;
+77. hard budget overrides required continuation;
+78. already-complete state not converted to PARTIAL_BUDGET;
+79. resolvable required unknown continues;
+80. unresolvable required blocker blocks;
+81. no scalar leader required;
+82. DecisionResult absent handled;
+83. deterministic reason ordering;
+84. policy version recorded;
+85. budget provenance recorded;
+86. terminal context request produced;
+87. terminal status requires associated context;
+88. endless optional proposer terminates;
+89. replay gives identical StopDecision.
+
+Combined Wave 2:
+
+90. synthetic run allocates monotone budget;
+91. synthetic run records ledger state;
+92. synthetic revision stales descendants;
+93. synthetic run consumes budget;
+94. synthetic run reserves/settles budget;
+95. checkpoint context compiles;
+96. stop controller chooses deterministic outcome;
+97. terminal context produced;
+98. terminal context associated;
+99. close/reopen succeeds;
+100. replay reproduces ledger hash;
+101. replay reproduces budget state;
+102. replay reproduces context hash;
+103. replay reproduces StopDecision;
+104. old Wave 1 event stream still replays;
+105. old Wave 1 snapshot compatibility passes if reducer version changes;
+106. no model execution;
+107. no tool execution;
+108. all Wave 0–1 regression tests remain green.
+
+This matrix is the minimum acceptance surface.
+
+26.1 Additional Wave 2 enhancement acceptance requirements
+
+M09 trust/provenance:
+109. stale propagation also produces advisory DependencyConfidenceEnvelope;
+110. envelope records structural trust-impact cause without mutating authoritative confidence;
+111. unknown confidence remains explicitly unknown rather than numerically fabricated;
+112. open and resolved contradictions are distinguishable;
+113. standalone/decorative RESOLVES without required resolution/status transition is rejected;
+114. contradiction resolution is atomic and preserves contradiction history;
+115. each ledger revision has deterministic revision_hash;
+116. successor revision binds predecessor_revision_hash;
+117. revision-chain tampering is detected;
+118. incremental revision-chain verification succeeds from a known verified predecessor.
+
+M02/Budget:
+119. BudgetAllocated binds policy_version + canonical policy_hash;
+120. BudgetRevised binds policy_version + canonical policy_hash;
+121. replay under changed current configuration reproduces the historic committed budget unchanged;
+122. identical resolved policy yields identical policy_hash;
+123. deterministic burn-rate projection is derived only from committed usage events;
+124. burn-rate zero/insufficient-data states are explicit;
+125. burn-rate does not mutate or authorize budget consumption;
+126. burn-rate replay hash/value is identical.
+
+M12:
+127. compression policy has an explicit version;
+128. compression priority/rule ordering is deterministic;
+129. same input/profile/size/policy yields identical surviving content;
+130. ContextCompiled records compression policy version/applied rules;
+131. deterministic ContextDeltaPacket generated when policy permits;
+132. delta base hash mismatch is rejected;
+133. apply_delta reconstructs exact target canonical bytes/hash;
+134. delta is never the sole durable authority for terminal context;
+135. replay regenerates identical delta when base/target/version are unchanged.
+
+M13:
+136. marginal value is represented by bounded/confidence-aware estimate rather than bare scalar only;
+137. definitely-valuable interval comparison behaves correctly;
+138. definitely-not-valuable interval comparison behaves correctly;
+139. overlapping interval follows conservative versioned policy;
+140. point estimate is a degenerate interval;
+141. burn-rate signal may inform optional-work heuristic without overriding hard/mandatory rules;
+142. epistemic stop reason points to concrete LedgerNodeRef;
+143. missing required ledger trigger provenance is rejected.
+
+Cross-cutting replay:
+144. pure in-memory fold and SQLite-backed replay produce byte-identical RunState hash;
+145. both replay paths produce identical LedgerProjection hash;
+146. both replay paths produce identical BudgetProjection/BurnRate;
+147. both replay paths produce identical ContextPacket hash;
+148. both replay paths produce identical StopDecision;
+149. snapshot-assisted replay, when used, matches full event-fold results.
+
+======================================================================
+27. WAVE 0–1 REGRESSION REQUIREMENTS
+======================================================================
+
+Wave 2 must not regress:
+
+- canonical serialization;
+- recursive immutability;
+- schema strictness;
+- artifact deduplication;
+- event type validation;
+- event payload validation;
+- event sequence rules;
+- expected-version concurrency;
+- transaction rollback;
+- atomic run creation;
+- snapshots;
+- snapshot tamper detection;
+- replay;
+- fake adapter determinism;
+- dependency boundaries.
+
+If Wave 2 changes Wave 1 infrastructure, add regression tests.
+
+======================================================================
+28. QUALITY GATE
+======================================================================
+
+Run from the uv-managed project environment:
+
+uv sync --all-groups --frozen
+
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy --strict src tests
+
+uv run pytest tests/unit
+uv run pytest tests/property
+uv run pytest tests/integration
+
+uv run pytest
+
+make quality
+
+uv run python -m compileall -q src tests
+
+git diff --check
+
+Do not suppress strict mypy failures.
+
+Do not ignore failing property tests.
+
+Do not selectively exclude failing Wave 2 invariant tests.
+
+Report actual counts.
+
+======================================================================
+29. COMBINED WAVE 2 GATE
+======================================================================
+
+Wave 2 passes only when a deterministic synthetic run can:
+
+allocate monotone budget
+        ↓
+record epistemic graph
+        ↓
+revise ledger state
+        ↓
+mark dependent state stale
+        ↓
+consume/reserve budget
+        ↓
+compile deterministic context
+        ↓
+evaluate stop/continue
+        ↓
+produce terminal packet when terminal
+        ↓
+persist all authoritative events
+        ↓
+snapshot
+        ↓
+close storage
+        ↓
+reopen storage
+        ↓
+replay
+        ↓
+reconstruct exactly:
+    ledger projection/hash
+    budget projection
+    context packet/hash
+    stop decision
+    terminal context association
+
+No model/tool execution may be required.
+
+The combined gate must exercise at least:
+
+- COMPLETE;
+- BLOCKED;
+- PARTIAL_BUDGET;
+- adversarial finite termination.
+
+======================================================================
+30. IMPLEMENTATION ORDER
+======================================================================
+
+Recommended order:
+
+1. inspect repository and re-run Wave 0–1 gate;
+2. create Wave 2 requirement matrix;
+3. add/extend shared immutable contracts;
+4. define Wave 2 event vocabulary;
+5. extend event registry;
+6. extend RunState;
+7. extend reducer;
+8. add replay/snapshot compatibility;
+9. implement M09 including advisory confidence envelopes, atomic contradiction resolution, and
+   hash-linked revision chains;
+10. test M09 including revision-chain tamper detection and resolved-contradiction lifecycle;
+11. implement M02 including policy-hash provenance;
+12. implement Budget Meter including deterministic advisory burn-rate projection;
+13. test M02/Budget including replay under changed live policy;
+14. implement M12 including versioned compression policy and deterministic delta packets;
+15. test M12 including delta round-trip and compression-policy determinism;
+16. implement M13 using confidence-bounded marginal-value estimates, burn-rate advisory input, and
+   concrete ledger-trigger provenance;
+17. test M13 including interval overlap policy and provenance requirements;
+18. implement minimal Wave2Runtime;
+19. test terminal lifecycle;
+20. add synthetic + differential replay gates;
+21. add metrics;
+22. add ADRs/docs;
+23. run all Wave 0–1 regression tests;
+24. run full Wave 2 gate;
+25. inspect full diff for Wave 3+ leakage;
+26. verify requirement matrix complete;
+27. persist coherent Git commit;
+28. push review branch / open PR according to repository workflow;
+29. stop before Wave 3.
+
+======================================================================
+31. DEFECT REMEDIATION
+======================================================================
+
+For each failure:
+
+1. identify violated invariant;
+2. locate lowest correct layer;
+3. repair implementation;
+4. add/strengthen regression test;
+5. rerun narrow test;
+6. rerun full quality gate.
+
+Never weaken:
+
+- event authority;
+- immutability;
+- provenance;
+- graph validity;
+- confidence semantics;
+- monotone allocation;
+- hard ceilings;
+- context reproducibility;
+- terminal-context requirement;
+- provider neutrality;
+- replay determinism;
+- Wave boundary;
+
+merely to make tests pass.
+
+======================================================================
+32. GIT PERSISTENCE
+======================================================================
+
+Wave 2 must be persisted in the Git-backed repository.
+
+Do not leave the completed work only in an ephemeral Codex workspace.
+
+Use the repository’s normal branch/PR workflow.
+
+Recommended branch:
+
+codex/wave-2-deterministic-spine
+
+Recommended commit message:
+
+Implement Wave 2 deterministic control spine
+
+Recommended PR title:
+
+Implement Wave 2 deterministic control spine
+
+Do not merge automatically unless repository workflow explicitly requires it.
+
+Do not deploy.
+
+Do not publish.
+
+Report:
+
+- repository;
+- base branch;
+- base commit;
+- Wave 2 branch;
+- Wave 2 commit SHA;
+- working-tree state;
+- PR/review state.
+
+======================================================================
+33. COMPLETION CONDITIONS
+======================================================================
+
+Emit:
+
+GOAL_EXECUTION_COMPLETE
+
+only when all are true:
+
+- accepted Wave 0–1 baseline present;
+- Wave 0–1 tests still pass;
+- M09 passes;
+- M02 passes;
+- Budget Meter passes;
+- M12 passes;
+- M13 passes;
+- combined Wave 2 synthetic gate passes;
+- replay equivalence proven;
+- strict mypy passes;
+- Ruff passes;
+- full test suite passes;
+- hard-budget finite termination proven;
+- advisory dependency-confidence envelopes proven non-authoritative;
+- contradiction resolution lifecycle proven atomic/auditable;
+- revision hash chains verified;
+- budget policy provenance hash verified;
+- burn-rate projection deterministic;
+- context compression policy versioning verified;
+- context delta round-trip verified;
+- bounded marginal-value policy verified;
+- epistemic stop reasons tied to concrete ledger refs;
+- differential replay equivalence proven;
+- no model/tool call occurs in deterministic Wave 2 path;
+- no blocking deviation remains;
+- no Wave 3+ behavior introduced;
+- requirement matrix has no unresolved required rows;
+- coherent Wave 2 commit exists;
+- repository state is persisted for subsequent tasks.
+
+======================================================================
+34. FINAL REPORT FORMAT
+======================================================================
+
+Return exactly:
+
+IMPLEMENTED
+
+FILES CHANGED
+
+TESTS
+
+INVARIANTS VERIFIED
+
+MODULE ACCEPTANCE
+
+DEVIATIONS
+
+OPEN DECISIONS
+
+REPOSITORY STATUS
+
+NEXT WAVE
+
+Under IMPLEMENTED report separately:
+
+- M09;
+- M02;
+- Budget Meter;
+- M12;
+- M13;
+- shared runtime/reducer/persistence changes.
+
+Under TESTS report:
+
+- Python version;
+- uv version;
+- exact commands;
+- baseline Wave 0–1 counts;
+- final unit counts;
+- final property counts;
+- final integration counts;
+- total suite counts;
+- passed;
+- failed;
+- skipped;
+- deselected;
+- Ruff;
+- mypy;
+- make quality;
+- compileall;
+- git diff --check.
+
+Under INVARIANTS VERIFIED explicitly report:
+
+1. event log authority;
+2. immutable revisions;
+3. relation-specific ledger acyclicity;
+4. contradiction semantics;
+5. stale descendant propagation;
+6. structured confidence semantics;
+7. monotone tier allocation;
+8. consumed-budget preservation;
+9. reservation/oversubscription enforcement;
+10. hard ceilings;
+11. context packet determinism;
+12. packet hash reproducibility;
+13. stale-state rendering;
+14. stop-decision determinism;
+15. terminal-context invariant;
+16. finite termination;
+17. provider-neutral deterministic execution;
+18. replay equivalence;
+19. advisory dependency-confidence-envelope semantics;
+20. contradiction-resolution atomicity;
+21. hash-linked revision-chain integrity;
+22. budget policy-hash provenance;
+23. burn-rate projection determinism;
+24. versioned compression-order determinism;
+25. context-delta exact reconstruction;
+26. confidence-bounded marginal-value semantics;
+27. ledger-linked stop provenance;
+28. differential replay equivalence.
+
+Under MODULE ACCEPTANCE report:
+
+M09 — PASS / FAIL
+M02 — PASS / FAIL
+BudgetMeter — PASS / FAIL
+M12 — PASS / FAIL
+M13 — PASS / FAIL
+Combined Wave 2 gate — PASS / FAIL
+
+For each, list decisive tests/invariants.
+
+Under DEVIATIONS use only:
+
+NONE
+BENIGN IMPLEMENTATION DETAIL
+ARCHITECTURAL DEVIATION
+BLOCKING DEVIATION
+
+Do not silently accept an architectural deviation.
+
+Under OPEN DECISIONS list only items that materially block Wave 3.
+
+If none:
+
+None.
+
+Under NEXT WAVE provide a plan only for Wave 3:
+
+- M01 Task Classifier;
+- M03 Problem Formaliser;
+- M04 Representation Selector;
+- prompt registry;
+- structured-model integration;
+- deterministic fallbacks;
+- fake-model golden fixtures.
+
+Do not implement Wave 3.
+
+======================================================================
+35. EXACT CODEX GOAL BRIEF
+======================================================================
+
+Implement Wave 2 only of the Frontier Reasoning Engine on top of the accepted,
+persisted Wave 0–1 foundation.
+
+First verify that the repository contains the complete accepted Wave 0–1
+implementation and that its quality gate passes. Stop BASELINE_NOT_PERSISTED
+if the foundation is absent. Do not reconstruct Wave 0–1 inside this task.
+
+Read the authoritative build specifications and create a traceable Wave 2
+requirements matrix before implementation.
+
+Implement:
+
+- explicit typed Wave 2 events and deterministic reducer evolution;
+- M09 Epistemic Ledger with immutable hash-linked node revisions, relation-specific DAG
+  validation, explicit atomic contradiction resolution, structured confidence storage,
+  non-authoritative dependency-confidence envelopes on staleness, deterministic queries,
+  descendant staleness, stable projections, revision-chain verification, and replay equivalence;
+- M02 configuration-driven monotone T0–T5 allocation with mandatory tier floors,
+  deployment-limit validation, deterministic revision, canonical policy-version/hash binding on
+  allocation/revision events, and no unsafe scalar-only allocation;
+- executable event-derived Budget Meter with committed usage, hard ceilings, minimal
+  reservation/settlement/release semantics, oversubscription prevention, deterministic advisory
+  burn-rate/trend projections, replay, and immutable history;
+- M12 FULL/STANDARD/HANDOFF deterministic context compilation with explicit future-projection
+  absence, canonical ordering, versioned compression priority rules, preimage packet hashing,
+  deterministic Markdown, content-addressed exact-reconstruction delta packets, required-state
+  preservation, configurable byte limits, artifact persistence, and explicit overflow;
+- M13 deterministic stop/continue policy covering CONTINUE, COMPLETE, PARTIAL_BUDGET, BLOCKED,
+  FAILED_INVARIANT, and CANCELLED with fixed precedence, confidence-bounded marginal-value/cost
+  estimates, advisory burn-rate input, concrete LedgerNodeRef provenance for epistemic reasons,
+  no scalar-leader assumption, terminal context compilation requests, and finite termination
+  under hard resource ceilings;
+- a minimal Wave2Runtime that coordinates StopDecision → context compilation →
+  artifact persistence → terminal context association → terminal run status,
+  without implementing the full scheduler/orchestrator.
+
+Preserve Wave 1 event/replay/snapshot compatibility. Keep the event stream
+authoritative and projections rebuildable. Prefer event-derived in-memory
+projections; add no projection database tables unless a concrete Wave 2
+correctness requirement justifies them. Add no provider dependency and no
+Wave 3+ behavior.
+
+Add complete unit, property, integration, regression, backward-replay, graph,
+budget, context, terminal-lifecycle, revision-chain, contradiction-resolution,
+delta-round-trip, policy-provenance, burn-rate, bounded-marginal-value, differential-replay,
+and adversarial finite-termination tests. The complete acceptance matrix in the approved
+Wave 2 plan is the minimum required coverage.
+
+Run the full uv/Ruff/mypy/pytest/make/compileall/diff quality gate. Do not
+suppress type errors, ignore failing property tests, weaken invariants, or
+claim completion with selective skips.
+
+When all gates pass, inspect the full diff, verify no Wave 3+ leakage, verify
+the requirements matrix has no unresolved required row, persist one coherent
+Wave 2 commit in the Git-backed repository, and push/open a review PR according
+to repository workflow so the work survives future Codex workspaces.
+
+Return exactly:
+
+IMPLEMENTED
+FILES CHANGED
+TESTS
+INVARIANTS VERIFIED
+MODULE ACCEPTANCE
+DEVIATIONS
+OPEN DECISIONS
+REPOSITORY STATUS
+NEXT WAVE
+
+Emit GOAL_EXECUTION_COMPLETE only if every Wave 2 completion condition is
+genuinely satisfied.
+
+NEXT WAVE must contain a plan only for Wave 3 and must not implement it.
+
+PLAN_READY_FOR_APPROVAL
