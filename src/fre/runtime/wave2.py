@@ -9,6 +9,7 @@ from fre.engine import FrontierReasoningEngine
 from fre.modules.m12_context import ContextCompiler
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
+    ArtifactRegistered,
     ContextCompiled,
     RunStatusChanged,
     StopDecisionRecorded,
@@ -37,6 +38,27 @@ class Wave2Runtime:
         if not state.stop_decisions or state.stop_decisions[-1] != decision:
             raise ValueError("terminal stop decision must be recorded before finalization")
         remaining = BudgetMeter().remaining(state.budget)
+        if remaining.projection_hash != decision.budget_projection_hash:
+            raise ValueError("terminal stop decision is stale relative to the budget projection")
+        stored_events = self.engine.store.load(run_id)
+        decision_sequence: int | None = None
+        for event in reversed(stored_events):
+            event_payload = event.validated_payload()
+            if (
+                isinstance(event_payload, StopDecisionRecorded)
+                and event_payload.decision == decision
+            ):
+                decision_sequence = event.sequence
+                break
+        if decision_sequence is None:
+            raise ValueError("terminal stop decision event is missing")
+        non_authoritative = (ArtifactRegistered,)
+        if any(
+            not isinstance(event.validated_payload(), non_authoritative)
+            for event in stored_events
+            if event.sequence > decision_sequence
+        ):
+            raise ValueError("terminal stop decision is stale after authoritative state changes")
         compiled = self.compiler.compile(
             run_id=run_id,
             snapshot_version=state.version,

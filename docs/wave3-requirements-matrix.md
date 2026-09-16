@@ -126,3 +126,14 @@ recorded after the numbered rows.
 | W3-DEPS | Authoritative plan | 49 | Provider-neutral boundaries and pure replay/builders | dependency test | import graph | N/A | N/A | N/A | test_dependencies.py | Planned | Implemented |
 | W3-METRICS | Authoritative plan | 32 | Derived metrics are non-authoritative | metrics | Wave3Metrics | N/A | N/A | N/A | test_wave3.py | Planned | Implemented |
 | W3-NOW4 | Authoritative plan | Scope | No Wave 4 or later behavior | repository | N/A | N/A | N/A | N/A | scope inspection | Planned | Implemented |
+
+## Runtime-integrity remediation register
+
+| DEFECT | REMEDIATION | DECISIVE COVERAGE | STATUS |
+|---|---|---|---|
+| 1 | Wave 2 and Wave 3 snapshot compatibility omissions are independent | Serialized Wave 1 and Wave 2 fixture hash, load, verification, and assisted replay | Proven |
+| 2 | Stale markers accept either revision-envelope predecessor or successor while retaining exact-set validation | Direct reduction plus SQLite reopen, full replay, and assisted replay | Proven |
+| 3 | Representation plans bind the canonical ProblemSpec and are invalidated by reformalisation | Wrong binding rejection, stale M12 rejection, replay/snapshot equality | Proven |
+| 4 | Semantic call records require prior raw-artifact registration; successful records require the artifact | Missing, unregistered, wrong-order, rollback, and valid replay paths | Proven |
+| 5 | Contradiction resolution validates unique, known, equal affected/transition sets before mutation | Valid multi-node and invalid duplicate, unknown, and mismatch cases | Proven |
+| 6 | Finalisation revalidates budget identity and rejects intervening authoritative changes | Budget, ledger, generic-state mutation, and unchanged lifecycle cases | Proven |

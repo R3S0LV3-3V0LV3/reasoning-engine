@@ -87,7 +87,7 @@ class RunState(FrozenModel):
     def snapshot_payload(self) -> dict[str, object]:
         """Return the hash payload, retaining Wave 1 shape for untouched streams."""
         payload: dict[str, object] = self.model_dump(mode="json")
-        if (
+        wave_2_absent = (
             self.ledger == LedgerProjection()
             and self.budget == BudgetProjection()
             and not self.context_packets
@@ -95,7 +95,9 @@ class RunState(FrozenModel):
             and not self.stop_decisions
             and self.terminal_context_packet_hash is None
             and self.terminal_context_disposition is None
-            and not self.model_calls
+        )
+        wave_3_absent = (
+            not self.model_calls
             and self.task_signature is None
             and self.classification_record is None
             and not self.classification_diagnostics
@@ -104,15 +106,11 @@ class RunState(FrozenModel):
             and not self.problem_contradictions
             and self.representation_plan is None
             and not self.representation_artifacts
-        ):
+        )
+        # Wave 3 did not exist when Wave 2 snapshots were sealed.  Its empty
+        # fields must therefore be omitted independently of populated Wave 2 state.
+        if wave_3_absent:
             for key in (
-                "ledger",
-                "budget",
-                "context_packets",
-                "context_compilations",
-                "stop_decisions",
-                "terminal_context_packet_hash",
-                "terminal_context_disposition",
                 "model_calls",
                 "task_signature",
                 "classification_record",
@@ -122,6 +120,17 @@ class RunState(FrozenModel):
                 "problem_contradictions",
                 "representation_plan",
                 "representation_artifacts",
+            ):
+                payload.pop(key)
+        if wave_2_absent and wave_3_absent:
+            for key in (
+                "ledger",
+                "budget",
+                "context_packets",
+                "context_compilations",
+                "stop_decisions",
+                "terminal_context_packet_hash",
+                "terminal_context_disposition",
             ):
                 payload.pop(key)
         return payload
@@ -167,9 +176,38 @@ class RunReducer:
             # Descendant traversal alone treats an unknown source as a leaf, so
             # resolve it explicitly before accepting an empty affected set.
             ledger.effective_status(state.ledger, payload.source_ref)
+            descendants = ledger.descendants(state.ledger, payload.source_ref)
+            matching_envelopes = tuple(
+                envelope
+                for envelope in state.ledger.stale_envelopes
+                if payload.source_ref in envelope.changed_dependency_refs
+            )
+            envelope_affected = set()
+            for envelope in matching_envelopes:
+                changed = tuple(
+                    sorted(
+                        envelope.changed_dependency_refs,
+                        key=lambda ref: (str(ref.node_id), ref.revision),
+                    )
+                )
+                valid_revision_pair = (
+                    len(changed) == 2
+                    and changed[0].node_id == changed[1].node_id
+                    and changed[1].revision == changed[0].revision + 1
+                    and any(
+                        edge.relation.value == "SUPERSEDES"
+                        and edge.source == changed[1]
+                        and edge.target == changed[0]
+                        for edge in state.ledger.edges
+                    )
+                    and envelope.affected_node_ref in ledger.descendants(state.ledger, changed[0])
+                )
+                if not valid_revision_pair:
+                    raise ValueError("malformed stale-dependency revision envelope")
+                envelope_affected.add(envelope.affected_node_ref)
             expected = tuple(
                 sorted(
-                    ledger.descendants(state.ledger, payload.source_ref),
+                    set(descendants) | envelope_affected,
                     key=lambda ref: (str(ref.node_id), ref.revision),
                 )
             )
@@ -270,6 +308,13 @@ class RunReducer:
                 item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
             ):
                 raise ValueError("semantic model-call identity already recorded")
+            if isinstance(payload, ModelCallRecorded) and payload.record.raw_artifact is None:
+                raise ValueError("successful semantic model call requires a raw-response artifact")
+            if (
+                payload.record.raw_artifact is not None
+                and payload.record.raw_artifact.sha256 not in state.artifacts
+            ):
+                raise ValueError("semantic model-call artifact is not registered")
             changes["model_calls"] = (*state.model_calls, payload.record)
         elif isinstance(payload, TaskClassified):
             changes["task_signature"] = payload.signature
@@ -281,6 +326,8 @@ class RunReducer:
             )
         elif isinstance(payload, ProblemFormalised):
             changes["problem_spec"] = payload.problem
+            if state.problem_spec is not None and state.problem_spec != payload.problem:
+                changes["representation_plan"] = None
         elif isinstance(payload, ProblemBlockerRecorded):
             # Resolve concrete provenance before accepting a blocker.
             EpistemicLedger().effective_status(state.ledger, payload.blocker.ledger_ref)
@@ -290,6 +337,10 @@ class RunReducer:
             EpistemicLedger().effective_status(state.ledger, payload.diagnostic.right_ref)
             changes["problem_contradictions"] = (*state.problem_contradictions, payload.diagnostic)
         elif isinstance(payload, RepresentationPlanSelected):
+            if state.problem_spec is None or payload.plan.problem_spec_hash != canonical_hash(
+                state.problem_spec
+            ):
+                raise ValueError("representation plan does not bind current ProblemSpec")
             changes["representation_plan"] = payload.plan
         elif isinstance(payload, RepresentationArtifactCompiled):
             if (
