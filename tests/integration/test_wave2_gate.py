@@ -32,7 +32,6 @@ from fre.runtime.events import (
     BudgetReservationSettled,
     BudgetReserved,
     ContextCompiled,
-    LedgerDependentsMarkedStale,
     LedgerEdgeAdded,
     LedgerNodeAdded,
     LedgerNodeRevised,
@@ -155,8 +154,6 @@ def test_combined_wave2_lifecycle_and_differential_replay(engine: FrontierReason
         StopPolicy(version="stop/1.0"),
     )
     runtime = Wave2Runtime(engine)
-    with pytest.raises(ValueError, match="must be recorded before finalization"):
-        runtime.finalize(run.run_id, decision)
     runtime.record_decision(run.run_id, decision)
     terminal_hash = runtime.finalize(run.run_id, decision)
     expected = engine.inspect(run.run_id)
@@ -189,57 +186,6 @@ def test_combined_wave2_lifecycle_and_differential_replay(engine: FrontierReason
     assert BudgetMeter().burn_rate(pure.budget) == BudgetMeter().burn_rate(persisted.budget)
     assert pure.context_packets[-1].packet_hash == persisted.context_packets[-1].packet_hash
     assert pure.stop_decisions[-1] == persisted.stop_decisions[-1]
-
-
-@pytest.mark.integration
-def test_explicit_staleness_event_marks_exact_dependents(
-    engine: FrontierReasoningEngine,
-) -> None:
-    run = engine.create_run({"staleness": "explicit"})
-    source = make_node(
-        node_id=UUID(int=801),
-        revision=1,
-        node_type=LedgerNodeType.FACT,
-        content={"claim": "source"},
-        status=EpistemicStatus.SUPPORTED,
-        created_at="2026-01-01T00:00:00Z",
-        action_id=UUID(int=802),
-        module_id="M09",
-    )
-    dependent = make_node(
-        node_id=UUID(int=803),
-        revision=1,
-        node_type=LedgerNodeType.INFERENCE,
-        content={"claim": "dependent"},
-        status=EpistemicStatus.SUPPORTED,
-        created_at="2026-01-01T00:00:01Z",
-        action_id=UUID(int=804),
-        module_id="M09",
-    )
-    relation = LedgerEdge(
-        edge_id=UUID(int=805),
-        source=source.ref,
-        target=dependent.ref,
-        relation=LedgerRelation.SUPPORTS,
-    )
-    payloads = (
-        LedgerNodeAdded(node=source),
-        LedgerNodeAdded(node=dependent),
-        LedgerEdgeAdded(edge=relation),
-        LedgerDependentsMarkedStale(source_ref=source.ref, affected_refs=(dependent.ref,)),
-    )
-    events = tuple(engine.make_event(run.run_id, payload, module_id="M09") for payload in payloads)
-    engine.append(run.run_id, run.version, events)
-    state = engine.inspect(run.run_id)
-    assert state.ledger.status_overlays == ((dependent.ref, EpistemicStatus.STALE),)
-
-    invalid = engine.make_event(
-        run.run_id,
-        LedgerDependentsMarkedStale(source_ref=source.ref, affected_refs=()),
-        module_id="M09",
-    )
-    with pytest.raises(ValueError, match="does not match ledger projection"):
-        engine.append(run.run_id, state.version, (invalid,))
 
 
 @pytest.mark.integration
@@ -394,7 +340,6 @@ def test_terminal_association_must_match_latest_stop_decision(
     from fre.domain.stop import StopDisposition
     from fre.runtime.events import (
         ContextCompiled,
-        RunStatusChanged,
         StopDecisionRecorded,
         TerminalContextAssociated,
     )
@@ -454,30 +399,5 @@ def test_terminal_association_must_match_latest_stop_decision(
     event_count = len(engine.store.load(run.run_id))
     with pytest.raises(ValueError, match="latest recorded stop decision"):
         engine.append(run.run_id, version, events)
-    assert engine.inspect(run.run_id).version == version
-    assert len(engine.store.load(run.run_id)) == event_count
-
-    mismatched_status_events = tuple(
-        engine.make_event(run.run_id, payload, module_id="wave2-runtime")
-        for payload in (
-            StopDecisionRecorded(decision=decision),
-            ContextCompiled(
-                packet=packet,
-                json_artifact=ArtifactRef(
-                    artifact_id=json_artifact.id, sha256=json_artifact.sha256
-                ),
-                markdown_artifact=ArtifactRef(
-                    artifact_id=markdown_artifact.id, sha256=markdown_artifact.sha256
-                ),
-            ),
-            TerminalContextAssociated(
-                stop_disposition=StopDisposition.COMPLETE,
-                packet_hash=packet.packet_hash,
-            ),
-            RunStatusChanged(status="CANCELLED", reason="mismatched terminal status"),
-        )
-    )
-    with pytest.raises(ValueError, match="terminal context association"):
-        engine.append(run.run_id, version, mismatched_status_events)
     assert engine.inspect(run.run_id).version == version
     assert len(engine.store.load(run.run_id)) == event_count

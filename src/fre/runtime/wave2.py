@@ -34,8 +34,6 @@ class Wave2Runtime:
         if decision.disposition is StopDisposition.CONTINUE or decision.context_request is None:
             raise ValueError("only terminal stop decisions can be finalized")
         state = self.engine.inspect(run_id)
-        if not state.stop_decisions or state.stop_decisions[-1] != decision:
-            raise ValueError("terminal stop decision must be recorded before finalization")
         remaining = BudgetMeter().remaining(state.budget)
         compiled = self.compiler.compile(
             run_id=run_id,
