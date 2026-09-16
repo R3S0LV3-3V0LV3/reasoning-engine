@@ -1,5 +1,6 @@
 """Combined Wave 3 SQLite, artifact, model, snapshot, and replay gate."""
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ from fre.adapters.artifacts_local import LocalArtifactStore
 from fre.adapters.storage_sqlite import SQLiteStore
 from fre.adapters.testing import FakeClock, FakeUUIDFactory
 from fre.domain.budget import DeploymentLimits
-from fre.domain.common import ArtifactRef, JsonValue, OutputContract, PermissionSet
+from fre.domain.common import JsonValue, OutputContract, PermissionSet
 from fre.domain.context import CompilerProfile
 from fre.domain.semantic import (
     SemanticCallUsage,
@@ -31,7 +32,6 @@ from fre.prompts import default_output_schema_registry, default_prompt_registry
 from fre.prompts.schemas import ClassificationOutput
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
-    ArtifactRegistered,
     BudgetAllocated,
     ModelCallRecorded,
     ProblemFormalised,
@@ -47,7 +47,7 @@ class QueueModel:
         self.responses = iter(responses)
         self.calls: list[str] = []
 
-    def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+    async def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
         self.calls.append(request.idempotency_key)
         return next(self.responses)
 
@@ -139,80 +139,32 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         ]
     )
     runtime = SemanticModelRuntime(
-        model, artifacts, uuid_factory, default_prompt_registry(), default_output_schema_registry()
+        model, engine, default_prompt_registry(), default_output_schema_registry()
     )
-    state = engine.inspect(handle.run_id)
-    execution = runtime.execute(
-        state,
-        module_id="M01",
-        module_version="1.0",
-        operation="classify",
-        prompt_id="m01.classify",
-        prompt_version="1.0",
-        canonical_input=task.model_dump(mode="json"),
+    execution = asyncio.run(
+        runtime.execute(
+            run_id=handle.run_id,
+            module_id="M01",
+            module_version="1.0",
+            operation="classify",
+            prompt_id="m01.classify",
+            prompt_version="1.0",
+            canonical_input=task.model_dump(mode="json"),
+        )
     )
     assert execution.repaired and len(model.calls) == 2
     successful_call = next(
         item for item in execution.event_payloads if isinstance(item, ModelCallRecorded)
     )
-    before_invalid = engine.store.load(handle.run_id)
-    with pytest.raises(ValueError, match="artifact is not registered"):
-        engine.append(
-            handle.run_id,
-            state.version,
-            (engine.make_event(handle.run_id, successful_call, module_id="semantic-runtime"),),
-        )
-    missing_raw = successful_call.model_copy(
-        update={"record": successful_call.record.model_copy(update={"raw_artifact": None})}
-    )
-    with pytest.raises(ValueError, match="requires a raw-response artifact"):
-        engine.append(
-            handle.run_id,
-            state.version,
-            (engine.make_event(handle.run_id, missing_raw, module_id="semantic-runtime"),),
-        )
-    registration = next(
-        item
-        for item in execution.event_payloads
-        if isinstance(item, ArtifactRegistered)
-        and item.artifact == successful_call.record.raw_artifact
-    )
-    with pytest.raises(ValueError, match="artifact is not registered"):
-        engine.append(
-            handle.run_id,
-            state.version,
-            tuple(
-                engine.make_event(handle.run_id, item, module_id="semantic-runtime")
-                for item in (successful_call, registration)
-            ),
-        )
-    unregistered = successful_call.model_copy(
-        update={
-            "record": successful_call.record.model_copy(
-                update={"raw_artifact": ArtifactRef(artifact_id=UUID(int=999), sha256="f" * 64)}
-            )
-        }
-    )
-    with pytest.raises(ValueError, match="artifact is not registered"):
-        engine.append(
-            handle.run_id,
-            state.version,
-            tuple(
-                engine.make_event(handle.run_id, item, module_id="semantic-runtime")
-                for item in (registration, unregistered)
-            ),
-        )
-    assert engine.store.load(handle.run_id) == before_invalid
+    assert successful_call.record.raw_artifact is not None
+    assert successful_call.record.proposal_artifact is not None
     proposal = cast(ClassificationOutput, execution.proposal)
     signature, classification_record = TaskClassifier().classify(
         task,
         proposal,
         model_call_key=execution.record.idempotency_key if execution.record else None,
     )
-    payloads = (
-        *execution.event_payloads,
-        TaskClassified(signature=signature, record=classification_record),
-    )
+    payloads = (TaskClassified(signature=signature, record=classification_record),)
     state = engine.inspect(handle.run_id)
     events = tuple(
         engine.make_event(handle.run_id, payload, module_id="semantic-runtime")
@@ -220,15 +172,16 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
     )
     engine.append(handle.run_id, state.version, events)
 
-    persisted_state = engine.inspect(handle.run_id)
-    reused = runtime.execute(
-        persisted_state,
-        module_id="M01",
-        module_version="1.0",
-        operation="classify",
-        prompt_id="m01.classify",
-        prompt_version="1.0",
-        canonical_input=task.model_dump(mode="json"),
+    reused = asyncio.run(
+        runtime.execute(
+            run_id=handle.run_id,
+            module_id="M01",
+            module_version="1.0",
+            operation="classify",
+            prompt_id="m01.classify",
+            prompt_version="1.0",
+            canonical_input=task.model_dump(mode="json"),
+        )
     )
     assert reused.reused and reused.repaired and reused.proposal == proposal
     assert len(model.calls) == 2

@@ -137,3 +137,9 @@ recorded after the numbered rows.
 | 4 | Semantic call records require prior raw-artifact registration; successful records require the artifact | Missing, unregistered, wrong-order, rollback, and valid replay paths | Proven |
 | 5 | Contradiction resolution validates unique, known, equal affected/transition sets before mutation | Valid multi-node and invalid duplicate, unknown, and mismatch cases | Proven |
 | 6 | Finalisation revalidates budget identity and rejects intervening authoritative changes | Budget, ledger, generic-state mutation, and unchanged lifecycle cases | Proven |
+| 7 | Structured-model generation and canonical semantic execution are asynchronous and provider-neutral | All statuses and the Wave 3 integration gate | Proven |
+| 8 | Repair executes a separately rendered input containing parent identity, raw artifact, and validation diagnostics, with complete prompt/schema/policy identity | Repair content, prompt-version identity, zero-repair, and one-repair cases | Proven |
+| 9 | Raw transport and canonical validated proposals are distinct registered artifacts; reuse reads only the proposal | Empty/fenced/enveloped raw responses and idempotent reuse | Proven |
+| 10 | Reservation commits before invocation; completion coherently registers, accounts, and records without clamping over-reported usage | Concurrent acquisition, accounting overflow, cancellation recovery, replay, and snapshot cases | Proven |
+| 11 | Repair-budget refusal preserves the initial failed record and does not claim a repair | One-call repair-refusal case | Proven |
+| 30 | Prompt/schema and repair-parent ownership are rejected before reservation | Cross-module pre-spend rejection | Proven |
