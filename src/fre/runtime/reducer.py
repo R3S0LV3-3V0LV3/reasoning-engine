@@ -308,12 +308,11 @@ class RunReducer:
                 item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
             ):
                 raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, ModelCallRecorded) and (
-                payload.record.raw_artifact is None or payload.record.proposal_artifact is None
-            ):
-                raise ValueError(
-                    "successful semantic model call requires raw and proposal artifacts"
-                )
+            # ModelCallRecorded/1.0 predates proposal_artifact.  Raw-only successful
+            # records must remain replayable; newly produced records are hardened by
+            # SemanticModelRuntime, while a future event schema can require both.
+            if isinstance(payload, ModelCallRecorded) and payload.record.raw_artifact is None:
+                raise ValueError("successful semantic model call requires a raw artifact")
             for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
                 if artifact is not None and artifact.sha256 not in state.artifacts:
                     raise ValueError("semantic model-call artifact is not registered")
