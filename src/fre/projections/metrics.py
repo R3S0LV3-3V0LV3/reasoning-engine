@@ -12,6 +12,7 @@ from fre.domain.context import ContextCompilationRecord, ContextDeltaPacket, Con
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.stop import StopDecision
 from fre.modules.m09_ledger import EpistemicLedger
+from fre.runtime.reducer import RunState
 
 
 class Wave2Metrics(FrozenModel):
@@ -35,6 +36,70 @@ class Wave2Metrics(FrozenModel):
     latest_delta_size: int | None
     latest_stop_disposition: str | None
     latest_stop_reason_codes: tuple[str, ...]
+
+
+class Wave3Metrics(FrozenModel):
+    classification_mode: str | None
+    classification_fallback_used: bool
+    model_call_count: int
+    repair_call_count: int
+    schema_validation_failures: int
+    problem_item_counts: dict[str, int]
+    hard_constraint_status_counts: dict[str, int]
+    blocker_count: int
+    representation_scores: dict[str, float]
+    selected_view_count: int
+    fallback_representation_count: int
+
+
+def project_wave3_metrics(state: RunState) -> Wave3Metrics:
+    problem = state.problem_spec
+    origin_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    if problem:
+        groups = (
+            problem.objectives,
+            problem.constraints,
+            problem.decision_variables,
+            problem.fixed_parameters,
+            problem.unknowns,
+            problem.observables,
+            problem.acceptance_criteria,
+            problem.assumption_items,
+        )
+        for group in groups:
+            for item in group:
+                provenance = item.provenance
+                if provenance:
+                    origin_counts[provenance.origin] = origin_counts.get(provenance.origin, 0) + 1
+        for constraint in problem.constraints:
+            if constraint.kind == "HARD":
+                key = f"{constraint.verification_mode}:{constraint.verification_status}"
+                status_counts[key] = status_counts.get(key, 0) + 1
+    views = state.representation_plan.views if state.representation_plan else ()
+    return Wave3Metrics(
+        classification_mode=state.classification_record.mode
+        if state.classification_record
+        else None,
+        classification_fallback_used=state.classification_record.fallback_used
+        if state.classification_record
+        else False,
+        model_call_count=len(state.model_calls),
+        repair_call_count=sum(record.repair_parent_key is not None for record in state.model_calls),
+        schema_validation_failures=sum(
+            record.status.value == "INVALID_STRUCTURED_OUTPUT" for record in state.model_calls
+        ),
+        problem_item_counts=origin_counts,
+        hard_constraint_status_counts=status_counts,
+        blocker_count=len(state.problem_blockers),
+        representation_scores={view.kind: view.compatibility_score for view in views},
+        selected_view_count=len(views),
+        fallback_representation_count=sum(
+            artifact.actual_kind.value == "TEXT_TABLE_FALLBACK"
+            and artifact.requested_kind != artifact.actual_kind
+            for artifact in state.representation_artifacts
+        ),
+    )
 
 
 def project_metrics(

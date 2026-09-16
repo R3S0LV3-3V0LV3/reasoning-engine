@@ -9,7 +9,11 @@ from fre.domain.budget import BudgetProjection
 from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.context import ContextCompilationRecord, ContextPacket
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
+from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
+from fre.domain.representation import RepresentationArtifact, RepresentationPlan
+from fre.domain.semantic import SemanticModelCallRecord
 from fre.domain.stop import StopDecision
+from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
 from fre.runtime.budget_meter import BudgetMeter
@@ -21,6 +25,7 @@ from fre.runtime.events import (
     BudgetReservationSettled,
     BudgetReserved,
     BudgetRevised,
+    ClassificationDiagnosticRecorded,
     ContextCompiled,
     LedgerContradictionResolved,
     LedgerDependentsMarkedStale,
@@ -28,10 +33,18 @@ from fre.runtime.events import (
     LedgerNodeAdded,
     LedgerNodeRevised,
     LedgerNodeStatusChanged,
+    ModelCallFailed,
+    ModelCallRecorded,
+    ProblemBlockerRecorded,
+    ProblemContradictionRecorded,
+    ProblemFormalised,
+    RepresentationArtifactCompiled,
+    RepresentationPlanSelected,
     RunCreated,
     RunStatusChanged,
     StopDecisionRecorded,
     StoredEvent,
+    TaskClassified,
     TerminalContextAssociated,
     TestValueSet,
 )
@@ -61,6 +74,15 @@ class RunState(FrozenModel):
     stop_decisions: tuple[StopDecision, ...] = ()
     terminal_context_packet_hash: str | None = None
     terminal_context_disposition: str | None = None
+    model_calls: tuple[SemanticModelCallRecord, ...] = ()
+    task_signature: TaskSignature | None = None
+    classification_record: ClassificationRecord | None = None
+    classification_diagnostics: tuple[str, ...] = ()
+    problem_spec: ProblemSpec | None = None
+    problem_blockers: tuple[ProblemBlocker, ...] = ()
+    problem_contradictions: tuple[ContradictionDiagnostic, ...] = ()
+    representation_plan: RepresentationPlan | None = None
+    representation_artifacts: tuple[RepresentationArtifact, ...] = ()
 
     def snapshot_payload(self) -> dict[str, object]:
         """Return the hash payload, retaining Wave 1 shape for untouched streams."""
@@ -73,6 +95,15 @@ class RunState(FrozenModel):
             and not self.stop_decisions
             and self.terminal_context_packet_hash is None
             and self.terminal_context_disposition is None
+            and not self.model_calls
+            and self.task_signature is None
+            and self.classification_record is None
+            and not self.classification_diagnostics
+            and self.problem_spec is None
+            and not self.problem_blockers
+            and not self.problem_contradictions
+            and self.representation_plan is None
+            and not self.representation_artifacts
         ):
             for key in (
                 "ledger",
@@ -82,6 +113,15 @@ class RunState(FrozenModel):
                 "stop_decisions",
                 "terminal_context_packet_hash",
                 "terminal_context_disposition",
+                "model_calls",
+                "task_signature",
+                "classification_record",
+                "classification_diagnostics",
+                "problem_spec",
+                "problem_blockers",
+                "problem_contradictions",
+                "representation_plan",
+                "representation_artifacts",
             ):
                 payload.pop(key)
         return payload
@@ -225,6 +265,42 @@ class RunReducer:
                 raise ValueError("terminal context must match the latest recorded stop decision")
             changes["terminal_context_packet_hash"] = payload.packet_hash
             changes["terminal_context_disposition"] = payload.stop_disposition
+        elif isinstance(payload, (ModelCallRecorded, ModelCallFailed)):
+            if any(
+                item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
+            ):
+                raise ValueError("semantic model-call identity already recorded")
+            changes["model_calls"] = (*state.model_calls, payload.record)
+        elif isinstance(payload, TaskClassified):
+            changes["task_signature"] = payload.signature
+            changes["classification_record"] = payload.record
+        elif isinstance(payload, ClassificationDiagnosticRecorded):
+            changes["classification_diagnostics"] = (
+                *state.classification_diagnostics,
+                f"{payload.code}:{payload.message}",
+            )
+        elif isinstance(payload, ProblemFormalised):
+            changes["problem_spec"] = payload.problem
+        elif isinstance(payload, ProblemBlockerRecorded):
+            # Resolve concrete provenance before accepting a blocker.
+            EpistemicLedger().effective_status(state.ledger, payload.blocker.ledger_ref)
+            changes["problem_blockers"] = (*state.problem_blockers, payload.blocker)
+        elif isinstance(payload, ProblemContradictionRecorded):
+            EpistemicLedger().effective_status(state.ledger, payload.diagnostic.left_ref)
+            EpistemicLedger().effective_status(state.ledger, payload.diagnostic.right_ref)
+            changes["problem_contradictions"] = (*state.problem_contradictions, payload.diagnostic)
+        elif isinstance(payload, RepresentationPlanSelected):
+            changes["representation_plan"] = payload.plan
+        elif isinstance(payload, RepresentationArtifactCompiled):
+            if (
+                state.problem_spec is None
+                or canonical_hash(state.problem_spec) != payload.artifact.problem_spec_hash
+            ):
+                raise ValueError("representation artifact does not bind current ProblemSpec")
+            changes["representation_artifacts"] = (
+                *state.representation_artifacts,
+                payload.artifact,
+            )
         if (
             isinstance(payload, RunStatusChanged)
             and payload.status

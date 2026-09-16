@@ -21,6 +21,8 @@ from fre.domain.context import (
     RejectedItem,
 )
 from fre.domain.ledger import EpistemicStatus, LedgerNode, LedgerNodeRef, LedgerProjection
+from fre.domain.problem import ProblemSpec
+from fre.domain.representation import RepresentationPlan
 from fre.modules.m09_ledger import EpistemicLedger
 
 DEFAULT_TARGETS = {
@@ -52,6 +54,8 @@ class ContextCompiler:
         unresolved_blockers: tuple[str, ...] = (),
         next_action: str | None = None,
         terminal_disposition: str | None = None,
+        objective: JsonValue | None = None,
+        output_contract: JsonValue | None = None,
     ) -> ContextCompilationResult:
         eligible_rules = self.policy.profile_rule_eligibility[profile]
         applied: list[str] = ["C01"] if "C01" in eligible_rules else []
@@ -109,6 +113,8 @@ class ContextCompiler:
             compiler_version=self.compiler_version,
             compression_policy_version=self.policy.compression_policy_version,
             applied_rule_ids=tuple(applied),
+            objective=objective,
+            output_contract=output_contract,
             hard_constraints=deduplicated_constraints,
             ledger_items=items,
             rejected_items=deduplicated_rejections,
@@ -136,6 +142,41 @@ class ContextCompiler:
             canonical_bytes=packet_bytes,
             markdown=self.render_markdown(packet),
             canonical_byte_size=len(packet_bytes),
+        )
+
+    @staticmethod
+    def render_markdown(packet: ContextPacket) -> str:
+        return Wave3ContextCompiler.render_markdown(packet)
+
+
+class Wave3ContextCompiler(ContextCompiler):
+    """Compiler v2.0 used only when Wave 3 semantic state is incorporated."""
+
+    compiler_version = "2.0"
+
+    def compile_semantic(
+        self,
+        *,
+        problem: ProblemSpec,
+        representation: RepresentationPlan | None,
+        **kwargs: object,
+    ) -> ContextCompilationResult:
+        semantic_summary: JsonValue = {
+            "objectives": [item.model_dump(mode="json") for item in problem.objectives],
+            "acceptance_criteria": [
+                item.model_dump(mode="json") for item in problem.acceptance_criteria
+            ],
+            "assumptions": [item.model_dump(mode="json") for item in problem.assumption_items],
+            "representation": representation.model_dump(mode="json") if representation else None,
+        }
+        constraints: tuple[JsonValue, ...] = tuple(
+            item.model_dump(mode="json") for item in problem.constraints if item.kind == "HARD"
+        )
+        return self.compile(
+            objective=semantic_summary,
+            output_contract=problem.output_contract.model_dump(mode="json"),
+            hard_constraints=constraints,
+            **kwargs,  # type: ignore[arg-type]
         )
 
     @staticmethod

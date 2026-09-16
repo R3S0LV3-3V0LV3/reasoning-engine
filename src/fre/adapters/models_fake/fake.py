@@ -1,18 +1,13 @@
-"""Deterministic structured-model test adapter."""
+"""Deterministic provider-neutral structured-model test adapter."""
 
-from typing import TypeVar
-
-from pydantic import BaseModel
-
-T = TypeVar("T", bound=BaseModel)
+from fre.domain.semantic import StructuredModelRequest, StructuredModelResult
 
 
 class FakeStructuredModel:
-    def __init__(self, responses: dict[str, BaseModel]) -> None:
+    def __init__(self, responses: dict[str, StructuredModelResult]) -> None:
         self._responses = responses
         self.calls: list[str] = []
 
-    async def generate(self, *, output_schema: type[T], idempotency_key: str) -> T:
-        self.calls.append(idempotency_key)
-        response = self._responses[idempotency_key]
-        return output_schema.model_validate(response.model_dump())
+    def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+        self.calls.append(request.idempotency_key)
+        return self._responses[request.idempotency_key]

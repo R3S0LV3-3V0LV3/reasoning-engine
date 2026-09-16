@@ -15,7 +15,11 @@ from fre.domain.ledger import (
     LedgerNode,
     LedgerNodeRef,
 )
+from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
+from fre.domain.representation import RepresentationArtifact, RepresentationPlan
+from fre.domain.semantic import SemanticModelCallRecord
 from fre.domain.stop import StopDecision
+from fre.domain.task import ClassificationRecord, TaskSignature
 
 
 class RunCreated(FrozenModel):
@@ -109,6 +113,45 @@ class TerminalContextAssociated(FrozenModel):
     packet_hash: str
 
 
+class ModelCallRecorded(FrozenModel):
+    record: SemanticModelCallRecord
+
+
+class ModelCallFailed(FrozenModel):
+    record: SemanticModelCallRecord
+    reason: str
+
+
+class TaskClassified(FrozenModel):
+    signature: TaskSignature
+    record: ClassificationRecord
+
+
+class ClassificationDiagnosticRecorded(FrozenModel):
+    code: str
+    message: str
+
+
+class ProblemFormalised(FrozenModel):
+    problem: ProblemSpec
+
+
+class ProblemBlockerRecorded(FrozenModel):
+    blocker: ProblemBlocker
+
+
+class ProblemContradictionRecorded(FrozenModel):
+    diagnostic: ContradictionDiagnostic
+
+
+class RepresentationPlanSelected(FrozenModel):
+    plan: RepresentationPlan
+
+
+class RepresentationArtifactCompiled(FrozenModel):
+    artifact: RepresentationArtifact
+
+
 EventPayload = (
     RunCreated
     | RunStatusChanged
@@ -129,6 +172,15 @@ EventPayload = (
     | ContextCompiled
     | StopDecisionRecorded
     | TerminalContextAssociated
+    | ModelCallRecorded
+    | ModelCallFailed
+    | TaskClassified
+    | ClassificationDiagnosticRecorded
+    | ProblemFormalised
+    | ProblemBlockerRecorded
+    | ProblemContradictionRecorded
+    | RepresentationPlanSelected
+    | RepresentationArtifactCompiled
 )
 EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
     (payload.__name__, "1.0"): payload
@@ -152,6 +204,15 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         ContextCompiled,
         StopDecisionRecorded,
         TerminalContextAssociated,
+        ModelCallRecorded,
+        ModelCallFailed,
+        TaskClassified,
+        ClassificationDiagnosticRecorded,
+        ProblemFormalised,
+        ProblemBlockerRecorded,
+        ProblemContradictionRecorded,
+        RepresentationPlanSelected,
+        RepresentationArtifactCompiled,
     )
 }
 

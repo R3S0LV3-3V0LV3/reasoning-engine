@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import Field
 
 from fre.domain.common import ArtifactRef, FrozenModel, OutputContract, PermissionSet
+from fre.domain.semantic import SourceAnchor
 
 
 class TaskType(StrEnum):
@@ -60,5 +61,28 @@ class TaskSignature(FrozenModel):
     evidence_scarcity: Ordinal4
     horizon: HorizonClass
     output_form: OutputForm
-    dimension_confidence: dict[str, float]
+    dimension_confidence: dict[str, float | None]
     evidence_refs: tuple[str, ...] = ()
+
+
+class ClassificationDimensionResult(FrozenModel):
+    estimated: str
+    effective: str
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    conservative_upper: str | None = None
+    source_anchors: tuple[SourceAnchor, ...] = ()
+    basis: str
+
+
+class ClassificationRecord(FrozenModel):
+    policy_version: str
+    policy_hash: str
+    mode: str
+    fallback_used: bool
+    dimensions: dict[str, ClassificationDimensionResult]
+    model_call_key: str | None = None
+    diagnostics: tuple[str, ...] = ()
+
+
+class ClassificationBlocked(ValueError):
+    pass

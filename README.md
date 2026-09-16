@@ -20,7 +20,11 @@ Place all three files at the root of the new repository or under `docs/`, then g
   meter, deterministic context packets/deltas, confidence-bounded stopping, and a minimal terminal
   lifecycle coordinator.
 
-Wave 3 and later semantic/model-assisted modules remain intentionally unimplemented.
+- Wave 3: versioned prompt/output-schema governance, budgeted provider-neutral structured model
+  calls, source-anchored M01/M03 semantics, deterministic M04 structural projections, replay-safe
+  typed events, and M12 compiler 2.0 semantic packets.
+
+Wave 4 and later search, feasibility, and decision modules remain intentionally unimplemented.
 
 ## Frozen deterministic foundation
 

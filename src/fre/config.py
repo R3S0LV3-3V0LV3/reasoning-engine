@@ -16,6 +16,22 @@ class EngineConfig(BaseModel):
     database_path: Path
     artifact_path: Path
     snapshot_interval: int = Field(default=50, ge=1)
+    wave3: "Wave3Config" = Field(default_factory=lambda: Wave3Config())
+
+
+class Wave3Config(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: SchemaVersion = "1.0"
+    classification_policy_version: str = "wave3-m01/1.0"
+    confidence_threshold: float = Field(default=0.70, ge=0, le=1)
+    maximum_repair_attempts: int = Field(default=1, ge=1, le=1)
+    representation_registry_version: str = "wave3-m04-registry/1.0"
+    representation_selection_policy_version: str = "wave3-m04/1.0"
+    representation_tie_band: float = Field(default=0.05, ge=0, le=1)
+    representation_minimum_compatibility: float = Field(default=0.20, ge=0, le=1)
+    model_adjudication_enabled: bool = False
+    wave3_context_compiler_version: str = "2.0"
 
 
 def load_config(path: Path) -> EngineConfig:
