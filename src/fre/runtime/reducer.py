@@ -337,8 +337,9 @@ class RunReducer:
             EpistemicLedger().effective_status(state.ledger, payload.diagnostic.right_ref)
             changes["problem_contradictions"] = (*state.problem_contradictions, payload.diagnostic)
         elif isinstance(payload, RepresentationPlanSelected):
-            if state.problem_spec is None or payload.plan.problem_spec_hash != canonical_hash(
-                state.problem_spec
+            if state.problem_spec is None or (
+                payload.plan.problem_spec_hash is not None
+                and payload.plan.problem_spec_hash != canonical_hash(state.problem_spec)
             ):
                 raise ValueError("representation plan does not bind current ProblemSpec")
             changes["representation_plan"] = payload.plan

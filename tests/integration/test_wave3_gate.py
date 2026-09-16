@@ -344,3 +344,40 @@ def test_reformalisation_invalidates_bound_representation_plan(
         )
     engine.snapshot(handle.run_id)
     assert engine.replay(handle.run_id) == engine.replay_from_snapshot(handle.run_id)
+
+
+@pytest.mark.integration
+def test_legacy_representation_plan_event_and_snapshot_remain_replayable(
+    engine: FrontierReasoningEngine,
+) -> None:
+    handle = engine.create_run({"legacy-representation": True})
+    task = TaskEnvelope(
+        task_id=UUID(int=902),
+        text="Choose safely.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+    signature, _record = TaskClassifier().classify(task, None)
+    budget, _policy_hash = BudgetAllocator().allocate(
+        signature, default_tier_policy(), DeploymentLimits()
+    )
+    problem = ProblemFormaliser().formalise(task, None)
+    plan = RepresentationSelector().select(problem, signature, budget)
+    formalised = engine.make_event(
+        handle.run_id, ProblemFormalised(problem=problem), module_id="M03"
+    )
+    selected = engine.make_event(
+        handle.run_id, RepresentationPlanSelected(plan=plan), module_id="M04"
+    )
+    legacy_payload = dict(selected.payload)
+    legacy_plan = dict(cast(dict[str, JsonValue], legacy_payload["plan"]))
+    legacy_plan.pop("problem_spec_hash")
+    legacy_payload["plan"] = legacy_plan
+    legacy_selected = selected.model_copy(update={"payload": legacy_payload})
+
+    engine.append(handle.run_id, handle.version, (formalised, legacy_selected))
+    replayed = engine.replay(handle.run_id)
+    assert replayed.representation_plan is not None
+    assert replayed.representation_plan.problem_spec_hash is None
+    snapshot_hash = engine.snapshot(handle.run_id)
+    assert engine.replay_from_snapshot(handle.run_id).state_hash == snapshot_hash
