@@ -21,7 +21,7 @@ from fre.modules.m01_classifier import TaskClassifier
 from fre.modules.m02_budget import BudgetAllocator, default_tier_policy
 from fre.prompts import default_output_schema_registry, default_prompt_registry
 from fre.prompts.registry import PromptDefinition
-from fre.runtime.events import BudgetAllocated
+from fre.runtime.events import ArtifactRegistered, BudgetAllocated, ModelCallRecorded
 from fre.semantic_runtime import (
     SemanticExecution,
     SemanticModelRuntime,
@@ -132,6 +132,7 @@ def run(
     policy: SemanticRuntimePolicy | None = None,
     module: str = "M01",
     repair_version: str | None = None,
+    allow_repair: bool = True,
 ) -> SemanticExecution:
     return asyncio.run(
         runtime.execute(
@@ -144,6 +145,7 @@ def run(
             canonical_input=value,
             policy=policy,
             repair_prompt_version=repair_version,
+            allow_repair=allow_repair,
         )
     )
 
@@ -246,7 +248,10 @@ def test_empty_raw_success_overreported_usage_and_interruption_recovery(
         execution.record.accounting_condition
         is SemanticAccountingCondition.USAGE_EXCEEDS_RESERVATION
     )
-    assert engine.inspect(run_id).budget.committed.llm_calls == 0
+    committed = engine.inspect(run_id).budget.committed
+    assert committed.llm_calls == 1
+    assert committed.input_tokens == 4096
+    assert committed.output_tokens == 2048
     assert engine.inspect(run_id).budget.reservations == ()
 
     cancelled_run, cancelled_value = setup(engine)
@@ -350,3 +355,121 @@ def test_repair_prompt_version_changes_repair_identity(engine: FrontierReasoning
     )
     assert changed.record is not None and changed.record.prompt_version == "2.0"
     assert first_model.requests[1].idempotency_key != second_model.requests[1].idempotency_key
+
+
+@pytest.mark.unit
+def test_durable_initial_failure_resumes_and_repair_version_does_not_cross_reuse(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run_id, value = setup(engine)
+    prompts = default_prompt_registry()
+    repair = prompts.get("m01.classify.repair", "1.0")
+    prompts.register(
+        PromptDefinition.create(
+            **{
+                **repair.model_dump(exclude={"template_hash", "prompt_version"}),
+                "prompt_version": "2.0",
+                "template": repair.template + " Repair v2.",
+            }
+        )
+    )
+    initial = CapturingModel([result(StructuredModelStatus.INVALID_STRUCTURED_OUTPUT)])
+    runtime = SemanticModelRuntime(initial, engine, prompts, default_output_schema_registry())
+    failed = run(
+        runtime,
+        run_id,
+        value,
+        allow_repair=False,
+    )
+    assert failed.record is not None
+
+    repair_v1 = CapturingModel([result()])
+    repaired = run(
+        SemanticModelRuntime(repair_v1, engine, prompts, default_output_schema_registry()),
+        run_id,
+        value,
+    )
+    assert repaired.repaired and len(repair_v1.requests) == 1
+
+    repair_v2 = CapturingModel([result()])
+    changed = run(
+        SemanticModelRuntime(repair_v2, engine, prompts, default_output_schema_registry()),
+        run_id,
+        value,
+        repair_version="2.0",
+    )
+    assert changed.repaired and len(repair_v2.requests) == 1
+    assert changed.record is not None and changed.record.prompt_version == "2.0"
+
+
+@pytest.mark.unit
+def test_recovery_releases_only_explicit_abandoned_reservations(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run_id, _ = setup(engine)
+    from fre.domain.budget import BudgetReservation, ResourceVector
+    from fre.runtime.events import BudgetReserved
+
+    state = engine.inspect(run_id)
+    reservations = (
+        BudgetReservation(
+            reservation_id="abandoned", action_id="semantic", resources=ResourceVector()
+        ),
+        BudgetReservation(
+            reservation_id="live", action_id="other-worker", resources=ResourceVector()
+        ),
+    )
+    engine.append(
+        run_id,
+        state.version,
+        tuple(
+            engine.make_event(run_id, BudgetReserved(reservation=item), module_id="test")
+            for item in reservations
+        ),
+    )
+    runtime = SemanticModelRuntime(
+        CapturingModel([]), engine, default_prompt_registry(), default_output_schema_registry()
+    )
+    assert runtime.recover_outstanding_reservations(run_id, ("abandoned", "missing")) == (
+        "abandoned",
+    )
+    assert tuple(item.reservation_id for item in engine.inspect(run_id).budget.reservations) == (
+        "live",
+    )
+
+
+@pytest.mark.unit
+def test_legacy_raw_only_successful_call_remains_replayable(
+    engine: FrontierReasoningEngine,
+) -> None:
+    source_run, value = setup(engine)
+    execution = run(
+        SemanticModelRuntime(
+            CapturingModel([result(raw=b"legacy")]),
+            engine,
+            default_prompt_registry(),
+            default_output_schema_registry(),
+        ),
+        source_run,
+        value,
+    )
+    assert execution.record is not None and execution.record.raw_artifact is not None
+    raw_ref = execution.record.raw_artifact
+    legacy = execution.record.model_copy(update={"proposal_artifact": None})
+
+    replay_run, _ = setup(engine)
+    state = engine.inspect(replay_run)
+    payloads = (
+        ArtifactRegistered(
+            artifact=raw_ref,
+            media_type="application/octet-stream",
+            byte_size=len(b"legacy"),
+        ),
+        ModelCallRecorded(record=legacy),
+    )
+    engine.append(
+        replay_run,
+        state.version,
+        tuple(engine.make_event(replay_run, item, module_id="legacy") for item in payloads),
+    )
+    assert engine.inspect(replay_run).model_calls == (legacy,)

@@ -100,23 +100,22 @@ class SemanticModelRuntime:
             schema=schema,
             input_hash=rendered.canonical_input_hash,
         )
-        reused = self._reuse(run_id, identity, model_type)
-        if reused is not None:
-            return reused
-        first = await self._invoke(
-            run_id,
-            identity,
-            module_id,
-            module_version,
-            operation,
-            prompt,
-            rendered.messages,
-            rendered.canonical_input_hash,
-            schema,
-            model_type,
-            policy,
-            None,
-        )
+        first = self._reuse(run_id, identity, model_type)
+        if first is None:
+            first = await self._invoke(
+                run_id,
+                identity,
+                module_id,
+                module_version,
+                operation,
+                prompt,
+                rendered.messages,
+                rendered.canonical_input_hash,
+                schema,
+                model_type,
+                policy,
+                None,
+            )
         if (
             first.proposal is not None
             or not allow_repair
@@ -152,6 +151,9 @@ class SemanticModelRuntime:
             input_hash=repair_render.canonical_input_hash,
             parent=identity,
         )
+        reused_repair = self._reuse(run_id, repair_identity, model_type)
+        if reused_repair is not None:
+            return reused_repair.model_copy(update={"repaired": True})
         repaired = await self._invoke(
             run_id,
             repair_identity,
@@ -306,12 +308,12 @@ class SemanticModelRuntime:
                     byte_size=len(proposal_bytes),
                 )
             )
-        accounting_event: EventPayload = (
-            BudgetReservationReleased(reservation_id=reservation.reservation_id)
-            if over
-            else BudgetReservationSettled(
-                reservation_id=reservation.reservation_id, actual_usage=actual
-            )
+        # The meter cannot settle above a hard reservation.  If a provider reports
+        # excessive usage, charge the full reserved capacity instead: the anomaly
+        # remains explicit on the record, but the real invocation is never free.
+        accounting_event: EventPayload = BudgetReservationSettled(
+            reservation_id=reservation.reservation_id,
+            actual_usage=reservation.resources if over else actual,
         )
         recorded: EventPayload = (
             ModelCallRecorded(record=record)
@@ -342,10 +344,13 @@ class SemanticModelRuntime:
     def _release(self, run_id: object, reservation_id: str) -> None:
         self._append_current(run_id, (BudgetReservationReleased(reservation_id=reservation_id),))
 
-    def recover_outstanding_reservations(self, run_id: object) -> tuple[str, ...]:
-        """Release calls left in-flight by process interruption, in stable identifier order."""
+    def recover_outstanding_reservations(
+        self, run_id: object, abandoned_reservation_ids: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Release explicitly identified abandoned calls, never unrelated live work."""
         state = self.engine.inspect(run_id)  # type: ignore[arg-type]
-        reservation_ids = tuple(sorted(item.reservation_id for item in state.budget.reservations))
+        outstanding = {item.reservation_id for item in state.budget.reservations}
+        reservation_ids = tuple(sorted(set(abandoned_reservation_ids) & outstanding))
         if reservation_ids:
             self._append_current(
                 run_id,
@@ -357,16 +362,7 @@ class SemanticModelRuntime:
         self, run_id: object, identity: str, model_type: type[BaseModel]
     ) -> SemanticExecution | None:
         state = self.engine.inspect(run_id)  # type: ignore[arg-type]
-        initial = next((r for r in state.model_calls if r.idempotency_key == identity), None)
-        repair = next(
-            (
-                r
-                for r in state.model_calls
-                if r.repair_parent_key == identity and r.status is StructuredModelStatus.SUCCESS
-            ),
-            None,
-        )
-        record = repair or initial
+        record = next((r for r in state.model_calls if r.idempotency_key == identity), None)
         if record is None:
             return None
         proposal = None
