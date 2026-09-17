@@ -100,11 +100,8 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
         tokens = command.split()
         if command.startswith("uv sync ") and "--no-install-project" not in tokens:
             failures.append(f"{path}: uv sync must set --no-install-project")
-        if command.startswith("uv run ") and "--locked" in tokens:
-            failures.append(
-                f"{path}: uv run --locked may implicitly build the project; "
-                "sync first and use --no-sync"
-            )
+        if command.startswith("uv run ") and "--no-sync" not in tokens:
+            failures.append(f"{path}: uv run must set --no-sync after explicit locked setup")
         if command.startswith("uv build") and "--no-build-isolation" not in tokens:
             failures.append(f"{path}: uv build must set --no-build-isolation")
         if (
