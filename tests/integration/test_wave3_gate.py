@@ -17,6 +17,7 @@ from fre.domain.common import JsonValue, OutputContract, PermissionSet
 from fre.domain.context import CompilerProfile
 from fre.domain.ledger import DanglingLedgerReference
 from fre.domain.semantic import (
+    EpistemicOriginLabel,
     SemanticCallUsage,
     StructuredModelRequest,
     StructuredModelResult,
@@ -444,3 +445,33 @@ def test_m03_contradiction_batch_is_atomic_and_replayable(
     snapshot_hash = engine.snapshot(handle.run_id)
     assert engine.replay(handle.run_id) == engine.replay_from_snapshot(handle.run_id)
     assert state.state_hash == snapshot_hash
+
+    resolved_proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "reviewed",
+                    "kind": "ACCEPTANCE_CRITERION",
+                    "description": "resolution is deterministically reviewed",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {
+                        "verification_mode": "DETERMINISTIC",
+                        "required": True,
+                    },
+                },
+            )
+        }
+    )
+    resolved_payloads = ProblemFormaliser().canonical_events(
+        task,
+        resolved_proposal,
+        created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(1000, 1010)),
+    )
+    resolved_events = tuple(
+        engine.make_event(handle.run_id, payload, module_id="M03") for payload in resolved_payloads
+    )
+    engine.append(handle.run_id, state.version, resolved_events)
+    resolved_state = engine.inspect(handle.run_id)
+    assert resolved_state.problem_blockers == ()
+    assert resolved_state.problem_contradictions == ()
