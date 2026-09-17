@@ -254,10 +254,34 @@ jobs:
 
     failures = validate_workflow(path)
     assert any("uv sync must set --no-install-project" in item for item in failures)
-    assert sum("uv run must set --no-sync" in item for item in failures) == 3
+    assert sum("uv run must begin with --no-sync" in item for item in failures) == 2
     assert any("compound shell commands are prohibited" in item for item in failures)
     assert any("uv build must set --no-build-isolation" in item for item in failures)
     assert any("project installation must set --no-build-isolation" in item for item in failures)
+
+
+def test_rejects_shell_and_dynamic_python_evaluators(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - run: bash -c 'uv run pytest'
+      - run: eval 'uv run pytest'
+      - run: python -c 'import subprocess; subprocess.run(["uv", "run", "pytest"])'
+      - run: uv run --no-sync bash -c 'uv run pytest'
+      - run: uv run --no-sync python -c 'print("unsafe")'
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert sum("unapproved workflow command" in item for item in failures) == 2
+    assert any("unapproved direct Python command" in item for item in failures)
+    assert any("unapproved uv run command" in item for item in failures)
+    assert any("unapproved uv-run Python command" in item for item in failures)
 
 
 def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:

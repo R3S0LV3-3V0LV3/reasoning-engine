@@ -13,6 +13,14 @@ WORKFLOW_DIR = Path(".github/workflows")
 FULL_SHA_LENGTH = 40
 PROHIBITED_TRIGGERS = frozenset({"pull_request_target", "workflow_run"})
 SHELL_CONTROL_CHARACTERS = frozenset(";&|()")
+ALLOWED_DIRECT_PYTHON_SCRIPTS = frozenset(
+    {
+        "scripts/check_codeql_sarif.py",
+        "scripts/verify_package.py",
+    }
+)
+ALLOWED_UV_RUN_TOOLS = frozenset({"mypy", "pytest", "python", "ruff"})
+ALLOWED_UV_RUN_PYTHON_SCRIPTS = frozenset({"scripts/check_workflow_security.py"})
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -112,25 +120,44 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
 
         if any(token and set(token) <= SHELL_CONTROL_CHARACTERS for token in tokens):
             failures.append(f"{path}: compound shell commands are prohibited: {command}")
+            continue
 
-        for index, token in enumerate(tokens):
-            if Path(token).name != "uv" or index + 1 >= len(tokens):
-                continue
-            subcommand = tokens[index + 1]
-            arguments = tokens[index + 2 :]
-            if subcommand == "sync" and "--no-install-project" not in arguments:
+        executable = Path(tokens[0]).name
+        if executable in {"python", "python3"}:
+            if len(tokens) < 2 or tokens[1] not in ALLOWED_DIRECT_PYTHON_SCRIPTS:
+                failures.append(f"{path}: unapproved direct Python command: {command}")
+            continue
+        if executable != "uv" or len(tokens) < 2:
+            failures.append(f"{path}: unapproved workflow command: {command}")
+            continue
+
+        subcommand = tokens[1]
+        arguments = tokens[2:]
+        if subcommand == "sync":
+            if "--no-install-project" not in arguments:
                 failures.append(f"{path}: uv sync must set --no-install-project")
-            if subcommand == "run" and "--no-sync" not in arguments:
-                failures.append(f"{path}: uv run must set --no-sync after explicit locked setup")
-            if subcommand == "build" and "--no-build-isolation" not in arguments:
+            continue
+        if subcommand == "build":
+            if "--no-build-isolation" not in arguments:
                 failures.append(f"{path}: uv build must set --no-build-isolation")
-            if (
-                subcommand == "pip"
-                and arguments[:1] == ["install"]
-                and "." in arguments
-                and "--no-build-isolation" not in arguments
-            ):
+            continue
+        if subcommand == "pip" and arguments[:1] == ["install"]:
+            if "." in arguments and "--no-build-isolation" not in arguments:
                 failures.append(f"{path}: project installation must set --no-build-isolation")
+            continue
+        if subcommand == "run":
+            if arguments[:1] != ["--no-sync"]:
+                failures.append(f"{path}: uv run must begin with --no-sync")
+                continue
+            if len(arguments) < 2 or Path(arguments[1]).name not in ALLOWED_UV_RUN_TOOLS:
+                failures.append(f"{path}: unapproved uv run command: {command}")
+                continue
+            if Path(arguments[1]).name == "python" and (
+                len(arguments) < 3 or arguments[2] not in ALLOWED_UV_RUN_PYTHON_SCRIPTS
+            ):
+                failures.append(f"{path}: unapproved uv-run Python command: {command}")
+            continue
+        failures.append(f"{path}: unapproved uv subcommand: {subcommand}")
     return failures
 
 
