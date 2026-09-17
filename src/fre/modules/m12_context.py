@@ -21,7 +21,7 @@ from fre.domain.context import (
     RejectedItem,
 )
 from fre.domain.ledger import EpistemicStatus, LedgerNode, LedgerNodeRef, LedgerProjection
-from fre.domain.problem import ProblemSpec
+from fre.domain.problem import ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationPlan
 from fre.modules.m09_ledger import EpistemicLedger
 
@@ -146,7 +146,34 @@ class ContextCompiler:
 
     @staticmethod
     def render_markdown(packet: ContextPacket) -> str:
-        return Wave3ContextCompiler.render_markdown(packet)
+        lines = [
+            "# Frontier Reasoning Engine Context",
+            "",
+            f"- Profile: `{packet.profile}`",
+            f"- Snapshot: `{packet.snapshot_version}`",
+            f"- Packet hash: `{packet.packet_hash}`",
+            "",
+            "## Ledger",
+        ]
+        for item in packet.ledger_items:
+            lines.append(
+                f"- `{item.ref.node_id}@{item.ref.revision}` [{item.status}] "
+                f"{canonical_json(item.content).decode()}"
+            )
+        lines.extend(("", "## Rejections"))
+        lines.extend(f"- `{item.ref}` — {item.reason}" for item in packet.rejected_items)
+        lines.extend(
+            (
+                "",
+                "## Budget",
+                f"- Remaining: `{canonical_json(packet.budget_remaining.resources).decode()}`",
+                "",
+                "## Next / terminal action",
+                f"- {packet.terminal_disposition or packet.next_action or 'NOT_PRODUCED'}",
+                "",
+            )
+        )
+        return "\n".join(lines)
 
 
 class Wave3ContextCompiler(ContextCompiler):
@@ -159,20 +186,37 @@ class Wave3ContextCompiler(ContextCompiler):
         *,
         problem: ProblemSpec,
         representation: RepresentationPlan | None,
+        problem_blockers: tuple[ProblemBlocker, ...] = (),
         **kwargs: object,
     ) -> ContextCompilationResult:
-        if (
-            representation is not None
-            and representation.problem_spec_hash is not None
-            and representation.problem_spec_hash != canonical_hash(problem)
+        if representation is not None and representation.problem_spec_hash != canonical_hash(
+            problem
         ):
             raise ValueError("representation plan does not bind current ProblemSpec")
         semantic_summary: JsonValue = {
             "objectives": [item.model_dump(mode="json") for item in problem.objectives],
+            "hard_constraints": [
+                item.model_dump(mode="json") for item in problem.constraints if item.kind == "HARD"
+            ],
+            "soft_preferences": [
+                item.model_dump(mode="json") for item in problem.constraints if item.kind == "SOFT"
+            ],
+            "decision_variables": [
+                item.model_dump(mode="json") for item in problem.decision_variables
+            ],
+            "fixed_parameters": [item.model_dump(mode="json") for item in problem.fixed_parameters],
+            "unknowns": [item.model_dump(mode="json") for item in problem.unknowns],
+            "observables": [item.model_dump(mode="json") for item in problem.observables],
+            "assumptions": {
+                "statements": list(problem.assumptions),
+                "items": [item.model_dump(mode="json") for item in problem.assumption_items],
+            },
             "acceptance_criteria": [
                 item.model_dump(mode="json") for item in problem.acceptance_criteria
             ],
-            "assumptions": [item.model_dump(mode="json") for item in problem.assumption_items],
+            "output_requirements": problem.output_contract.model_dump(mode="json"),
+            "relations": [item.model_dump(mode="json") for item in problem.relations],
+            "explicit_blockers": [item.model_dump(mode="json") for item in problem_blockers],
             "representation": representation.model_dump(mode="json") if representation else None,
         }
         constraints: tuple[JsonValue, ...] = tuple(
@@ -187,15 +231,39 @@ class Wave3ContextCompiler(ContextCompiler):
 
     @staticmethod
     def render_markdown(packet: ContextPacket) -> str:
+        semantic = packet.objective if isinstance(packet.objective, dict) else {}
         lines = [
             "# Frontier Reasoning Engine Context",
             "",
             f"- Profile: `{packet.profile}`",
             f"- Snapshot: `{packet.snapshot_version}`",
             f"- Packet hash: `{packet.packet_hash}`",
-            "",
-            "## Ledger",
         ]
+        sections = (
+            ("Objectives", "objectives"),
+            ("Hard constraints", "hard_constraints"),
+            ("Soft preferences", "soft_preferences"),
+            ("Decision variables", "decision_variables"),
+            ("Fixed parameters", "fixed_parameters"),
+            ("Unknowns", "unknowns"),
+            ("Observables", "observables"),
+            ("Assumptions", "assumptions"),
+            ("Acceptance criteria", "acceptance_criteria"),
+            ("Output requirements", "output_requirements"),
+            ("Relations", "relations"),
+            ("Explicit blockers", "explicit_blockers"),
+            ("Current representation", "representation"),
+        )
+        for title, key in sections:
+            lines.extend(("", f"## {title}"))
+            value = semantic.get(key)
+            if isinstance(value, list):
+                lines.extend(f"- `{canonical_json(item).decode()}`" for item in value)
+                if not value:
+                    lines.append("- None")
+            else:
+                lines.append(f"- `{canonical_json(value).decode()}`")
+        lines.extend(("", "## Ledger"))
         for item in packet.ledger_items:
             lines.append(
                 f"- `{item.ref.node_id}@{item.ref.revision}` [{item.status}] "
