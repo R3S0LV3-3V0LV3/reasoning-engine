@@ -78,6 +78,15 @@ class ProblemFormaliser:
         events: list[EventPayload] = []
         refs: dict[str, LedgerNodeRef] = {}
         self._validate_items(proposal.items)
+        contested_ids: set[str] = set()
+        for item in proposal.items:
+            if (
+                item.kind == "RELATION"
+                and item.attributes.get("relation_kind") == "CONTRADICTS"
+                and item.attributes.get("material", True) is True
+            ):
+                contested_ids.add(str(item.attributes["source_id"]))
+                contested_ids.add(str(item.attributes["target_id"]))
         for item in proposal.items:
             if item.kind == "RELATION":
                 continue
@@ -87,7 +96,9 @@ class ProblemFormaliser:
                 revision=1,
                 node_type=node_types[item.origin],
                 content=item.model_dump(mode="json"),
-                status=statuses[item.origin],
+                status=(
+                    EpistemicStatus.CONTESTED if item.id in contested_ids else statuses[item.origin]
+                ),
                 created_at=created_at,
                 action_id=uuids.new(),
                 module_id="M03",
@@ -414,8 +425,7 @@ class ProblemFormaliser:
         }
         canonical: dict[str, ProblemItemProposal] = {}
         relations: set[tuple[str, str, ProblemRelationKind]] = set()
-        priorities: list[int] = []
-        lexicographic_objectives = 0
+        lexicographic_priorities: list[int] = []
         for item in items:
             if item.kind not in supported:
                 raise InvalidProblemSpec(f"unsupported problem item kind: {item.kind}")
@@ -423,13 +433,18 @@ class ProblemFormaliser:
                 raise InvalidProblemSpec("problem item IDs must be unique")
             canonical[item.id] = item
             if item.kind == "OBJECTIVE":
-                if item.attributes.get("direction") == "LEXICOGRAPHIC":
-                    lexicographic_objectives += 1
                 priority = item.attributes.get("priority")
-                if priority is not None:
-                    if isinstance(priority, bool) or not isinstance(priority, int) or priority < 1:
-                        raise InvalidProblemSpec("objective priority must be a positive integer")
-                    priorities.append(priority)
+                if priority is not None and (
+                    isinstance(priority, bool) or not isinstance(priority, int) or priority < 1
+                ):
+                    raise InvalidProblemSpec("objective priority must be a positive integer")
+                if item.attributes.get("direction") == "LEXICOGRAPHIC":
+                    if priority is None:
+                        raise InvalidProblemSpec(
+                            "lexicographic objectives require a complete ordering"
+                        )
+                    assert isinstance(priority, int) and not isinstance(priority, bool)
+                    lexicographic_priorities.append(priority)
                 evaluator = item.attributes.get("evaluator_ref")
                 if evaluator is not None and (
                     not isinstance(evaluator, str) or not evaluator.strip()
@@ -456,12 +471,12 @@ class ProblemFormaliser:
             if key in relations:
                 raise InvalidProblemSpec("duplicate problem relation")
             relations.add(key)
-        if len(priorities) != len(set(priorities)):
-            raise InvalidProblemSpec("objective priorities must be unique")
-        if lexicographic_objectives and len(priorities) != lexicographic_objectives:
+        if len(lexicographic_priorities) != len(set(lexicographic_priorities)):
+            raise InvalidProblemSpec("lexicographic objective priorities must be unique")
+        if lexicographic_priorities and set(lexicographic_priorities) != set(
+            range(1, len(lexicographic_priorities) + 1)
+        ):
             raise InvalidProblemSpec("lexicographic objectives require a complete ordering")
-        if priorities and set(priorities) != set(range(1, len(priorities) + 1)):
-            raise InvalidProblemSpec("objective priorities must form a complete ordering")
         return canonical
 
     @staticmethod

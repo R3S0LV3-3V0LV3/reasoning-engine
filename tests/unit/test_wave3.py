@@ -303,6 +303,50 @@ def test_m03_contradiction_maps_to_frozen_m09_events() -> None:
 
 
 @pytest.mark.unit
+def test_m03_material_contradiction_contests_supported_endpoints() -> None:
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "left",
+                    "kind": "UNKNOWN",
+                    "description": "value is A",
+                    "origin": EpistemicOriginLabel.EXPLICIT_INPUT,
+                },
+                {
+                    "id": "right",
+                    "kind": "UNKNOWN",
+                    "description": "value is B",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                },
+                {
+                    "id": "conflict",
+                    "kind": "RELATION",
+                    "description": "material conflict",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "attributes": {
+                        "source_id": "left",
+                        "target_id": "right",
+                        "relation_kind": "CONTRADICTS",
+                        "material": True,
+                    },
+                },
+            )
+        }
+    )
+    events = ProblemFormaliser().ledger_events(
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(40, 50)),
+    )
+    nodes = [event.node for event in events if isinstance(event, LedgerNodeAdded)]
+    assert [node.epistemic_status for node in nodes] == [
+        EpistemicStatus.CONTESTED,
+        EpistemicStatus.CONTESTED,
+    ]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("mode", ["DETERMINISTIC", "MODEL", "HUMAN", "UNAVAILABLE"])
 @pytest.mark.parametrize("status", list(VerificationStatus))
 def test_m03_model_constraint_statuses_begin_unknown(mode: str, status: VerificationStatus) -> None:
@@ -520,6 +564,18 @@ def test_m03_fallback_provenance_objectives_and_unavailable_acceptance_blocker()
     )
     with pytest.raises(InvalidProblemSpec, match="complete ordering"):
         ProblemFormaliser().formalise(task, incomplete_priorities)
+    unrelated_priority = proposal.model_copy(
+        update={
+            "items": (
+                proposal.items[0].model_copy(update={"attributes": {"direction": "LEXICOGRAPHIC"}}),
+                proposal.items[0].model_copy(
+                    update={"id": "o2", "attributes": {"direction": "MIN", "priority": 1}}
+                ),
+            )
+        }
+    )
+    with pytest.raises(InvalidProblemSpec, match="complete ordering"):
+        ProblemFormaliser().formalise(task, unrelated_priority)
     invalid_criterion = proposal.model_copy(
         update={
             "items": (

@@ -328,6 +328,12 @@ class RunReducer:
             )
         elif isinstance(payload, ProblemFormalised):
             changes["problem_spec"] = payload.problem
+            # Blockers and contradiction diagnostics are scoped to the problem
+            # specification that produced them.  The same atomic batch may add
+            # replacements after this event, but stale findings must not survive
+            # a reformalisation.
+            changes["problem_blockers"] = ()
+            changes["problem_contradictions"] = ()
             if state.problem_spec is not None and state.problem_spec != payload.problem:
                 changes["representation_plan"] = None
         elif isinstance(payload, ProblemBlockerRecorded):
