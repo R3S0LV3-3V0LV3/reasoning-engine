@@ -149,4 +149,5 @@ recorded after the numbered rows.
 | 19 | Fallback constraints retain validated EXPLICIT_INPUT provenance anchored to their exact explicit-constraint index | Fallback anchor resolution case | Proven |
 | 20 | Acceptance verification modes are validated and required unavailable criteria produce concrete-ledger-backed blockers | Invalid-mode and unavailable-required blocker cases | Proven |
 | 21 | Source-supported objective priority and evaluator identity are preserved without invention; lexicographic ordering rejects duplicate or incomplete priorities | Objective preservation and ordering cases | Proven |
+| 29 | Wave3Config is translated once into effective component policies; unsupported versions are rejected and the exact canonical policy identity is persisted | Non-default injection, zero repair, stable defaults, version rejection, policy hash, and configuration-independent replay cases | Proven |
 | 30 | Prompt/schema and repair-parent ownership are rejected before reservation | Cross-module pre-spend rejection | Proven |

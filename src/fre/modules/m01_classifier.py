@@ -75,6 +75,9 @@ def reversibility_to_irreversibility(value: Ordinal4) -> Ordinal4:
 
 
 class TaskClassifier:
+    def __init__(self, policy: ClassificationPolicy | None = None) -> None:
+        self.policy = policy or ClassificationPolicy()
+
     def classify(
         self,
         envelope: TaskEnvelope,
@@ -83,7 +86,7 @@ class TaskClassifier:
         *,
         model_call_key: str | None = None,
     ) -> tuple[TaskSignature, ClassificationRecord]:
-        policy = policy or ClassificationPolicy()
+        policy = policy or self.policy
         metadata = envelope.user_metadata
         available_artifacts = frozenset(attachment.sha256 for attachment in envelope.attachments)
         explicit: dict[str, Ordinal4] = {}

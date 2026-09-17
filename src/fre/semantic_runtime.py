@@ -60,12 +60,14 @@ class SemanticModelRuntime:
         engine: FrontierReasoningEngine,
         prompts: PromptRegistry,
         schemas: OutputSchemaRegistry,
+        policy: SemanticRuntimePolicy | None = None,
     ) -> None:
         self.model = model
         self.engine = engine
         self.artifacts = engine.artifacts
         self.prompts = prompts
         self.schemas = schemas
+        self.policy = policy or SemanticRuntimePolicy()
 
     async def execute(
         self,
@@ -85,7 +87,7 @@ class SemanticModelRuntime:
 
         if not isinstance(run_id, UUID):
             raise TypeError("run_id must be a UUID")
-        policy = policy or SemanticRuntimePolicy()
+        policy = policy or self.policy
         prompt = self.prompts.get(prompt_id, prompt_version)
         schema, model_type = self.schemas.get(prompt.output_schema_id, prompt.output_schema_version)
         self._validate_ownership(prompt, schema, module_id, operation)
