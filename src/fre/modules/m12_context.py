@@ -193,6 +193,12 @@ class Wave3ContextCompiler(ContextCompiler):
             problem
         ):
             raise ValueError("representation plan does not bind current ProblemSpec")
+        blocker_descriptions = tuple(blocker.description for blocker in problem_blockers)
+        supplied_blockers = cast(
+            tuple[str, ...], kwargs.pop("unresolved_blockers", blocker_descriptions)
+        )
+        if tuple(sorted(set(supplied_blockers))) != tuple(sorted(set(blocker_descriptions))):
+            raise ValueError("unresolved_blockers does not match the supplied problem_blockers")
         semantic_summary: JsonValue = {
             "objectives": [item.model_dump(mode="json") for item in problem.objectives],
             "hard_constraints": [
@@ -226,6 +232,7 @@ class Wave3ContextCompiler(ContextCompiler):
             objective=semantic_summary,
             output_contract=problem.output_contract.model_dump(mode="json"),
             hard_constraints=constraints,
+            unresolved_blockers=blocker_descriptions,
             **kwargs,  # type: ignore[arg-type]
         )
 
