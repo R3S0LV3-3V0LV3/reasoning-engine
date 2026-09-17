@@ -6,7 +6,11 @@ signature is unchanged.
 
 ## Required workflow
 
-1. Create a short-lived branch from the current target branch.
+External contributors must work from a fork. Same-repository branch access is reserved for trusted
+security administrators because pull-request workflow definitions execute before repository-local
+validation can inspect them.
+
+1. Create a short-lived branch from the current target branch in an authorised repository context.
 2. Add a focused regression for the invariant being changed.
 3. Use versioned events and schemas for material serialized-semantic changes. Existing event
    bytes, fixture hashes, and decoder behaviour must not be silently redefined.

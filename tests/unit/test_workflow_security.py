@@ -137,6 +137,29 @@ jobs:
     assert any("persist-credentials: false" in item for item in validate_workflow(path))
 
 
+def test_rejects_case_insensitive_duplicate_checkout_input(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          PERSIST-CREDENTIALS: true
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any(
+        "duplicate case-insensitive input 'persist-credentials'" in item for item in failures
+    )
+
+
 def test_rejects_codeql_upload_from_pull_request(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
@@ -151,6 +174,46 @@ jobs:
     )
 
     assert any("CodeQL analyze must set upload: never" in item for item in validate_workflow(path))
+
+
+def test_rejects_case_insensitive_duplicate_codeql_upload_input(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
+        with:
+          upload: never
+          UPLOAD: always
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("duplicate case-insensitive input 'upload'" in item for item in failures)
+
+
+def test_allows_case_insensitive_control_input_names(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {PERSIST-CREDENTIALS: false}
+      - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
+        with: {UPLOAD: never}
+""",
+    )
+
+    assert validate_workflow(path) == []
 
 
 def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:

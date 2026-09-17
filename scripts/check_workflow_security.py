@@ -62,6 +62,27 @@ def _is_full_sha(revision: str) -> bool:
     )
 
 
+def _normalized_inputs(
+    value: object,
+    path: Path,
+    action: str,
+) -> tuple[dict[str, object], list[str]]:
+    if not isinstance(value, Mapping):
+        return {}, []
+
+    normalized: dict[str, object] = {}
+    failures: list[str] = []
+    for key, input_value in value.items():
+        normalized_key = str(key).casefold()
+        if normalized_key in normalized:
+            failures.append(
+                f"{path}: {action} declares duplicate case-insensitive input {normalized_key!r}"
+            )
+            continue
+        normalized[normalized_key] = input_value
+    return normalized, failures
+
+
 def validate_workflow(path: Path) -> list[str]:
     try:
         document = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -106,18 +127,17 @@ def validate_workflow(path: Path) -> list[str]:
         if not _is_full_sha(revision):
             failures.append(f"{path}: {action} is not pinned to a full commit SHA")
 
-        inputs = node.get("with")
+        inputs, input_failures = _normalized_inputs(node.get("with"), path, action)
+        failures.extend(input_failures)
         if normalized_action == "actions/checkout":
-            persist_credentials = (
-                inputs.get("persist-credentials") if isinstance(inputs, Mapping) else None
-            )
+            persist_credentials = inputs.get("persist-credentials")
             if persist_credentials != "false":
                 failures.append(
                     f"{path}: actions/checkout must set persist-credentials: false "
                     "for repository workflows"
                 )
         if normalized_action == "github/codeql-action/analyze":
-            upload = inputs.get("upload") if isinstance(inputs, Mapping) else None
+            upload = inputs.get("upload")
             if upload != "never":
                 failures.append(
                     f"{path}: CodeQL analyze must set upload: never for repository workflows"

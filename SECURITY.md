@@ -22,3 +22,20 @@ private data, or destructive payloads.
 - Artifact and provenance references must resolve to registered, hash-verified material.
 - Historical event and snapshot meanings are changed only through explicit versioning.
 - Pull-request code receives no repository write token and cannot bypass required checks.
+
+## GitHub Actions trust boundary
+
+Same-repository branch access is a privileged security-administrator capability, not a normal
+contributor capability. Do not grant repository write, maintain, or administrator access to an
+untrusted contributor. External contributions must use forks.
+
+The repository requires maintainer approval before any external fork pull-request workflow runs.
+GitHub supplies those fork runs with a read-only token, while repository workflow permissions
+default to read-only and cannot approve pull requests. Repository-controlled workflows add a
+second layer: they declare explicit read-only permissions, disable persisted checkout credentials,
+prohibit privileged pull-request triggers and local actions, pin external actions, and perform
+CodeQL analysis without uploading from pull-request code.
+
+This access model is part of the security boundary. Adding a non-administrator same-repository
+writer, weakening fork-run approval, or changing Actions token settings requires a new threat-model
+review before the change is made.
