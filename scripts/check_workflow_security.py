@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import yaml
 WORKFLOW_DIR = Path(".github/workflows")
 FULL_SHA_LENGTH = 40
 PROHIBITED_TRIGGERS = frozenset({"pull_request_target", "workflow_run"})
+SHELL_CONTROL_CHARACTERS = frozenset(";&|()")
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -97,19 +99,38 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
     failures: list[str] = []
     for line in value.splitlines():
         command = line.strip()
-        tokens = command.split()
-        if command.startswith("uv sync ") and "--no-install-project" not in tokens:
-            failures.append(f"{path}: uv sync must set --no-install-project")
-        if command.startswith("uv run ") and "--no-sync" not in tokens:
-            failures.append(f"{path}: uv run must set --no-sync after explicit locked setup")
-        if command.startswith("uv build") and "--no-build-isolation" not in tokens:
-            failures.append(f"{path}: uv build must set --no-build-isolation")
-        if (
-            command.startswith("uv pip install")
-            and "." in tokens
-            and "--no-build-isolation" not in tokens
-        ):
-            failures.append(f"{path}: project installation must set --no-build-isolation")
+        if not command:
+            continue
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        try:
+            tokens = list(lexer)
+        except ValueError as error:
+            failures.append(f"{path}: cannot parse workflow command {command!r}: {error}")
+            continue
+
+        if any(token and set(token) <= SHELL_CONTROL_CHARACTERS for token in tokens):
+            failures.append(f"{path}: compound shell commands are prohibited: {command}")
+
+        for index, token in enumerate(tokens):
+            if Path(token).name != "uv" or index + 1 >= len(tokens):
+                continue
+            subcommand = tokens[index + 1]
+            arguments = tokens[index + 2 :]
+            if subcommand == "sync" and "--no-install-project" not in arguments:
+                failures.append(f"{path}: uv sync must set --no-install-project")
+            if subcommand == "run" and "--no-sync" not in arguments:
+                failures.append(f"{path}: uv run must set --no-sync after explicit locked setup")
+            if subcommand == "build" and "--no-build-isolation" not in arguments:
+                failures.append(f"{path}: uv build must set --no-build-isolation")
+            if (
+                subcommand == "pip"
+                and arguments[:1] == ["install"]
+                and "." in arguments
+                and "--no-build-isolation" not in arguments
+            ):
+                failures.append(f"{path}: project installation must set --no-build-isolation")
     return failures
 
 

@@ -246,6 +246,7 @@ jobs:
       - run: uv sync --locked --all-groups
       - run: uv run --locked pytest
       - run: uv run pytest
+      - run: uv sync --locked --no-install-project && uv run pytest
       - run: uv build
       - run: uv pip install --python .venv/bin/python --no-deps .
 """,
@@ -253,7 +254,8 @@ jobs:
 
     failures = validate_workflow(path)
     assert any("uv sync must set --no-install-project" in item for item in failures)
-    assert sum("uv run must set --no-sync" in item for item in failures) == 2
+    assert sum("uv run must set --no-sync" in item for item in failures) == 3
+    assert any("compound shell commands are prohibited" in item for item in failures)
     assert any("uv build must set --no-build-isolation" in item for item in failures)
     assert any("project installation must set --no-build-isolation" in item for item in failures)
 
