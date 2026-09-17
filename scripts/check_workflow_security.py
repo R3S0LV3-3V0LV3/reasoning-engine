@@ -10,6 +10,7 @@ import yaml
 
 WORKFLOW_DIR = Path(".github/workflows")
 FULL_SHA_LENGTH = 40
+PROHIBITED_TRIGGERS = frozenset({"pull_request_target", "workflow_run"})
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -71,8 +72,8 @@ def validate_workflow(path: Path) -> list[str]:
 
     failures: list[str] = []
     triggers = _trigger_names(document.get("on"))
-    if "pull_request_target" in triggers:
-        failures.append(f"{path}: pull_request_target is prohibited")
+    for trigger in sorted(triggers & PROHIBITED_TRIGGERS):
+        failures.append(f"{path}: {trigger} is prohibited")
 
     pull_request_workflow = "pull_request" in triggers
     if pull_request_workflow:

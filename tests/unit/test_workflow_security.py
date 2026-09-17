@@ -22,6 +22,23 @@ jobs: {}
     assert any("pull_request_target is prohibited" in item for item in validate_workflow(path))
 
 
+def test_rejects_workflow_run_mapping(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+permissions:
+  contents: write
+jobs: {}
+""",
+    )
+
+    assert any("workflow_run is prohibited" in item for item in validate_workflow(path))
+
+
 def test_rejects_inline_unpinned_action(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
