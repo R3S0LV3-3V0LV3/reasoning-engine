@@ -1,9 +1,9 @@
 """Representation projection contracts."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import Field, model_serializer
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
 from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, ObjectRef
 
@@ -49,6 +49,20 @@ class RepresentationView(FrozenModel):
     registry_version: str = "wave3-m04-registry/1.0"
     selection_policy_version: str = "wave3-m04/1.0"
     limitations: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def serialize_compatibly(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Keep the original 1.0 wire shape for available builders.
+
+        ``builder_available`` was added after representation views had already
+        been persisted.  Its default therefore must not appear in canonical
+        state JSON, or validating an old snapshot would change its hash.  The
+        non-default ``False`` value remains explicit and auditable.
+        """
+        payload: dict[str, Any] = handler(self)
+        if self.builder_available:
+            payload.pop("builder_available", None)
+        return payload
 
 
 class RepresentationPlan(FrozenModel):

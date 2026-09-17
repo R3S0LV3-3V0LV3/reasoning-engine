@@ -1,15 +1,16 @@
 """M04 compatibility, adjudication, and structural projection regressions."""
 
 import asyncio
+import json
 from typing import cast
 from uuid import UUID
 
 import pytest
 
 from fre.domain.budget import BudgetPlan, DeploymentLimits
-from fre.domain.common import JsonValue, OutputContract, PermissionSet
+from fre.domain.common import JsonValue, OutputContract, PermissionSet, canonical_hash
 from fre.domain.problem import ProblemRelation, ProblemRelationKind, ProblemSpec, UnknownSpec
-from fre.domain.representation import RepresentationKind
+from fre.domain.representation import RepresentationKind, RepresentationPlan
 from fre.domain.task import TaskEnvelope, TaskSignature
 from fre.modules.m01_classifier import TaskClassifier
 from fre.modules.m02_budget import BudgetAllocator, default_tier_policy
@@ -82,6 +83,29 @@ def test_registry_builder_availability_produces_typed_fallback() -> None:
     assert artifact.requested_kind is RepresentationKind.SCENARIO_TREE
     assert artifact.actual_kind is RepresentationKind.TEXT_TABLE_FALLBACK
     assert artifact.fallback_reason and "requested SCENARIO_TREE" in artifact.limitations[-1]
+
+
+@pytest.mark.unit
+def test_legacy_view_validation_preserves_canonical_hash() -> None:
+    problem, signature, budget = context()
+    current = RepresentationSelector().select(problem, signature, budget).model_dump(mode="json")
+    legacy_hash = canonical_hash(current)
+
+    restored = RepresentationPlan.model_validate_json(json.dumps(current))
+
+    assert restored.views[0].builder_available is True
+    assert "builder_available" not in restored.model_dump(mode="json")["views"][0]
+    assert canonical_hash(restored) == legacy_hash
+
+
+@pytest.mark.unit
+def test_unavailable_builder_remains_explicit_in_wire_representation() -> None:
+    problem, signature, budget = context()
+    plan = RepresentationSelector().select(problem, signature, budget)
+    unavailable = plan.views[0].model_copy(update={"builder_available": False})
+    plan = plan.model_copy(update={"views": (unavailable,)})
+
+    assert plan.model_dump(mode="json")["views"][0]["builder_available"] is False
 
 
 @pytest.mark.unit
