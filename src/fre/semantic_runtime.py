@@ -53,6 +53,10 @@ class SemanticOwnershipError(ValueError):
     """The selected prompt/schema does not belong to the requested operation."""
 
 
+class SemanticPolicyMismatchError(ValueError):
+    """The runtime policy graph does not match the run's persisted identity."""
+
+
 class SemanticModelRuntime:
     def __init__(
         self,
@@ -61,6 +65,7 @@ class SemanticModelRuntime:
         prompts: PromptRegistry,
         schemas: OutputSchemaRegistry,
         policy: SemanticRuntimePolicy | None = None,
+        execution_config_hash: str | None = None,
     ) -> None:
         self.model = model
         self.engine = engine
@@ -68,6 +73,7 @@ class SemanticModelRuntime:
         self.prompts = prompts
         self.schemas = schemas
         self.policy = policy or SemanticRuntimePolicy()
+        self.execution_config_hash = execution_config_hash
 
     async def execute(
         self,
@@ -88,6 +94,17 @@ class SemanticModelRuntime:
         if not isinstance(run_id, UUID):
             raise TypeError("run_id must be a UUID")
         policy = policy or self.policy
+        if self.execution_config_hash is not None:
+            if policy != self.policy:
+                raise SemanticPolicyMismatchError(
+                    "the policy override does not match the composed semantic runtime policy"
+                )
+            persisted_hash = self.engine.inspect(run_id).config_hash
+            if persisted_hash != self.execution_config_hash:
+                raise SemanticPolicyMismatchError(
+                    "the composed policy hash does not match the run's persisted config_hash: "
+                    f"{self.execution_config_hash} != {persisted_hash}"
+                )
         prompt = self.prompts.get(prompt_id, prompt_version)
         schema, model_type = self.schemas.get(prompt.output_schema_id, prompt.output_schema_version)
         self._validate_ownership(prompt, schema, module_id, operation)

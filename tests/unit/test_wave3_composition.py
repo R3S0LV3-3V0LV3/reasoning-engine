@@ -1,5 +1,7 @@
 """Configuration-to-runtime wiring tests for the Wave 3 composition root."""
 
+import asyncio
+
 import pytest
 
 from fre.composition import UnsupportedWave3Configuration, compose_wave3
@@ -7,6 +9,7 @@ from fre.config import Wave3Config
 from fre.domain.common import canonical_hash
 from fre.domain.semantic import StructuredModelRequest, StructuredModelResult
 from fre.engine import FrontierReasoningEngine
+from fre.semantic_runtime import SemanticPolicyMismatchError, SemanticRuntimePolicy
 
 
 class UnusedModel:
@@ -58,6 +61,36 @@ def test_omitted_configuration_has_stable_defaults(engine: FrontierReasoningEngi
     second = compose_wave3(engine, UnusedModel(), Wave3Config())
     assert first.effective_policy == second.effective_policy
     assert first.effective_policy.policy_hash == second.effective_policy.policy_hash
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("use_override", (False, True))
+def test_semantic_execution_rejects_policy_identity_mismatch_before_model_call(
+    engine: FrontierReasoningEngine, use_override: bool
+) -> None:
+    original = compose_wave3(engine, UnusedModel(), Wave3Config(reserve_input_tokens=321))
+    handle = original.create_run()
+    current = compose_wave3(engine, UnusedModel())
+    runtime = (
+        original.components.semantic_runtime
+        if use_override
+        else current.components.semantic_runtime
+    )
+    override = SemanticRuntimePolicy(reserve_input_tokens=999) if use_override else None
+
+    with pytest.raises(SemanticPolicyMismatchError, match=r"policy|config_hash"):
+        asyncio.run(
+            runtime.execute(
+                run_id=handle.run_id,
+                module_id="M01",
+                module_version="1.0",
+                operation="classify",
+                prompt_id="m01.classify",
+                prompt_version="1.0",
+                canonical_input={},
+                policy=override,
+            )
+        )
 
 
 @pytest.mark.unit

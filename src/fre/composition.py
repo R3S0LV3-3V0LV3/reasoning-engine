@@ -131,7 +131,14 @@ def compose_wave3(
     components = Wave3Components(
         policy=effective,
         classifier=TaskClassifier(classification),
-        semantic_runtime=SemanticModelRuntime(model, engine, prompts, schemas, semantic),
+        semantic_runtime=SemanticModelRuntime(
+            model,
+            engine,
+            prompts,
+            schemas,
+            semantic,
+            execution_config_hash=effective.policy_hash,
+        ),
         representation_selector=RepresentationSelector(representation, default_registry()),
         context_compiler=Wave3ContextCompiler(),
         prompts=prompts,
