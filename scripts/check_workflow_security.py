@@ -35,12 +35,12 @@ def _trigger_names(value: object) -> set[str]:
 
 def _permission_failures(value: object, location: str) -> list[str]:
     if value is None:
-        return [f"{location}: pull_request workflows must declare permissions explicitly"]
+        return [f"{location}: workflows must declare permissions explicitly"]
     if isinstance(value, str):
         if value == "read-all":
             return []
         if value == "write-all":
-            return [f"{location}: write-all is prohibited for pull_request workflows"]
+            return [f"{location}: write-all is prohibited for repository workflows"]
         return [f"{location}: unsupported permissions value {value!r}"]
     if not isinstance(value, Mapping):
         return [f"{location}: permissions must be a mapping, read-all, or write-all"]
@@ -49,7 +49,7 @@ def _permission_failures(value: object, location: str) -> list[str]:
     for permission, level in value.items():
         if str(level) == "write":
             failures.append(
-                f"{location}: {permission}: write is prohibited for pull_request workflows"
+                f"{location}: {permission}: write is prohibited for repository workflows"
             )
         elif str(level) not in {"read", "write", "none"}:
             failures.append(f"{location}: invalid {permission} permission level {level!r}")
@@ -75,24 +75,21 @@ def validate_workflow(path: Path) -> list[str]:
     for trigger in sorted(triggers & PROHIBITED_TRIGGERS):
         failures.append(f"{path}: {trigger} is prohibited")
 
-    pull_request_workflow = "pull_request" in triggers
-    if pull_request_workflow:
-        failures.extend(_permission_failures(document.get("permissions"), str(path)))
+    failures.extend(_permission_failures(document.get("permissions"), str(path)))
 
     jobs = document.get("jobs")
     if not isinstance(jobs, Mapping):
         failures.append(f"{path}: jobs must be a mapping")
         return failures
 
-    if pull_request_workflow:
-        for job_name, job in jobs.items():
-            if isinstance(job, Mapping) and "permissions" in job:
-                failures.extend(
-                    _permission_failures(
-                        job.get("permissions"),
-                        f"{path}: job {job_name}",
-                    )
+    for job_name, job in jobs.items():
+        if isinstance(job, Mapping) and "permissions" in job:
+            failures.extend(
+                _permission_failures(
+                    job.get("permissions"),
+                    f"{path}: job {job_name}",
                 )
+            )
 
     for node in _walk(document):
         use = node.get("uses")
@@ -110,20 +107,20 @@ def validate_workflow(path: Path) -> list[str]:
             failures.append(f"{path}: {action} is not pinned to a full commit SHA")
 
         inputs = node.get("with")
-        if pull_request_workflow and normalized_action == "actions/checkout":
+        if normalized_action == "actions/checkout":
             persist_credentials = (
                 inputs.get("persist-credentials") if isinstance(inputs, Mapping) else None
             )
             if persist_credentials != "false":
                 failures.append(
                     f"{path}: actions/checkout must set persist-credentials: false "
-                    "for pull_request workflows"
+                    "for repository workflows"
                 )
-        if pull_request_workflow and normalized_action == "github/codeql-action/analyze":
+        if normalized_action == "github/codeql-action/analyze":
             upload = inputs.get("upload") if isinstance(inputs, Mapping) else None
             if upload != "never":
                 failures.append(
-                    f"{path}: CodeQL analyze must set upload: never for pull_request workflows"
+                    f"{path}: CodeQL analyze must set upload: never for repository workflows"
                 )
 
     return failures

@@ -70,6 +70,24 @@ jobs:
     assert any("contents: write is prohibited" in item for item in validate_workflow(path))
 
 
+def test_rejects_write_permission_and_persisted_checkout_on_branch_push(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: push
+permissions: write-all
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("write-all is prohibited" in item for item in failures)
+    assert any("persist-credentials: false" in item for item in failures)
+
+
 def test_rejects_codeql_write_permission_in_codeql_workflow(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
