@@ -25,7 +25,12 @@ class Wave3Config(BaseModel):
     schema_version: SchemaVersion = "1.0"
     classification_policy_version: str = "wave3-m01/1.0"
     confidence_threshold: float = Field(default=0.70, ge=0, le=1)
+    semantic_runtime_policy_version: str = "wave3-semantic-runtime/2.0"
     maximum_repair_attempts: int = Field(default=1, ge=0, le=1)
+    reserve_input_tokens: int = Field(default=4096, ge=0)
+    reserve_output_tokens: int = Field(default=2048, ge=0)
+    prompt_registry_version: str = "wave3-prompts/1.0"
+    output_schema_registry_version: str = "wave3-schemas/1.0"
     representation_registry_version: str = "wave3-m04-registry/1.0"
     representation_selection_policy_version: str = "wave3-m04/1.0"
     representation_tie_band: float = Field(default=0.05, ge=0, le=1)

@@ -65,6 +65,14 @@ def default_registry() -> tuple[RepresentationDefinition, ...]:
 
 
 class RepresentationSelector:
+    def __init__(
+        self,
+        policy: RepresentationSelectionPolicy | None = None,
+        registry: tuple[RepresentationDefinition, ...] | None = None,
+    ) -> None:
+        self.policy = policy or RepresentationSelectionPolicy()
+        self.registry = registry or default_registry()
+
     @staticmethod
     def apply_adjudication(
         deterministic: RepresentationPlan,
@@ -120,8 +128,8 @@ class RepresentationSelector:
         result untouched.  Only the already selected, buildable, budget-bounded tie
         candidates are disclosed to the semantic runtime.
         """
-        policy = policy or RepresentationSelectionPolicy()
-        deterministic = self.select(problem, signature, budget, registry, policy)
+        policy = policy or self.policy
+        deterministic = self.select(problem, signature, budget, registry or self.registry, policy)
         candidates = tuple(view for view in deterministic.views if view.builder_available)
         ambiguous = (
             len(candidates) > 1
@@ -182,8 +190,8 @@ class RepresentationSelector:
         policy: RepresentationSelectionPolicy | None = None,
     ) -> RepresentationPlan:
         del signature
-        registry = registry or default_registry()
-        policy = policy or RepresentationSelectionPolicy()
+        registry = registry or self.registry
+        policy = policy or self.policy
         scores = [
             (definition, *self._score_details(definition.kind, problem)) for definition in registry
         ]
