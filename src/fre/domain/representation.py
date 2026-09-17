@@ -43,6 +43,7 @@ class RepresentationView(FrozenModel):
     purpose: str = "structural projection"
     expected_value: str
     builder_ref: str
+    builder_available: bool = True
     source_object_refs: tuple[ObjectRef, ...] = ()
     builder_version: str = "1.0"
     registry_version: str = "wave3-m04-registry/1.0"

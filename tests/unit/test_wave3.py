@@ -203,7 +203,8 @@ def test_m04_selection_budget_projection_hash_and_fallback() -> None:
     assert len(plan.views) <= budget_plan.search.max_representation_views
     artifact = selector.build(plan.views[0], problem, 4)
     assert artifact.projection_hash == selector.build(plan.views[0], problem, 4).projection_hash
-    fallback = selector.build(plan.views[0], problem, 4, builder_available=False)
+    unavailable = plan.views[0].model_copy(update={"builder_available": False})
+    fallback = selector.build(unavailable, problem, 4)
     assert fallback.actual_kind is RepresentationKind.TEXT_TABLE_FALLBACK
     assert fallback.fallback_reason
     assert not selector.is_stale(artifact, problem)
