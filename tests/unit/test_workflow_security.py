@@ -1,0 +1,108 @@
+from pathlib import Path
+
+from scripts.check_workflow_security import validate_workflow
+
+
+def _workflow(tmp_path: Path, body: str, name: str = "workflow.yml") -> Path:
+    path = tmp_path / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_rejects_inline_pull_request_target(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: [pull_request_target]
+permissions: read-all
+jobs: {}
+""",
+    )
+
+    assert any("pull_request_target is prohibited" in item for item in validate_workflow(path))
+
+
+def test_rejects_inline_unpinned_action(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps: [{uses: owner/action@main}]
+""",
+    )
+
+    assert any("not pinned to a full commit SHA" in item for item in validate_workflow(path))
+
+
+def test_rejects_write_permission_on_pull_request(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  contents: write
+jobs:
+  test:
+    steps: []
+""",
+    )
+
+    assert any("contents: write is prohibited" in item for item in validate_workflow(path))
+
+
+def test_rejects_codeql_write_permission_outside_codeql_workflow(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  security-events: write
+jobs:
+  test:
+    steps: []
+""",
+    )
+
+    assert any("security-events: write is prohibited" in item for item in validate_workflow(path))
+
+
+def test_rejects_persisted_checkout_credentials(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+
+    assert any("persist-credentials: false" in item for item in validate_workflow(path))
+
+
+def test_allows_pinned_read_only_workflow_and_codeql_upload(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+      - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
+""",
+        name="codeql.yml",
+    )
+
+    assert validate_workflow(path) == []

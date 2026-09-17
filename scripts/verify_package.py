@@ -21,10 +21,39 @@ def main() -> None:
         raise SystemExit("built wheel does not contain fre/py.typed")
 
     with tempfile.TemporaryDirectory(prefix="fre-package-") as directory:
+        requirements = Path(directory) / "requirements.txt"
         venv = Path(directory) / "venv"
         subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True)
         python = venv / "bin" / "python"
-        subprocess.run([str(python), "-m", "pip", "install", str(wheel)], check=True)
+        subprocess.run(
+            [
+                "uv",
+                "export",
+                "--locked",
+                "--no-dev",
+                "--no-emit-project",
+                "--output-file",
+                str(requirements),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                str(python),
+                "--require-hashes",
+                "--requirements",
+                str(requirements),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
+            check=True,
+        )
         subprocess.run(
             [
                 str(python),

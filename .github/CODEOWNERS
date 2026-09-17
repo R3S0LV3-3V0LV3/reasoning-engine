@@ -1,5 +1,6 @@
 # Security-sensitive runtime, contracts, and delivery controls.
 /.github/ @R3S0LV3-3V0LV3
+/scripts/ @R3S0LV3-3V0LV3
 /src/fre/runtime/ @R3S0LV3-3V0LV3
 /src/fre/semantic_runtime.py @R3S0LV3-3V0LV3
 /src/fre/ports/ @R3S0LV3-3V0LV3
