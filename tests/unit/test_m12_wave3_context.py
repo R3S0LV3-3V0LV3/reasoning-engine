@@ -145,7 +145,6 @@ def compile_profile(profile: CompilerProfile) -> ContextCompilationResult:
         ledger=ledger(),
         budget_remaining=remaining(3),
         profile=profile,
-        unresolved_blockers=("Demand must be observed",),
         next_action="observe demand",
     )
 
@@ -175,6 +174,23 @@ def test_semantic_json_and_markdown_exact_goldens(profile: CompilerProfile) -> N
         "representation",
     )
     assert len({item.ref for item in result.packet.ledger_items}) == len(result.packet.ledger_items)
+    assert result.packet.unresolved_blockers == ("Demand must be observed",)
+
+
+def test_semantic_rejects_blocker_descriptions_inconsistent_with_typed_blockers() -> None:
+    problem, representation, blockers = semantic_context()
+    with pytest.raises(ValueError, match="does not match the supplied problem_blockers"):
+        Wave3ContextCompiler().compile_semantic(
+            problem=problem,
+            representation=representation,
+            problem_blockers=blockers,
+            run_id=UUID(int=1),
+            snapshot_version=7,
+            ledger=LedgerProjection(),
+            budget_remaining=remaining(),
+            profile=CompilerProfile.STANDARD,
+            unresolved_blockers=("A different blocker",),
+        )
 
 
 def test_semantic_delta_reconstructs_exact_packet_and_stale_views_are_rejected() -> None:
