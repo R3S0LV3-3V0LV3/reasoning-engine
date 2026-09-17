@@ -137,6 +137,24 @@ jobs:
     assert any("persist-credentials: false" in item for item in validate_workflow(path))
 
 
+def test_rejects_dot_path_alias_for_checkout(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  test:
+    steps:
+      - uses: actions/checkout/.@11d5960a326750d5838078e36cf38b85af677262
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("action has an ambiguous path: actions/checkout/." in item for item in failures)
+
+
 def test_rejects_case_insensitive_duplicate_checkout_input(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
@@ -214,6 +232,29 @@ jobs:
     )
 
     assert validate_workflow(path) == []
+
+
+def test_rejects_implicit_or_isolated_project_build_commands(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - run: uv sync --locked --all-groups
+      - run: uv run --locked pytest
+      - run: uv build
+      - run: uv pip install --python .venv/bin/python --no-deps .
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("uv sync must set --no-install-project" in item for item in failures)
+    assert any("uv run --locked may implicitly build the project" in item for item in failures)
+    assert any("uv build must set --no-build-isolation" in item for item in failures)
+    assert any("project installation must set --no-build-isolation" in item for item in failures)
 
 
 def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:

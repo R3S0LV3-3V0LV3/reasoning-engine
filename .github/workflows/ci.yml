@@ -37,13 +37,13 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - name: Install locked dependencies
-        run: uv sync --locked --all-groups
+        run: uv sync --locked --all-groups --no-install-project
       - name: Check formatting
-        run: uv run ruff format --check .
+        run: uv run --no-sync ruff format --check .
       - name: Lint
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
       - name: Type check
-        run: uv run mypy --strict src tests
+        run: uv run --no-sync mypy --strict src tests
 
   unit:
     name: unit
@@ -62,8 +62,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies and project
+        run: |
+          uv sync --locked --all-groups --no-install-project
+          uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run unit tests
-        run: uv run --locked pytest tests/unit
+        run: uv run --no-sync pytest tests/unit
 
   property:
     name: property
@@ -82,8 +86,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies and project
+        run: |
+          uv sync --locked --all-groups --no-install-project
+          uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run property tests
-        run: uv run --locked pytest tests/property
+        run: uv run --no-sync pytest tests/property
 
   integration:
     name: integration
@@ -102,8 +110,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies and project
+        run: |
+          uv sync --locked --all-groups --no-install-project
+          uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run integration tests
-        run: uv run --locked pytest tests/integration
+        run: uv run --no-sync pytest tests/integration
 
   full-suite:
     name: full-suite
@@ -122,8 +134,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies and project
+        run: |
+          uv sync --locked --all-groups --no-install-project
+          uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run complete test suite
-        run: uv run --locked pytest
+        run: uv run --no-sync pytest
 
   package-and-types:
     name: package-and-types
@@ -166,9 +182,13 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies and project
+        run: |
+          uv sync --locked --all-groups --no-install-project
+          uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run replay and compatibility gates
         run: >-
-          uv run --locked pytest
+          uv run --no-sync pytest
           tests/unit/test_foundation_freeze.py
           tests/integration/test_wave1_gate.py
           tests/integration/test_wave2_gate.py
@@ -195,8 +215,10 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups --no-install-project
       - name: Validate workflow policy
-        run: uv run --locked python scripts/check_workflow_security.py
+        run: uv run --no-sync python scripts/check_workflow_security.py
       - name: Scan committed history for secrets
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:

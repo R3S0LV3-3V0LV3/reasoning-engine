@@ -83,6 +83,39 @@ def _normalized_inputs(
     return normalized, failures
 
 
+def _normalized_action(action: str, path: Path) -> tuple[str, list[str]]:
+    segments = action.split("/")
+    if len(segments) < 2 or any(segment in {"", ".", ".."} for segment in segments):
+        return action.casefold(), [f"{path}: action has an ambiguous path: {action}"]
+    return "/".join(segments).casefold(), []
+
+
+def _run_command_failures(value: object, path: Path) -> list[str]:
+    if not isinstance(value, str):
+        return []
+
+    failures: list[str] = []
+    for line in value.splitlines():
+        command = line.strip()
+        tokens = command.split()
+        if command.startswith("uv sync ") and "--no-install-project" not in tokens:
+            failures.append(f"{path}: uv sync must set --no-install-project")
+        if command.startswith("uv run ") and "--locked" in tokens:
+            failures.append(
+                f"{path}: uv run --locked may implicitly build the project; "
+                "sync first and use --no-sync"
+            )
+        if command.startswith("uv build") and "--no-build-isolation" not in tokens:
+            failures.append(f"{path}: uv build must set --no-build-isolation")
+        if (
+            command.startswith("uv pip install")
+            and "." in tokens
+            and "--no-build-isolation" not in tokens
+        ):
+            failures.append(f"{path}: project installation must set --no-build-isolation")
+    return failures
+
+
 def validate_workflow(path: Path) -> list[str]:
     try:
         document = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -113,6 +146,7 @@ def validate_workflow(path: Path) -> list[str]:
             )
 
     for node in _walk(document):
+        failures.extend(_run_command_failures(node.get("run"), path))
         use = node.get("uses")
         if not isinstance(use, str):
             continue
@@ -123,7 +157,8 @@ def validate_workflow(path: Path) -> list[str]:
             failures.append(f"{path}: action is unpinned: {use}")
             continue
         action, revision = use.rsplit("@", 1)
-        normalized_action = action.casefold()
+        normalized_action, action_failures = _normalized_action(action, path)
+        failures.extend(action_failures)
         if not _is_full_sha(revision):
             failures.append(f"{path}: {action} is not pinned to a full commit SHA")
 
