@@ -53,7 +53,7 @@ jobs:
     assert any("contents: write is prohibited" in item for item in validate_workflow(path))
 
 
-def test_rejects_codeql_write_permission_outside_codeql_workflow(tmp_path: Path) -> None:
+def test_rejects_codeql_write_permission_in_codeql_workflow(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
         """
@@ -69,6 +69,22 @@ jobs:
     assert any("security-events: write is prohibited" in item for item in validate_workflow(path))
 
 
+def test_rejects_local_composite_action(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - uses: ./.github/actions/helper
+""",
+    )
+
+    assert any("local actions are prohibited" in item for item in validate_workflow(path))
+
+
 def test_rejects_persisted_checkout_credentials(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
@@ -79,14 +95,30 @@ permissions:
 jobs:
   test:
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: Actions/Checkout@11d5960a326750d5838078e36cf38b85af677262
 """,
     )
 
     assert any("persist-credentials: false" in item for item in validate_workflow(path))
 
 
-def test_allows_pinned_read_only_workflow_and_codeql_upload(tmp_path: Path) -> None:
+def test_rejects_codeql_upload_from_pull_request(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
+""",
+    )
+
+    assert any("CodeQL analyze must set upload: never" in item for item in validate_workflow(path))
+
+
+def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
         """
@@ -94,15 +126,14 @@ on:
   pull_request:
 permissions:
   contents: read
-  security-events: write
 jobs:
   test:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {persist-credentials: false}
       - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
+        with: {upload: never}
 """,
-        name="codeql.yml",
     )
 
     assert validate_workflow(path) == []

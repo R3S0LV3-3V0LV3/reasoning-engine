@@ -10,7 +10,6 @@ import yaml
 
 WORKFLOW_DIR = Path(".github/workflows")
 FULL_SHA_LENGTH = 40
-CODEQL_PR_WRITE_PERMISSIONS = frozenset({"security-events"})
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -33,9 +32,7 @@ def _trigger_names(value: object) -> set[str]:
     return set()
 
 
-def _permission_failures(
-    value: object, location: str, allowed_write_permissions: frozenset[str]
-) -> list[str]:
+def _permission_failures(value: object, location: str) -> list[str]:
     if value is None:
         return [f"{location}: pull_request workflows must declare permissions explicitly"]
     if isinstance(value, str):
@@ -49,7 +46,7 @@ def _permission_failures(
 
     failures: list[str] = []
     for permission, level in value.items():
-        if str(level) == "write" and str(permission) not in allowed_write_permissions:
+        if str(level) == "write":
             failures.append(
                 f"{location}: {permission}: write is prohibited for pull_request workflows"
             )
@@ -78,13 +75,8 @@ def validate_workflow(path: Path) -> list[str]:
         failures.append(f"{path}: pull_request_target is prohibited")
 
     pull_request_workflow = "pull_request" in triggers
-    allowed_write_permissions = (
-        CODEQL_PR_WRITE_PERMISSIONS if path.name == "codeql.yml" else frozenset()
-    )
     if pull_request_workflow:
-        failures.extend(
-            _permission_failures(document.get("permissions"), str(path), allowed_write_permissions)
-        )
+        failures.extend(_permission_failures(document.get("permissions"), str(path)))
 
     jobs = document.get("jobs")
     if not isinstance(jobs, Mapping):
@@ -98,7 +90,6 @@ def validate_workflow(path: Path) -> list[str]:
                     _permission_failures(
                         job.get("permissions"),
                         f"{path}: job {job_name}",
-                        allowed_write_permissions,
                     )
                 )
 
@@ -107,16 +98,18 @@ def validate_workflow(path: Path) -> list[str]:
         if not isinstance(use, str):
             continue
         if use.startswith("./"):
+            failures.append(f"{path}: local actions are prohibited: {use}")
             continue
         if "@" not in use:
             failures.append(f"{path}: action is unpinned: {use}")
             continue
         action, revision = use.rsplit("@", 1)
+        normalized_action = action.casefold()
         if not _is_full_sha(revision):
             failures.append(f"{path}: {action} is not pinned to a full commit SHA")
 
-        if pull_request_workflow and action == "actions/checkout":
-            inputs = node.get("with")
+        inputs = node.get("with")
+        if pull_request_workflow and normalized_action == "actions/checkout":
             persist_credentials = (
                 inputs.get("persist-credentials") if isinstance(inputs, Mapping) else None
             )
@@ -124,6 +117,12 @@ def validate_workflow(path: Path) -> list[str]:
                 failures.append(
                     f"{path}: actions/checkout must set persist-credentials: false "
                     "for pull_request workflows"
+                )
+        if pull_request_workflow and normalized_action == "github/codeql-action/analyze":
+            upload = inputs.get("upload") if isinstance(inputs, Mapping) else None
+            if upload != "never":
+                failures.append(
+                    f"{path}: CodeQL analyze must set upload: never for pull_request workflows"
                 )
 
     return failures
