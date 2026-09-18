@@ -8,15 +8,22 @@ from uuid import UUID
 from pydantic import Field, TypeAdapter, ValidationError
 
 from fre.domain.budget import BudgetProjection, ResourceVector
-from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
+from fre.domain.common import FrozenModel, JsonValue, bind_hash, canonical_hash, canonical_json
 from fre.domain.context import ContextCompilationRecord, ContextPacket
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import (
     RepresentationArtifact,
     RepresentationArtifactV2,
+    RepresentationCandidateScore,
     RepresentationPlan,
     RepresentationPlanV2,
+)
+from fre.domain.representation_registry import (
+    ORPHAN_KIND_REASONS,
+    default_registry_v2,
+    representation_determinism_hash,
+    score_details,
 )
 from fre.domain.semantic import (
     EpistemicOriginLabel,
@@ -346,6 +353,7 @@ class RunReducer:
         *,
         artifact_reader: Callable[[str], bytes] | None = None,
         schema_registry: OutputSchemaRegistry | None = None,
+        trust_unverified_artifacts: bool = False,
     ) -> None:
         # Both are optional so every existing bare `RunReducer()` construction
         # (tests, snapshot/replay helpers that predate this dependency) keeps
@@ -355,6 +363,15 @@ class RunReducer:
         # covered -- see `fre.engine.FrontierReasoningEngine.__init__`.
         self._artifact_reader = artifact_reader
         self._schema_registry = schema_registry
+        # Finding I (C07 remediation): without an `artifact_reader`, this
+        # reducer previously *silently skipped* the M04 v2 artifact's
+        # `content_hash`/`determinism_hash` recomputation -- accepting any
+        # caller-asserted hash unverified with no signal that verification
+        # never ran. That is now a hard, fail-closed error unless this flag
+        # is explicitly set, so "unverified" can never be the silent default
+        # -- it must be a deliberate, named opt-in (e.g. a read-only replay
+        # context that genuinely has no artifact store wired).
+        self._trust_unverified_artifacts = trust_unverified_artifacts
 
     def accepts_snapshot_version(self, version: str) -> bool:
         return version in self.compatible_snapshot_versions
@@ -838,7 +855,7 @@ class RunReducer:
             # declared `problem_spec_hash`/`source_snapshot_version` actually
             # match the ProblemSpec and version this run had reached.
             plan = payload.plan
-            expected_plan_hash = canonical_hash(plan.model_dump(mode="json", exclude={"plan_hash"}))
+            expected_plan_hash = bind_hash(plan, exclude={"plan_hash"})
             if plan.plan_hash != expected_plan_hash:
                 raise ValueError(
                     "representation plan (v2) hash does not match its own canonical preimage"
@@ -853,6 +870,152 @@ class RunReducer:
                     "representation plan (v2) source_snapshot_version does not match the "
                     "run state it was actually selected against"
                 )
+            # --- C07 root-cause remediation (findings A/B/C) -------------
+            # Everything above only proves the plan is SELF-consistent (its
+            # own plan_hash seals its own fields) and binds to the ProblemSpec
+            # this run actually has. None of it proves the plan's claimed
+            # `registry_hash`/`candidate_scores`/`tie_triggered` correspond to
+            # REALITY -- a plan could self-consistently claim to have scored
+            # against a forged registry, forged scores, or a forged tie. The
+            # checks below independently recompute each of those three values
+            # from the real registry/scoring function and reject any
+            # disagreement -- ground truth is never taken on the plan's own
+            # word.
+            real_registry = default_registry_v2()
+            real_registry_hash = canonical_hash(real_registry)
+            # Finding A, defense-in-depth: an orphan kind (declared in the
+            # vocabulary but explicitly de-registered -- see
+            # `ORPHAN_KIND_REASONS`) must never appear as a plan view,
+            # unconditionally, regardless of what `registry_hash` claims. This
+            # is checked before, and independently of, the registry_hash
+            # comparison immediately below so that even a hypothetical future
+            # registry that still (incorrectly) marked an orphan as available
+            # could not smuggle it through.
+            for view in plan.views:
+                if view.kind in ORPHAN_KIND_REASONS:
+                    raise ValueError(
+                        f"representation plan (v2) selects orphan kind {view.kind}, which is "
+                        "unconditionally rejected regardless of the plan's claimed registry_hash"
+                    )
+            # Finding A: the plan's claimed `registry_hash` must match the
+            # hash of the REAL, currently-deployed v2 registry -- a plan
+            # cannot claim to have been scored against a registry that never
+            # existed.
+            if plan.registry_hash != real_registry_hash:
+                raise ValueError(
+                    "representation plan (v2) registry_hash does not match the real, "
+                    "currently-deployed representation registry"
+                )
+            if state.problem_spec is not None:
+                # Finding B: recompute every candidate's compatibility score
+                # against the ACTUAL current ProblemSpec, using the exact same
+                # pure `score_details` function `RepresentationSelector`
+                # itself calls (see `fre.domain.representation_registry`), and
+                # compare to the plan's claimed `candidate_scores`. A plan
+                # cannot claim scores that do not correspond to any real
+                # scoring of the real problem.
+                scored = [
+                    (definition, *score_details(definition, state.problem_spec))
+                    for definition in real_registry
+                ]
+                ordered = sorted(
+                    scored, key=lambda item: (-item[1], item[0].priority, item[0].kind.value)
+                )
+                recomputed_scores = tuple(
+                    RepresentationCandidateScore(
+                        kind=definition.kind,
+                        compatibility_score=score,
+                        score_components=components,
+                        builder_available=definition.builder_available,
+                        cost=definition.cost_weight,
+                        expected_benefit=round(definition.expected_benefit_weight * score, 6),
+                    )
+                    for definition, score, components in ordered
+                )
+                # Exact equality is expected (scoring is deterministic
+                # arithmetic over a fixed, finite set of weights -- no
+                # floating-point accumulation that would require a tolerance
+                # in practice), but a small epsilon is applied to the score
+                # comparison itself so a hypothetical future non-deterministic
+                # scoring refinement cannot turn a benign rounding artifact
+                # into a false rejection.
+                if len(recomputed_scores) != len(plan.candidate_scores) or any(
+                    recomputed.kind != claimed.kind
+                    or recomputed.builder_available != claimed.builder_available
+                    or abs(recomputed.compatibility_score - claimed.compatibility_score) > 1e-9
+                    for recomputed, claimed in zip(
+                        recomputed_scores, plan.candidate_scores, strict=False
+                    )
+                ):
+                    raise ValueError(
+                        "representation plan (v2) candidate_scores do not match an independent "
+                        "recomputation against the current ProblemSpec"
+                    )
+                # Finding C: recompute `tie_triggered` from the (now-verified)
+                # scores instead of trusting the plan's self-reported boolean.
+                # `fallback_used=True` means selection fell through to the
+                # single typed-fallback candidate with no real competing
+                # candidate, which short-circuits tie detection entirely
+                # (see `RepresentationSelector.select_bound`) -- so no
+                # fallback plan can ever legitimately claim a tie.
+                #
+                # NOTE (documented limitation): the plan does not carry the
+                # exact `minimum_compatibility` policy threshold that was in
+                # effect at selection time (only `tie_band` is a plan field);
+                # `RepresentationSelectionPolicy.minimum_compatibility`
+                # defaults to 0.20 everywhere in this codebase except tests
+                # that construct an ad-hoc policy, so 0.20 is used here as the
+                # best available reconstruction of "compatible" candidates.
+                # A plan legitimately selected under a non-default
+                # `minimum_compatibility` could, in a narrow edge case,
+                # disagree with this recomputation; no such policy override
+                # is wired anywhere outside test-only construction today.
+                if plan.fallback_used:
+                    recomputed_tie = False
+                else:
+                    compatible_scores = [
+                        candidate
+                        for candidate in recomputed_scores
+                        if candidate.compatibility_score >= 0.20
+                    ]
+                    recomputed_tie = len(compatible_scores) > 1 and (
+                        abs(
+                            compatible_scores[0].compatibility_score
+                            - compatible_scores[1].compatibility_score
+                        )
+                        <= plan.tie_band
+                    )
+                if plan.tie_triggered != recomputed_tie:
+                    raise ValueError(
+                        "representation plan (v2) tie_triggered does not match an independent "
+                        "recomputation from its (verified) candidate_scores and tie_band"
+                    )
+                # Finding G: independently recompute `input_hash` from the
+                # exact (problem, signature, budget) triple `select_bound`
+                # seals it from, mirroring `problem_spec_hash`'s existing
+                # verification. Documented residual limitation: unlike
+                # `problem_spec`, `RunState` does not guarantee
+                # `task_signature`/`budget.plan` are populated by the time a
+                # v2 plan is applied (M01 classification and M02 budget
+                # allocation are not hard prerequisites enforced by this
+                # reducer before M04 selection), so when either is absent
+                # here, `input_hash` cannot be independently verified and is
+                # trusted from the plan's own (already self-consistency
+                # checked via `plan_hash`) claim -- this is a real, honest gap
+                # or, when both are present, checked exactly.
+                if state.task_signature is not None and state.budget.plan is not None:
+                    expected_input_hash = canonical_hash(
+                        {
+                            "problem": state.problem_spec,
+                            "signature": state.task_signature,
+                            "budget": state.budget.plan,
+                        }
+                    )
+                    if plan.input_hash != expected_input_hash:
+                        raise ValueError(
+                            "representation plan (v2) input_hash does not match an independent "
+                            "recomputation from the current problem/signature/budget"
+                        )
             # Objective 3: semantic adjudication is only ever a legitimate
             # input to selection when the plan itself claims it ran inside the
             # declared tie band, AND when it is backed by a real, already-
@@ -864,13 +1027,30 @@ class RunReducer:
                         "representation plan (v2) references adjudication outside its own "
                         "declared tie band"
                     )
-                if not any(
-                    call.idempotency_key == plan.adjudication_record_ref
-                    for call in state.model_calls
-                ):
+                matching_call = next(
+                    (
+                        call
+                        for call in state.model_calls
+                        if call.idempotency_key == plan.adjudication_record_ref
+                    ),
+                    None,
+                )
+                if matching_call is None:
                     raise ValueError(
                         "representation plan (v2) adjudication_record_ref has no matching "
                         "semantic model-call record applied in this run"
+                    )
+                # Finding H: the referenced call must actually BE an M04
+                # representation-adjudication call, not merely some call in
+                # this run that happens to share the claimed idempotency key
+                # (which is itself a content-derived hash, but checking only
+                # its presence -- as the pre-remediation code did -- does not
+                # confirm its module/operation identity).
+                if matching_call.module_id != "M04" or matching_call.operation != "adjudicate":
+                    raise ValueError(
+                        "representation plan (v2) adjudication_record_ref resolves to a "
+                        "semantic model-call record that is not an M04 representation "
+                        "adjudication call"
                     )
             changes["representation_plan_v2"] = plan
         elif isinstance(payload, RepresentationArtifactCompiledV2):
@@ -919,6 +1099,61 @@ class RunReducer:
                 raise ValueError(
                     "representation artifact (v2) registry_hash does not match its bound plan"
                 )
+            # Finding F: `registry_hash` alone does not prove the artifact
+            # agrees with its plan about WHICH registry/policy generation
+            # produced it -- two different (version, policy) pairs could in
+            # principle hash identically only by coincidence of the hashed
+            # registry content; cross-check the declared version strings
+            # too, independently of the hash.
+            if bound_artifact.registry_version != state.representation_plan_v2.registry_version:
+                raise ValueError(
+                    "representation artifact (v2) registry_version does not match its bound plan"
+                )
+            if (
+                bound_artifact.selection_policy_version
+                != state.representation_plan_v2.selection_policy_version
+            ):
+                raise ValueError(
+                    "representation artifact (v2) selection_policy_version does not match its "
+                    "bound plan"
+                )
+            # Finding A, defense-in-depth (artifact side): neither the
+            # requested nor the actual kind may ever be an explicitly
+            # de-registered orphan, unconditionally -- see the identical
+            # check on `RepresentationPlanSelectedV2` above.
+            for kind in (bound_artifact.requested_kind, bound_artifact.actual_kind):
+                if kind in ORPHAN_KIND_REASONS:
+                    raise ValueError(
+                        f"representation artifact (v2) references orphan kind {kind}, which is "
+                        "unconditionally rejected"
+                    )
+            # Finding E: the artifact's claimed ACTUAL builder identity must
+            # match what the real registry actually declares for the actual
+            # kind it claims to have built -- a forged builder id/version
+            # cannot be smuggled through merely by keeping `registry_hash`
+            # self-consistent.
+            real_registry = default_registry_v2()
+            real_definition = next(
+                (
+                    definition
+                    for definition in real_registry
+                    if definition.kind is bound_artifact.actual_kind
+                ),
+                None,
+            )
+            if real_definition is None:
+                raise ValueError(
+                    "representation artifact (v2) actual_kind is not declared by the real "
+                    "representation registry"
+                )
+            if (
+                real_definition.builder_id != bound_artifact.actual_builder_id
+                or real_definition.builder_version != bound_artifact.actual_builder_version
+            ):
+                raise ValueError(
+                    "representation artifact (v2) actual builder identity does not match what "
+                    "the real representation registry declares for its actual_kind"
+                )
             if bound_artifact.physical_artifact_ref.sha256 not in state.artifacts:
                 raise ValueError("representation artifact (v2) bytes are not registered")
             # F10/Objective 4 decisive check: a caller-asserted `content_hash`
@@ -926,7 +1161,25 @@ class RunReducer:
             # artifact store by their registered sha256 and rehashed; any
             # disagreement -- a forged claim, or bytes that no longer exist --
             # is rejected here, before persistence.
-            if self._artifact_reader is not None:
+            #
+            # Finding I: without an `artifact_reader`, this verification
+            # cannot run at all -- the pre-remediation code silently skipped
+            # it in that case, accepting any caller-asserted content_hash/
+            # determinism_hash unverified with no signal that verification
+            # never happened. That silent skip is now a hard, fail-closed
+            # error unless the reducer was explicitly constructed with
+            # `trust_unverified_artifacts=True` (a deliberate, named opt-in
+            # for e.g. a read-only context with no artifact store wired), so
+            # "unverified" can never be the accidental default.
+            if self._artifact_reader is None:
+                if not self._trust_unverified_artifacts:
+                    raise ValueError(
+                        "representation artifact (v2) content_hash/determinism_hash cannot be "
+                        "independently verified because this RunReducer has no artifact_reader; "
+                        "construct it with one, or pass trust_unverified_artifacts=True to "
+                        "explicitly accept this artifact's bytes/hash unverified"
+                    )
+            else:
                 try:
                     actual_bytes = self._artifact_reader(
                         bound_artifact.physical_artifact_ref.sha256
@@ -949,15 +1202,17 @@ class RunReducer:
                         "representation artifact (v2) content_hash does not match the "
                         "artifact's actual stored bytes; the caller's claim is rejected"
                     )
-                expected_determinism_hash = canonical_hash(
-                    {
-                        "registry_hash": bound_artifact.registry_hash,
-                        "actual_kind": bound_artifact.actual_kind,
-                        "problem_spec_hash": bound_artifact.problem_spec_hash,
-                        "actual_builder_id": bound_artifact.actual_builder_id,
-                        "actual_builder_version": bound_artifact.actual_builder_version,
-                        "content_hash": recomputed,
-                    }
+                # Finding M: the shared `representation_determinism_hash`
+                # preimage function -- the exact same one
+                # `RepresentationSelector.build_bound` calls -- rather than a
+                # second, hand-copied dict-literal mirror of it.
+                expected_determinism_hash = representation_determinism_hash(
+                    registry_hash=bound_artifact.registry_hash,
+                    actual_kind=bound_artifact.actual_kind,
+                    problem_spec_hash=bound_artifact.problem_spec_hash,
+                    actual_builder_id=bound_artifact.actual_builder_id,
+                    actual_builder_version=bound_artifact.actual_builder_version,
+                    content_hash=recomputed,
                 )
                 if bound_artifact.determinism_hash != expected_determinism_hash:
                     raise ValueError(

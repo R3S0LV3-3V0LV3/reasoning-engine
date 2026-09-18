@@ -7,6 +7,7 @@ FRE_WAVE3_C01_C10_EXECUTION_COMPLETION_AND_VALIDATION_REGISTER.md.
 
 import hashlib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -19,14 +20,27 @@ from fre.domain.common import (
     FrozenModel,
     OutputContract,
     PermissionSet,
+    bind_hash,
     canonical_hash,
 )
-from fre.domain.problem import ConstraintSpec, DecisionVariable, ProblemSpec, UnknownSpec
+from fre.domain.problem import (
+    ConstraintSpec,
+    DecisionVariable,
+    ProblemRelation,
+    ProblemRelationKind,
+    ProblemSpec,
+    UnknownSpec,
+)
 from fre.domain.representation import (
     RepresentationArtifactV2,
+    RepresentationCandidateScore,
     RepresentationKind,
     RepresentationPlanV2,
+    RepresentationView,
 )
+from fre.domain.representation_registry import RepresentationDefinition as _ForgedDefinition
+from fre.domain.representation_registry import representation_determinism_hash
+from fre.domain.semantic import SemanticCallCharge, SemanticModelCallRecord, StructuredModelStatus
 from fre.domain.task import TaskEnvelope, TaskSignature
 from fre.engine import FrontierReasoningEngine
 from fre.modules.m01_classifier import TaskClassifier
@@ -42,9 +56,13 @@ from fre.modules.m04_representation import (
 from fre.prompts.schemas import RepresentationAdjudicationOutput
 from fre.runtime.events import (
     ArtifactRegistered,
+    ModelCallRecorded,
     ProblemFormalised,
     RepresentationArtifactCompiledV2,
     RepresentationPlanSelectedV2,
+    RunCreated,
+    StoredEvent,
+    event_wire_identity,
 )
 from fre.runtime.reducer import RunReducer, RunState
 
@@ -570,20 +588,55 @@ def test_reject_artifact_referencing_unapplied_plan(engine: FrontierReasoningEng
 # ---------------------------------------------------------------------------
 
 
+def _not_tied_problem() -> ProblemSpec:
+    """Triggers exactly one strong real candidate (TYPED_CONSTRAINT_SET,
+    weight 0.65) with no other near-equal-scoring real candidate -- the next
+    highest score is the 0.20 typed fallback, a 0.45 gap, well outside the
+    default 0.05 tie_band. Used (post-C07-root-cause-fix) instead of an
+    ad-hoc, non-default registry so `plan.registry_hash` matches the real,
+    currently-deployed `default_registry_v2()` that the reducer now
+    independently recomputes and verifies."""
+    return ProblemSpec(
+        output_contract=OutputContract(form="TEXT"),
+        constraints=(
+            ConstraintSpec(
+                id="c1", description="x", kind="HARD", verification_mode="DETERMINISTIC"
+            ),
+        ),
+    )
+
+
+def _really_tied_problem() -> ProblemSpec:
+    """Triggers two real candidates that score EXACTLY equal under the real
+    `default_registry_v2()`: DEPENDENCY_DAG and CAUSAL_GRAPH both carry
+    `SCORE_WEIGHTS` of 0.70 (see `fre.domain.representation_registry`), so a
+    problem with both a DEPENDS_ON and a CAUSES relation ties them with a
+    0.0 gap, well within the default 0.05 tie_band -- using the REAL
+    registry (unlike the old ad-hoc `_two_candidate_registry` helper, which
+    the C07 root-cause fix's independent `registry_hash` recomputation now
+    correctly rejects as not matching the real, currently-deployed
+    registry)."""
+    return ProblemSpec(
+        output_contract=OutputContract(form="TEXT"),
+        relations=(
+            ProblemRelation(source_id="a", target_id="b", kind=ProblemRelationKind.DEPENDS_ON),
+            ProblemRelation(source_id="a", target_id="b", kind=ProblemRelationKind.CAUSES),
+        ),
+    )
+
+
 @pytest.mark.integration
 def test_reject_adjudication_reference_outside_declared_tie_band(
     engine: FrontierReasoningEngine,
 ) -> None:
     handle = engine.create_run({"c07": "adjudication-outside-band"})
-    problem = _tied_problem()
+    problem = _not_tied_problem()
     signature, _ = TaskClassifier().classify(envelope(), None)
     budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
     _append(engine, handle.run_id, ProblemFormalised(problem=problem), module_id="M03")
     state = engine.inspect(handle.run_id)
     selector = RepresentationSelector()
-    plan = selector.select_bound(
-        problem, signature, budget, state.version, _two_candidate_registry(0.5)
-    )
+    plan = selector.select_bound(problem, signature, budget, state.version)
     assert not plan.tie_triggered
     forged = plan.model_copy(
         update={"adjudication_record_ref": "a" * 64},
@@ -600,15 +653,13 @@ def test_reject_adjudication_reference_without_matching_model_call(
     engine: FrontierReasoningEngine,
 ) -> None:
     handle = engine.create_run({"c07": "adjudication-unlinked"})
-    problem = _tied_problem()
+    problem = _really_tied_problem()
     signature, _ = TaskClassifier().classify(envelope(), None)
     budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
     _append(engine, handle.run_id, ProblemFormalised(problem=problem), module_id="M03")
     state = engine.inspect(handle.run_id)
     selector = RepresentationSelector()
-    plan = selector.select_bound(
-        problem, signature, budget, state.version, _two_candidate_registry(0.0)
-    )
+    plan = selector.select_bound(problem, signature, budget, state.version)
     assert plan.tie_triggered
     forged = plan.model_copy(update={"adjudication_record_ref": "a" * 64})
     forged = forged.model_copy(
@@ -665,3 +716,367 @@ def test_apply_adjudication_v2_never_silently_swallows_an_invalid_proposal() -> 
     )
     assert valid_outcome.diagnostic is None
     assert valid_outcome.plan.views[0].kind is deterministic.views[-1].kind
+
+
+# ---------------------------------------------------------------------------
+# C07 root-cause remediation (round 2): the reducer previously only checked
+# a plan's/artifact's SELF-consistency (its own hash sealing its own fields)
+# and CROSS-consistency (an artifact matching its plan's claimed fields) --
+# never that those claimed fields correspond to reality. Every test below
+# bypasses `RepresentationSelector` entirely and calls `RunReducer.apply`
+# directly with a hand-forged (but self-consistent, correctly-hashed)
+# plan/artifact, per the C04/C05/C06 lesson that a wrapper's calling
+# convention alone is not proof of an invariant -- the reducer itself must
+# refuse it.
+# ---------------------------------------------------------------------------
+
+
+def _payload_applier(
+    reducer: RunReducer, run_id: UUID
+) -> Callable[[RunState, FrozenModel], RunState]:
+    def apply_payload(state: RunState, payload: FrozenModel, module_id: str = "test") -> RunState:
+        event_type, schema_version = event_wire_identity(payload)
+        event = StoredEvent(
+            event_id=UUID(int=state.version + 10_000),
+            run_id=run_id,
+            event_type=event_type,
+            action_id=UUID(int=state.version + 20_000),
+            module_id=module_id,
+            schema_version=schema_version,
+            module_version="1.0",
+            input_hash="0" * 64,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            payload=payload.model_dump(mode="json"),
+            sequence=state.version + 1,
+        )
+        return reducer.apply(state, event)
+
+    return apply_payload
+
+
+def _direct_state_with_problem(
+    problem: ProblemSpec, run_id: UUID, reducer: RunReducer | None = None
+) -> tuple[RunReducer, RunState, Callable[[RunState, FrozenModel], RunState]]:
+    reducer = reducer or RunReducer()
+    apply_payload = _payload_applier(reducer, run_id)
+    state = reducer.initial(run_id)
+    state = apply_payload(state, RunCreated(config_hash="c"))
+    state = apply_payload(state, ProblemFormalised(problem=problem))
+    return reducer, state, apply_payload
+
+
+def _real_call_record(
+    *, idempotency_key: str, module_id: str, operation: str, ref: ArtifactRef
+) -> SemanticModelCallRecord:
+    return SemanticModelCallRecord(
+        call_id=UUID(int=2),
+        idempotency_key=idempotency_key,
+        module_id=module_id,
+        operation=operation,
+        module_version="1.0",
+        policy_version="1.0",
+        policy_hash="c" * 64,
+        prompt_id="p",
+        prompt_version="1.0",
+        template_hash="d" * 64,
+        output_schema_id="s",
+        output_schema_version="1.0",
+        output_schema_hash="e" * 64,
+        canonical_input_hash="f" * 64,
+        model_role="adjudicator",
+        adapter_id="adapter",
+        model_id="model",
+        status=StructuredModelStatus.SUCCESS,
+        raw_artifact=ref,
+        proposal_artifact=ref,
+        policy_charge=SemanticCallCharge(basis="TEST"),
+    )
+
+
+@pytest.mark.unit
+def test_root_cause_a_rejects_plan_claiming_orphan_kind_with_self_consistent_registry_hash() -> (
+    None
+):
+    """P0 A/D. Before this fix, the reducer only proved a plan's OWN
+    internal self-consistency (`plan_hash` seals its own fields) and that it
+    bound the current ProblemSpec -- it never independently recomputed
+    `registry_hash` against the real, currently-deployed registry. A plan
+    that self-consistently claims to have consulted a fictitious registry
+    containing CSP (an explicitly de-registered orphan kind -- constraint
+    solving is out of M04's projection-only scope) as an available, scored
+    candidate sailed straight through. This test forges exactly that shape
+    and asserts it is rejected."""
+    problem = ProblemSpec(output_contract=OutputContract(form="TEXT"))
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, UUID(int=9001))
+
+    forged_registry = (
+        _ForgedDefinition(
+            kind=RepresentationKind.CSP,
+            builder_id="csp-solver",
+            builder_version="9.9",
+            priority=0,
+            purpose="forged CSP candidate",
+            limitations=(),
+            builder_available=True,
+            score_weight=0.9,
+        ),
+    )
+    forged_registry_hash = canonical_hash(forged_registry)
+    view = RepresentationView(
+        id="view-1",
+        kind=RepresentationKind.CSP,
+        role="PRIMARY",
+        compatibility_score=0.9,
+        purpose="forged",
+        expected_value="forged",
+        builder_ref="csp-solver",
+        builder_available=True,
+        builder_version="9.9",
+        registry_version="forged/1.0",
+        selection_policy_version="forged/1.0",
+    )
+    candidate_score = RepresentationCandidateScore(
+        kind=RepresentationKind.CSP,
+        compatibility_score=0.9,
+        builder_available=True,
+        cost=1.0,
+        expected_benefit=0.9,
+    )
+    forged_plan = RepresentationPlanV2(
+        registry_version="forged/1.0",
+        registry_hash=forged_registry_hash,
+        selection_policy_version="forged/1.0",
+        problem_spec_hash=canonical_hash(problem),
+        input_hash="0" * 64,
+        source_snapshot_version=state.version,
+        candidate_scores=(candidate_score,),
+        views=(view,),
+        selection_basis=("forged",),
+        tie_band=0.05,
+        tie_triggered=False,
+        fallback_used=False,
+        plan_hash="0" * 64,
+    )
+    forged_plan = forged_plan.model_copy(
+        update={"plan_hash": bind_hash(forged_plan, exclude={"plan_hash"})}
+    )
+    with pytest.raises(ValueError, match="orphan kind"):
+        apply_payload(state, RepresentationPlanSelectedV2(plan=forged_plan))
+
+
+@pytest.mark.unit
+def test_root_cause_b_rejects_plan_with_candidate_scores_not_matching_real_scoring() -> None:
+    """P0 B. Before this fix, `candidate_scores` was never independently
+    recomputed -- only the plan's own `plan_hash` self-consistency was
+    checked, so a plan could claim any scores at all for the real
+    ProblemSpec it otherwise genuinely binds to. This forges a real,
+    correctly-selected plan's TYPED_CONSTRAINT_SET score (truthfully 0.65)
+    up to 0.99 and asserts the reducer rejects it."""
+    problem = _not_tied_problem()
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, UUID(int=9002))
+
+    real_plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+    forged_scores = tuple(
+        score.model_copy(update={"compatibility_score": 0.99}) if index == 0 else score
+        for index, score in enumerate(real_plan.candidate_scores)
+    )
+    forged_plan = real_plan.model_copy(
+        update={"candidate_scores": forged_scores, "plan_hash": "0" * 64}
+    )
+    forged_plan = forged_plan.model_copy(
+        update={"plan_hash": bind_hash(forged_plan, exclude={"plan_hash"})}
+    )
+    with pytest.raises(ValueError, match="candidate_scores do not match"):
+        apply_payload(state, RepresentationPlanSelectedV2(plan=forged_plan))
+
+
+@pytest.mark.unit
+def test_root_cause_c_rejects_false_tie_triggered_with_real_unrelated_adjudication_ref() -> None:
+    """P0 C. Before this fix, `tie_triggered` was trusted as a bare
+    self-reported boolean -- the reducer's only adjudication-linkage check
+    was that a REAL, already-applied semantic model-call record exists for
+    the claimed `adjudication_record_ref`, never that a tie genuinely
+    existed. This forges a plan with a real, clearly non-tied score gap
+    (0.45, `TYPED_CONSTRAINT_SET` vs the 0.20 typed fallback) but
+    `tie_triggered=True` and a reference to a REAL, already-applied
+    (but unrelated to any actual tie) semantic model-call record, and
+    asserts the reducer rejects it on the recomputed tie mismatch -- before
+    it ever reaches the (separately correct) adjudication-linkage check."""
+    problem = _not_tied_problem()
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, UUID(int=9003))
+
+    ref = ArtifactRef(artifact_id=UUID(int=1), sha256="a" * 64)
+    state = apply_payload(
+        state, ArtifactRegistered(artifact=ref, media_type="application/json", byte_size=1)
+    )
+    real_idempotency_key = "b" * 64
+    real_call = _real_call_record(
+        idempotency_key=real_idempotency_key, module_id="M04", operation="adjudicate", ref=ref
+    )
+    state = apply_payload(state, ModelCallRecorded(record=real_call))
+
+    real_plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+    assert not real_plan.tie_triggered
+
+    forged_plan = real_plan.model_copy(
+        update={
+            "tie_triggered": True,
+            "adjudication_record_ref": real_idempotency_key,
+            "plan_hash": "0" * 64,
+        }
+    )
+    forged_plan = forged_plan.model_copy(
+        update={"plan_hash": bind_hash(forged_plan, exclude={"plan_hash"})}
+    )
+    with pytest.raises(ValueError, match="tie_triggered does not match"):
+        apply_payload(state, RepresentationPlanSelectedV2(plan=forged_plan))
+
+
+@pytest.mark.unit
+def test_finding_e_rejects_artifact_whose_builder_identity_disagrees_with_real_registry() -> None:
+    """Finding E/L: `actual_builder_id`/`actual_builder_version` must match
+    what the real, currently-deployed registry actually declares for
+    `actual_kind` -- not merely be internally self-consistent with the
+    artifact's own claimed hashes."""
+    problem = _not_tied_problem()
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    store: dict[str, bytes] = {}
+    run_id = UUID(int=9004)
+    reducer = RunReducer(artifact_reader=lambda sha: store[sha])
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, run_id, reducer)
+
+    plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+    state = apply_payload(state, RepresentationPlanSelectedV2(plan=plan))
+    artifact = RepresentationSelector().build_bound(
+        plan.views[0], problem, plan, bytes_writer(store)
+    )
+    state = apply_payload(
+        state,
+        ArtifactRegistered(
+            artifact=artifact.physical_artifact_ref,
+            media_type="application/json",
+            byte_size=len(store[artifact.physical_artifact_ref.sha256]),
+        ),
+    )
+    # The forged identity is set on BOTH `requested_builder_id/version` and
+    # `actual_builder_id/version` (kept equal to each other, with no
+    # `fallback_reason`) and `determinism_hash` is correctly recomputed for
+    # it -- i.e. fully self-consistent by every EXISTING structural/reducer
+    # check (`fallback_attribution_is_consistent`'s "must match when no
+    # fallback occurred" rule, and the pre-remediation `determinism_hash`
+    # recomputation, which also takes the builder identity as an input and
+    # would otherwise incidentally reject an internally-INCONSISTENT forgery
+    # for an unrelated reason). This isolates finding E: the ONLY thing
+    # wrong with this artifact is that "totally-fake-builder"/"0.0.1" is not
+    # what the real, currently-deployed registry actually declares as the
+    # builder for `actual_kind` -- no requested/actual kind substitution, no
+    # hash tampering.
+    forged_determinism_hash = representation_determinism_hash(
+        registry_hash=artifact.registry_hash,
+        actual_kind=artifact.actual_kind,
+        problem_spec_hash=artifact.problem_spec_hash,
+        actual_builder_id="totally-fake-builder",
+        actual_builder_version="0.0.1",
+        content_hash=artifact.content_hash,
+    )
+    forged = artifact.model_copy(
+        update={
+            "requested_builder_id": "totally-fake-builder",
+            "requested_builder_version": "0.0.1",
+            "actual_builder_id": "totally-fake-builder",
+            "actual_builder_version": "0.0.1",
+            "determinism_hash": forged_determinism_hash,
+        }
+    )
+    with pytest.raises(ValueError, match="actual builder identity"):
+        apply_payload(state, RepresentationArtifactCompiledV2(artifact=forged))
+
+
+@pytest.mark.unit
+def test_finding_h_rejects_adjudication_ref_pointing_to_a_non_m04_adjudicate_call() -> None:
+    """Finding H: a matching `idempotency_key` alone is not enough -- the
+    referenced call must actually BE an M04 representation-adjudication
+    call."""
+    problem = _really_tied_problem()
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, UUID(int=9005))
+
+    ref = ArtifactRef(artifact_id=UUID(int=1), sha256="a" * 64)
+    state = apply_payload(
+        state, ArtifactRegistered(artifact=ref, media_type="application/json", byte_size=1)
+    )
+    unrelated_key = "b" * 64
+    unrelated_call = _real_call_record(
+        idempotency_key=unrelated_key, module_id="M03", operation="formalise", ref=ref
+    )
+    state = apply_payload(state, ModelCallRecorded(record=unrelated_call))
+
+    plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+    assert plan.tie_triggered
+    forged = plan.model_copy(
+        update={"adjudication_record_ref": unrelated_key, "plan_hash": "0" * 64}
+    )
+    forged = forged.model_copy(update={"plan_hash": bind_hash(forged, exclude={"plan_hash"})})
+    with pytest.raises(ValueError, match="not an M04 representation adjudication call"):
+        apply_payload(state, RepresentationPlanSelectedV2(plan=forged))
+
+
+@pytest.mark.unit
+def test_finding_i_fails_closed_without_artifact_reader_unless_trust_flag_set() -> None:
+    """Finding I: without an `artifact_reader`, the artifact's
+    `content_hash`/`determinism_hash` used to be silently accepted
+    unverified. That must now be a hard, fail-closed error unless the
+    reducer is explicitly constructed with `trust_unverified_artifacts=True`."""
+    problem = _not_tied_problem()
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    store: dict[str, bytes] = {}
+
+    reducer = RunReducer()  # no artifact_reader, no trust flag
+    _reducer, state, apply_payload = _direct_state_with_problem(problem, UUID(int=9006), reducer)
+    plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+    state = apply_payload(state, RepresentationPlanSelectedV2(plan=plan))
+    artifact = RepresentationSelector().build_bound(
+        plan.views[0], problem, plan, bytes_writer(store)
+    )
+    state = apply_payload(
+        state,
+        ArtifactRegistered(
+            artifact=artifact.physical_artifact_ref,
+            media_type="application/json",
+            byte_size=len(store[artifact.physical_artifact_ref.sha256]),
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot be independently verified"):
+        apply_payload(state, RepresentationArtifactCompiledV2(artifact=artifact))
+
+    trusting_reducer = RunReducer(trust_unverified_artifacts=True)
+    trusting_run_id = UUID(int=9007)
+    _r2, trusting_state, trusting_apply = _direct_state_with_problem(
+        problem, trusting_run_id, trusting_reducer
+    )
+    plan2 = RepresentationSelector().select_bound(
+        problem, signature, budget, trusting_state.version
+    )
+    trusting_state = trusting_apply(trusting_state, RepresentationPlanSelectedV2(plan=plan2))
+    artifact2 = RepresentationSelector().build_bound(
+        plan2.views[0], problem, plan2, bytes_writer(store)
+    )
+    trusting_state = trusting_apply(
+        trusting_state,
+        ArtifactRegistered(
+            artifact=artifact2.physical_artifact_ref,
+            media_type="application/json",
+            byte_size=len(store[artifact2.physical_artifact_ref.sha256]),
+        ),
+    )
+    final_state = trusting_apply(
+        trusting_state, RepresentationArtifactCompiledV2(artifact=artifact2)
+    )
+    assert final_state.representation_artifacts_v2 == (artifact2,)
