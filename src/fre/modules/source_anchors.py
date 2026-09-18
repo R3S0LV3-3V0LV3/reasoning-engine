@@ -2,11 +2,22 @@
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
-from fre.domain.common import ArtifactRef, ObjectRef
-from fre.domain.semantic import SourceAnchor, SourceKind
+from fre.domain.common import ArtifactRef, JsonValue, ObjectRef
+from fre.domain.semantic import (
+    SourceAnchor,
+    SourceKind,
+    SupportArtifactRef,
+    SupportLedgerNodeRef,
+    SupportProblemItemRef,
+    SupportRef,
+)
 from fre.domain.task import TaskEnvelope
+
+if TYPE_CHECKING:
+    from fre.prompts.schemas import ProblemItemProposal
 
 
 class InvalidSourceAnchor(ValueError):
@@ -176,3 +187,238 @@ def validate_source_anchor(
 
     value = _resolve_pointer(envelope.model_dump(mode="json"), anchor.selector)
     _validate_resolved_value(anchor, value)
+
+
+# C06 remediation (F03, F06): resolve every `SupportRef` a proposal item
+# claims *before* that item (or anything derived from it -- a ProblemSpec
+# entry, a ledger node) is admitted. This is the fix for the F03 headline
+# case -- a non-empty but wholly fictitious support identifier -- and for the
+# F06 bypass, where the removed `ProblemFormaliser.ledger_events` public
+# entry point never validated anchors or support at all.
+#
+# `ProblemItemRef`s form a directed graph over the *same* proposal (source
+# item -> the item it cites as support). `validate_support_graph` builds the
+# complete proposal-item index up front (objective #2: "build the complete
+# proposal-item index before validation runs") and resolves every item's
+# `support` tuple against it in one pass, so a forward reference, a
+# same-proposal cycle, or a reference to a RELATION pseudo-item (never a
+# valid evidentiary target) is caught deterministically regardless of
+# declaration order.
+class UnresolvedSupportReference(InvalidSourceAnchor):
+    """A `SupportRef` does not resolve to any admissible target."""
+
+
+class SelfSupportReference(InvalidSourceAnchor):
+    """An item claims itself, directly or transitively, as its own support."""
+
+
+class UnauthorizedArtifactReference(InvalidSourceAnchor):
+    """A `SupportRef` names an artifact that was never registered/authorized."""
+
+
+class DanglingLedgerSupportReference(InvalidSourceAnchor):
+    """A `SupportRef` names a ledger revision absent from the known prior ledger."""
+
+
+class IncompatibleSupportReferenceKind(InvalidSourceAnchor):
+    """A `SupportRef` targets an item whose kind cannot serve as evidence."""
+
+
+def validate_support_graph(
+    items: "Sequence[ProblemItemProposal]",
+    *,
+    envelope: TaskEnvelope,
+    available_artifacts: frozenset[str] = frozenset(),
+    known_ledger_refs: frozenset[tuple[UUID, int]] = frozenset(),
+) -> None:
+    """Resolve every `support` reference across `items` before admission.
+
+    Rejects (see the C06 validation strategy): a missing or malformed target,
+    self-support (direct or transitive, i.e. a same-proposal support cycle),
+    an unauthorized artifact, an unknown prior-ledger revision, and a
+    same-proposal reference to a `RELATION` pseudo-item (relations describe
+    edges between items, never evidence in their own right).
+    """
+    index = {item.id: item for item in items}
+    for item in items:
+        for ref in item.support:
+            _validate_single_support_ref(
+                ref,
+                origin_item=item,
+                index=index,
+                envelope=envelope,
+                available_artifacts=available_artifacts,
+                known_ledger_refs=known_ledger_refs,
+            )
+    _reject_support_cycles(items)
+
+
+def _validate_single_support_ref(
+    ref: SupportRef,
+    *,
+    origin_item: "ProblemItemProposal",
+    index: "Mapping[str, ProblemItemProposal]",
+    envelope: TaskEnvelope,
+    available_artifacts: frozenset[str],
+    known_ledger_refs: frozenset[tuple[UUID, int]],
+) -> None:
+    if isinstance(ref, SourceAnchor):
+        validate_source_anchor(ref, envelope, available_artifacts)
+        return
+    if isinstance(ref, SupportProblemItemRef):
+        if ref.item_id == origin_item.id:
+            raise SelfSupportReference(
+                f"item '{origin_item.id}' cannot cite itself as its own support"
+            )
+        target = index.get(ref.item_id)
+        if target is None:
+            raise UnresolvedSupportReference(
+                f"item '{origin_item.id}' cites unknown support item '{ref.item_id}'"
+            )
+        if target.kind == "RELATION":
+            raise IncompatibleSupportReferenceKind(
+                f"item '{origin_item.id}' cites a RELATION item as evidentiary support; "
+                "relations describe edges between items, not evidence"
+            )
+        return
+    if isinstance(ref, SupportArtifactRef):
+        _check_artifact_support_ref(ref, available_artifacts, origin_item.id)
+        return
+    if isinstance(ref, SupportLedgerNodeRef):
+        _check_ledger_support_ref(ref, known_ledger_refs, origin_item.id)
+        return
+    raise UnresolvedSupportReference(f"item '{origin_item.id}' carries an unrecognised SupportRef")
+
+
+def _check_artifact_support_ref(
+    ref: "SupportArtifactRef", available_artifacts: frozenset[str], context: str
+) -> None:
+    """Shared envelope-independent `SupportArtifactRef` check (finding G):
+    used by both `_validate_single_support_ref` (formalise-time, full
+    proposal context) and `resolve_support_ref_at_reduction` (reducer-time,
+    no envelope/index in scope) so the two never independently drift."""
+    if ref.sha256 not in available_artifacts:
+        raise UnauthorizedArtifactReference(
+            f"'{context}' cites an artifact that is not registered in this run"
+        )
+
+
+def _check_ledger_support_ref(
+    ref: "SupportLedgerNodeRef",
+    known_ledger_refs: frozenset[tuple[UUID, int]],
+    context: str,
+) -> None:
+    """Shared envelope-independent `SupportLedgerNodeRef` check (finding G);
+    see `_check_artifact_support_ref` docstring."""
+    if (ref.node_id, ref.revision) not in known_ledger_refs:
+        raise DanglingLedgerSupportReference(
+            f"'{context}' cites a ledger revision absent from the known prior ledger"
+        )
+
+
+def validate_anchor_artifact_registration(
+    anchor: SourceAnchor, available_artifacts: frozenset[str]
+) -> None:
+    """Reducer-safe, envelope-independent re-check of an `ARTIFACT`-kind
+    anchor (C06 remediation, findings B/E/G): the only part of anchor
+    resolution that does not require the originating `TaskEnvelope`.
+    `TASK_FIELD`/`TASK_TEXT`-kind anchors cannot be re-resolved without the
+    envelope -- that remains `formalise()`-only, exactly like a
+    `SourceAnchor`-kind support reference (see `_validate_single_support_ref`
+    below) -- but their *structural* shape (a non-empty, correctly ordered
+    span; a well-formed excerpt hash) is already guaranteed the moment the
+    anchor is parsed back into the typed `SourceAnchor` model, via its own
+    `valid_range` validator and field constraints, so there is nothing left
+    to check for those two kinds beyond successful typed parsing.
+    """
+    if anchor.source_kind is not SourceKind.ARTIFACT:
+        return
+    if not isinstance(anchor.source_ref, ArtifactRef) or anchor.source_ref.sha256 not in (
+        available_artifacts
+    ):
+        raise UnauthorizedArtifactReference(
+            "anchor cites an artifact that is not registered in this run"
+        )
+    if anchor.selector or anchor.char_start is not None or anchor.excerpt_hash is not None:
+        raise InvalidSourceAnchor("opaque artifacts cannot have selectors, spans, or excerpts")
+
+
+def resolve_support_ref_at_reduction(
+    ref: SupportRef,
+    *,
+    own_id: str | None,
+    known_m03_content_by_id: Mapping[str, Mapping[str, "JsonValue"]],
+    known_ledger_revisions: frozenset[tuple[UUID, int]],
+    available_artifacts: frozenset[str],
+) -> None:
+    """Reducer-safe re-resolution of one `SupportRef`, sharing exactly the
+    envelope-independent resolution logic `_validate_single_support_ref` uses
+    (C06 remediation, finding G): both call sites resolve
+    `SourceAnchorRef`/`SupportArtifactRef`/`SupportLedgerNodeRef` identically,
+    and `SupportProblemItemRef` the same way modulo what each call site has
+    available to resolve it against -- `formalise()` has the complete,
+    same-proposal item index; the reducer, at `LedgerNodeAdded`-application
+    time, has only the ledger nodes already applied, so
+    `known_m03_content_by_id` here must already be pre-scoped by the caller
+    to the *same batch/proposal* as the citing node (finding A) -- resolving
+    against arbitrary prior-history M03 ids under a matching `id` string,
+    across unrelated proposals, is exactly the exploit this closes.
+
+    Extends the RELATION-kind incompatibility check to the reducer for the
+    first time (finding C): a `SupportProblemItemRef` naming a `RELATION`
+    pseudo-item is rejected here too, not only in `formalise()`. This is a
+    structural (kind-based) relevance safeguard only -- it cannot and does
+    not verify that a resolved target's *content* actually substantiates the
+    citing claim; full semantic relevance is not mechanically verifiable and
+    remains a residual, documented limitation.
+    """
+    if isinstance(ref, SourceAnchor):
+        validate_anchor_artifact_registration(ref, available_artifacts)
+        return
+    if isinstance(ref, SupportProblemItemRef):
+        if own_id is not None and ref.item_id == own_id:
+            raise SelfSupportReference(f"item '{own_id}' cannot cite itself as its own support")
+        target_content = known_m03_content_by_id.get(ref.item_id)
+        if target_content is None:
+            raise UnresolvedSupportReference(
+                f"M03 ledger node cites a same-proposal item '{ref.item_id}' that has not been "
+                "admitted to the ledger yet"
+            )
+        if target_content.get("kind") == "RELATION":
+            raise IncompatibleSupportReferenceKind(
+                f"M03 ledger node cites a RELATION item '{ref.item_id}' as evidentiary support; "
+                "relations describe edges between items, not evidence"
+            )
+        return
+    if isinstance(ref, SupportArtifactRef):
+        _check_artifact_support_ref(ref, available_artifacts, "M03 ledger node")
+        return
+    if isinstance(ref, SupportLedgerNodeRef):
+        _check_ledger_support_ref(ref, known_ledger_revisions, "M03 ledger node")
+        return
+    raise UnresolvedSupportReference("M03 ledger node carries an unrecognised support reference")
+
+
+def _reject_support_cycles(items: "Sequence[ProblemItemProposal]") -> None:
+    edges: dict[str, tuple[str, ...]] = {
+        item.id: tuple(
+            ref.item_id for ref in item.support if isinstance(ref, SupportProblemItemRef)
+        )
+        for item in items
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            raise SelfSupportReference(f"support graph contains a prohibited cycle at '{node_id}'")
+        if node_id in visited or node_id not in edges:
+            return
+        visiting.add(node_id)
+        for target_id in edges[node_id]:
+            visit(target_id)
+        visiting.discard(node_id)
+        visited.add(node_id)
+
+    for item_id in edges:
+        visit(item_id)
