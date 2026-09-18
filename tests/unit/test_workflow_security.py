@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from scripts.check_workflow_security import validate_workflow
+from scripts.check_workflow_security import validate_workflow, validate_workflow_inventory
 
 
 def _workflow(tmp_path: Path, body: str, name: str = "workflow.yml") -> Path:
@@ -373,6 +373,37 @@ jobs:
     )
 
     assert validate_workflow(path) == []
+
+
+def test_rejects_missing_gate_from_protected_workflow_shape(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+name: CI
+on: pull_request
+permissions: read-all
+jobs:
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {persist-credentials: false}
+""",
+        name="ci.yml",
+    )
+
+    assert any(
+        "required protected trigger/job/step shape" in item for item in validate_workflow(path)
+    )
+
+
+def test_rejects_missing_or_extra_workflow_files(tmp_path: Path) -> None:
+    workflows = (tmp_path / "ci.yml", tmp_path / "unapproved.yml")
+
+    failures = validate_workflow_inventory(workflows)
+    assert "missing protected workflow: codeql.yml" in failures
+    assert "unapproved workflow file: unapproved.yml" in failures
 
 
 def test_rejects_untrusted_pinned_actions_and_action_inputs(tmp_path: Path) -> None:

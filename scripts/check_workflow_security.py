@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shlex
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -88,6 +90,13 @@ ALLOWED_CONDITIONAL_STEPS = frozenset(
         ),
     }
 )
+REQUIRED_WORKFLOW_DOCUMENT_HASHES = {
+    # These are hashes of the parsed YAML documents, not the source text. Comments and
+    # formatting may change, but triggers, jobs, steps, controls, and inputs may not be
+    # removed, added, or altered without an explicit policy review and hash update.
+    "ci.yml": "e8ff9bb3041e05fc455617d89eb2701073748f2887e94d11ef9ee5bacca657e6",
+    "codeql.yml": "ac32728591b1e37d0140c7c29acd80d6793973993f435c48400a3ec9fe984b91",
+}
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -108,6 +117,21 @@ def _trigger_names(value: object) -> set[str]:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return {str(item) for item in value}
     return set()
+
+
+def _workflow_document_hash(document: Mapping[object, object]) -> str:
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_workflow_inventory(workflows: Sequence[Path]) -> list[str]:
+    found = {path.name for path in workflows}
+    required = set(REQUIRED_WORKFLOW_DOCUMENT_HASHES)
+    failures = [
+        *(f"missing protected workflow: {name}" for name in sorted(required - found)),
+        *(f"unapproved workflow file: {name}" for name in sorted(found - required)),
+    ]
+    return failures
 
 
 def _permission_failures(value: object, location: str) -> list[str]:
@@ -241,6 +265,11 @@ def validate_workflow(path: Path) -> list[str]:
         return [f"{path}: workflow must be a YAML mapping"]
 
     failures: list[str] = []
+    expected_hash = REQUIRED_WORKFLOW_DOCUMENT_HASHES.get(path.name)
+    if expected_hash is not None and _workflow_document_hash(document) != expected_hash:
+        failures.append(
+            f"{path}: workflow does not match its required protected trigger/job/step shape"
+        )
     triggers = _trigger_names(document.get("on"))
     for trigger in sorted(triggers & PROHIBITED_TRIGGERS):
         failures.append(f"{path}: {trigger} is prohibited")
@@ -315,7 +344,10 @@ def main() -> None:
     if not workflows:
         raise SystemExit("no GitHub workflows found")
 
-    failures = [failure for workflow in workflows for failure in validate_workflow(workflow)]
+    failures = [
+        *validate_workflow_inventory(workflows),
+        *(failure for workflow in workflows for failure in validate_workflow(workflow)),
+    ]
     if failures:
         raise SystemExit("\n".join(failures))
 
