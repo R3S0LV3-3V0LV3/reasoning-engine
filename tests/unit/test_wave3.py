@@ -41,6 +41,7 @@ from fre.runtime.events import (
     LedgerNodeAdded,
     ProblemBlockerRecorded,
     ProblemContradictionRecorded,
+    ProblemFormalised,
 )
 
 
@@ -311,25 +312,38 @@ def test_m03_contradiction_maps_to_frozen_m09_events() -> None:
             }
         )
     )
-    events = ProblemFormaliser().ledger_events(
+    # C06 remediation (F06): `ledger_events()` is no longer a public entry
+    # point. The only way to obtain M03 ledger events is `canonical_events`,
+    # which always resolves anchors/support via `formalise` first and
+    # prepends the resulting `ProblemFormalised` event.
+    events = ProblemFormaliser().canonical_events(
+        envelope(),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 10)),
     )
-    assert len(events) == 5
-    edge = events[2]
+    assert len(events) == 6
+    assert isinstance(events[0], ProblemFormalised)
+    edge = events[3]
     assert isinstance(edge, LedgerEdgeAdded)
     assert edge.edge.relation is LedgerRelation.CONTRADICTS
-    assert isinstance(events[3], ProblemContradictionRecorded)
-    assert isinstance(events[4], ProblemBlockerRecorded)
-    left_node = events[0]
+    assert isinstance(events[4], ProblemContradictionRecorded)
+    assert isinstance(events[5], ProblemBlockerRecorded)
+    left_node = events[1]
     assert isinstance(left_node, LedgerNodeAdded)
     assert left_node.node.epistemic_status is EpistemicStatus.CONTESTED
-    assert events[4].blocker.ledger_ref == left_node.node.ref
+    assert events[5].blocker.ledger_ref == left_node.node.ref
 
 
 @pytest.mark.unit
 def test_m03_material_contradiction_contests_supported_endpoints() -> None:
+    left_anchor = SourceAnchor(
+        source_kind=SourceKind.TASK_FIELD,
+        source_ref=ObjectRef(
+            object_type="TaskEnvelope", object_id="00000000-0000-0000-0000-000000000001"
+        ),
+        selector="/explicit_constraints/0",
+    )
     proposal = ProblemFormalisationOutput.model_validate(
         {
             "items": (
@@ -338,18 +352,23 @@ def test_m03_material_contradiction_contests_supported_endpoints() -> None:
                     "kind": "UNKNOWN",
                     "description": "value is A",
                     "origin": EpistemicOriginLabel.EXPLICIT_INPUT,
+                    "anchors": (left_anchor,),
                 },
                 {
                     "id": "right",
                     "kind": "UNKNOWN",
                     "description": "value is B",
                     "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "derived from the explicit constraint",
+                    "support": ({"item_id": "left"},),
                 },
                 {
                     "id": "conflict",
                     "kind": "RELATION",
                     "description": "material conflict",
                     "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "both endpoints observed",
+                    "support": ({"item_id": "left"},),
                     "attributes": {
                         "source_id": "left",
                         "target_id": "right",
@@ -360,7 +379,11 @@ def test_m03_material_contradiction_contests_supported_endpoints() -> None:
             )
         }
     )
-    events = ProblemFormaliser().ledger_events(
+    # C06 remediation (F06): route through `canonical_events`, the only
+    # remaining public path to M03 ledger events -- see the note on the
+    # previous call site.
+    events = ProblemFormaliser().canonical_events(
+        envelope(),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(40, 50)),
@@ -555,14 +578,19 @@ def test_m03_fallback_provenance_objectives_and_unavailable_acceptance_blocker()
             )
         }
     )
-    problem = ProblemFormaliser().formalise(task, proposal)
-    assert problem.objectives[0].priority == 1
-    assert problem.objectives[0].evaluator_ref == "evaluator:cost-v1"
-    events = ProblemFormaliser().ledger_events(
+    # C06 remediation (F06): route through `canonical_events`, the only
+    # remaining public path to M03 ledger events -- see the note on earlier
+    # call sites in this file.
+    events = ProblemFormaliser().canonical_events(
+        task,
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(20, 40)),
     )
+    formalised = next(item for item in events if isinstance(item, ProblemFormalised))
+    problem = formalised.problem
+    assert problem.objectives[0].priority == 1
+    assert problem.objectives[0].evaluator_ref == "evaluator:cost-v1"
     blocker = next(item for item in events if isinstance(item, ProblemBlockerRecorded))
     assert not blocker.blocker.resolvable
     nodes = (item.node for item in events if isinstance(item, LedgerNodeAdded))
@@ -572,6 +600,12 @@ def test_m03_fallback_provenance_objectives_and_unavailable_acceptance_blocker()
         if isinstance(node.content, dict) and node.content["id"] == "criterion"
     )
     assert blocker.blocker.ledger_ref == criterion_node.ref
+    # C06 remediation (F04): `AcceptanceCriterion.blocker_ref` used to be
+    # always null -- the link only lived in the separate
+    # `ProblemBlockerRecorded` event. `canonical_events` now threads the same
+    # ledger identity back into the immutable `ProblemSpec` it returns.
+    criterion_spec = next(item for item in problem.acceptance_criteria if item.id == "criterion")
+    assert criterion_spec.blocker_ref == criterion_node.ref
 
     duplicate_priorities = proposal.model_copy(
         update={"items": (proposal.items[0], proposal.items[0].model_copy(update={"id": "o2"}))}

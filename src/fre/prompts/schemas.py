@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from fre.domain.common import FrozenModel, JsonValue, canonical_json
-from fre.domain.semantic import EpistemicOriginLabel, SourceAnchor
+from fre.domain.semantic import EpistemicOriginLabel, SourceAnchor, SupportRef
 from fre.domain.task import HorizonClass, Ordinal4, SearchSpaceClass, TaskType
 
 # Resource-exhaustion defence for structured-output schemas. These schemas are
@@ -237,7 +237,11 @@ class ProblemItemProposal(StrictOutput):
     description: str
     origin: EpistemicOriginLabel
     anchors: tuple[SourceAnchor, ...] = ()
+    # Deprecated, decode-only (C06 / F03): a plain string never resolves to
+    # real admissible evidence. New proposals must use `support` instead;
+    # this field is kept only so an already-serialized proposal still decodes.
     supporting_refs: tuple[str, ...] = ()
+    support: tuple[SupportRef, ...] = ()
     basis: str | None = None
     policy_basis: str | None = None
     attributes: dict[str, JsonValue] = Field(default_factory=dict)

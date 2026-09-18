@@ -44,10 +44,69 @@ class EpistemicOriginLabel(StrEnum):
     CONTRADICTED = "CONTRADICTED"
 
 
+# C06 remediation (F03/F06): a typed, resolvable support/provenance reference
+# union. Before this, `supporting_refs` was a plain `tuple[str, ...]` and any
+# non-empty, wholly fictitious identifier satisfied `SUPPORTED_INFERENCE`'s
+# "has support" check -- nothing ever resolved the string against real
+# admissible evidence. Each variant below names a concrete, checkable target
+# that `fre.modules.source_anchors.validate_support_graph` resolves before a
+# proposal item is ever admitted into a `ProblemSpec` or the epistemic ledger:
+#
+# - `SourceAnchorRef` -- an inline `SourceAnchor`, resolved exactly like an
+#   `EXPLICIT_INPUT` anchor (`validate_source_anchor`).
+# - `ProblemItemRef` -- another item in the *same* M03 proposal, resolved
+#   against the complete proposal-item index built before any item is
+#   admitted (never a forward/self reference, never a RELATION item, never
+#   part of a support cycle).
+# - `ArtifactRef` -- a previously registered, content-addressed artifact
+#   (`sha256` must be a member of the caller-supplied `available_artifacts`
+#   set) -- never a bare, unauthenticated string.
+# - `LedgerNodeRef` -- a specific revision already admitted to the epistemic
+#   ledger *before* this formalisation batch (a "prior-ledger" reference),
+#   resolved against the caller-supplied `known_ledger_refs` set.
+#
+# The legacy plain-string `supporting_refs` field below is retained,
+# unenforced, purely as decode-only compatibility: an already-serialized
+# event/snapshot that still carries bare strings continues to decode without
+# error, but no new code path trusts it to prove support -- `validate_origin`
+# requires a non-empty, resolved `support` tuple of this typed union instead.
+#
+# `SourceAnchorRef` is `SourceAnchor` itself (no extra wrapper level): a
+# `SourceAnchor` is already an unambiguous, self-describing target, and
+# pydantic's smart-union resolution distinguishes it from the other three
+# variants structurally (`source_kind`/`source_ref`/`selector` vs.
+# `item_id`/`sha256`/`node_id`+`revision`, each `extra="forbid"`) without
+# needing a `kind` discriminator tag. A tagged wrapper was tried first but
+# pushed `ProblemFormalisationOutput`'s JSON-Schema past
+# `MAX_SCHEMA_NESTING_DEPTH` (a deliberate, unrelated C04 resource-exhaustion
+# bound -- see `fre.prompts.schemas`); this flatter shape keeps the same
+# resolvable semantics within that budget.
+SourceAnchorRef = SourceAnchor
+# Reuses `fre.domain.common.ArtifactRef` (already imported above) directly:
+# it already carries exactly the `sha256` needed to resolve against
+# `available_artifacts`, plus its own `artifact_id`, with no wrapper needed.
+SupportArtifactRef = ArtifactRef
+
+
+class SupportProblemItemRef(FrozenModel):
+    item_id: str = Field(min_length=1)
+
+
+class SupportLedgerNodeRef(FrozenModel):
+    node_id: UUID
+    revision: int = Field(ge=1)
+
+
+SupportRef = SourceAnchorRef | SupportProblemItemRef | SupportArtifactRef | SupportLedgerNodeRef
+
+
 class EpistemicItemProvenance(FrozenModel):
     origin: EpistemicOriginLabel
     anchors: tuple[SourceAnchor, ...] = ()
+    # Deprecated, decode-only (see the module-level note above `SupportRef`):
+    # never populated by new code, never trusted to establish support.
     supporting_refs: tuple[str, ...] = ()
+    support: tuple[SupportRef, ...] = ()
     basis: str | None = None
     policy_basis: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -57,9 +116,11 @@ class EpistemicItemProvenance(FrozenModel):
         if self.origin is EpistemicOriginLabel.EXPLICIT_INPUT and not self.anchors:
             raise ValueError("EXPLICIT_INPUT requires a SourceAnchor")
         if self.origin is EpistemicOriginLabel.SUPPORTED_INFERENCE and (
-            not self.supporting_refs or not self.basis
+            not self.support or not self.basis
         ):
-            raise ValueError("SUPPORTED_INFERENCE requires support and basis")
+            raise ValueError(
+                "SUPPORTED_INFERENCE requires at least one resolved SupportRef and a basis"
+            )
         if self.origin is EpistemicOriginLabel.WORKING_ASSUMPTION and (
             not self.basis or not self.policy_basis
         ):

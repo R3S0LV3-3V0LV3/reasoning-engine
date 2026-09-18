@@ -1,6 +1,6 @@
 """Pure reducer protocol and foundational run reducer."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 from uuid import UUID
 
@@ -179,6 +179,65 @@ class RunState(FrozenModel):
         return canonical_hash(self.snapshot_payload())
 
 
+def _validate_m03_ledger_node_support(
+    state: "RunState", content: "Mapping[str, JsonValue]"
+) -> None:
+    """Re-resolve an M03 ledger node's embedded `support` refs against state
+    already applied earlier in this same reduction (see the long comment on
+    the `LedgerNodeAdded` branch above for why this exists at the reducer
+    level, not only in `ProblemFormaliser`)."""
+    support = content.get("support")
+    if not isinstance(support, list):
+        return
+    own_id = content.get("id")
+    known_nodes = {(str(node.node_id), node.revision) for node in state.ledger.nodes}
+    known_m03_ids = {
+        node.content["id"]
+        for node in state.ledger.nodes
+        if node.producing_module == "M03"
+        and isinstance(node.content, dict)
+        and "id" in node.content
+    }
+    for ref in support:
+        if not isinstance(ref, dict):
+            raise ValueError("M03 ledger node carries a malformed support reference")
+        if "sha256" in ref and "artifact_id" in ref:
+            if ref["sha256"] not in state.artifacts:
+                raise ValueError(
+                    "M03 ledger node cites an artifact that is not registered in this run"
+                )
+        elif "node_id" in ref and "revision" in ref:
+            if (str(ref["node_id"]), ref["revision"]) not in known_nodes:
+                raise ValueError(
+                    "M03 ledger node cites a ledger revision that has not been applied yet"
+                )
+        elif "item_id" in ref:
+            if ref["item_id"] == own_id:
+                raise ValueError("M03 ledger node cites itself as its own support")
+            if ref["item_id"] not in known_m03_ids:
+                raise ValueError(
+                    "M03 ledger node cites a same-proposal item that has not been admitted "
+                    "to the ledger yet"
+                )
+        elif "source_kind" in ref:
+            # A `SourceAnchor`'s resolution against the originating
+            # `TaskEnvelope` cannot be re-checked here -- the reducer has no
+            # envelope in scope, only the ledger/artifact/budget projections
+            # built up by prior events. An `ARTIFACT`-kind anchor still
+            # names a concrete, checkable target though.
+            source_ref = ref.get("source_ref")
+            if (
+                ref.get("source_kind") == "ARTIFACT"
+                and isinstance(source_ref, dict)
+                and source_ref.get("sha256") not in state.artifacts
+            ):
+                raise ValueError(
+                    "M03 ledger node cites an anchor artifact that is not registered in this run"
+                )
+        else:
+            raise ValueError("M03 ledger node carries an unrecognised support reference shape")
+
+
 class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
@@ -229,6 +288,29 @@ class RunReducer:
         elif isinstance(payload, TestValueSet):
             changes["values"] = {**state.values, payload.key: payload.value}
         elif isinstance(payload, LedgerNodeAdded):
+            # C06 remediation (F06, lesson learned from C04/C05): the
+            # `ProblemFormaliser.ledger_events()` bypass that let a caller
+            # emit M03 ledger nodes with unvalidated anchors/support was
+            # closed by making it private -- but per the C04/C05 lesson, an
+            # atomicity/provenance invariant enforced only by a wrapper's
+            # calling convention is not actually closed, only hidden, if a
+            # *different* caller can still build the same raw events and
+            # hand them straight to `RunReducer.apply` (directly, or via a
+            # store that skips `canonical_events`). This check makes that
+            # bypass structurally impossible for M03 nodes specifically: it
+            # re-resolves every `support` reference embedded in the node's
+            # own `content` against state *already applied earlier in this
+            # same reduction*, exactly mirroring how `TaskClassified`
+            # (finding #2, C05) and `ModelCallRecordedV2` (finding #2, C04)
+            # already look backward at sequentially-built state rather than
+            # trusting the payload's own shape. It cannot re-validate a
+            # `SourceAnchor`'s resolution against the originating
+            # `TaskEnvelope` (the reducer has no envelope in scope), so that
+            # one check remains `formalise`'s alone -- but a dangling
+            # ledger/artifact reference or a same-proposal item reference to
+            # a node that was never actually admitted is caught here too.
+            if payload.node.producing_module == "M03" and isinstance(payload.node.content, dict):
+                _validate_m03_ledger_node_support(state, payload.node.content)
             changes["ledger"] = EpistemicLedger().append_node(state.ledger, payload.node)
         elif isinstance(payload, LedgerEdgeAdded):
             changes["ledger"] = EpistemicLedger().append_edge(state.ledger, payload.edge)
