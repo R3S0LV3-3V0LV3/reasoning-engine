@@ -104,6 +104,12 @@ class StructuredModelRequest(FrozenModel):
     messages: tuple[dict[str, JsonValue], ...]
     output_schema_id: str
     output_schema_version: str
+    # Binds the request to the exact canonical schema bytes the caller validated
+    # against, not merely a caller-supplied id/version pair. A registry lookup by
+    # id+version alone would let a forged or stale request claim compatibility
+    # with a schema whose bytes have since diverged; the hash makes that
+    # divergence detectable before the provider is ever invoked.
+    output_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     max_input_tokens: int = Field(ge=0)
     max_output_tokens: int = Field(ge=0)
     idempotency_key: str = Field(pattern=r"^[0-9a-f]{64}$")
