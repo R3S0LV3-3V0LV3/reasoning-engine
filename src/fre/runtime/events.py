@@ -140,6 +140,18 @@ class TaskClassified(FrozenModel):
     record: ClassificationRecord
 
 
+class TaskPreliminarilyClassified(FrozenModel):
+    """Deterministic-only bootstrap signature used solely to seed the M02 bootstrap budget.
+
+    Distinct from `TaskClassified`: this signature is never itself the
+    authoritative classification -- it is always superseded, in the same
+    atomic batch, by a `TaskClassified` built from the full (deterministic +
+    model) proposal.
+    """
+
+    signature: TaskSignature
+
+
 class ClassificationDiagnosticRecorded(FrozenModel):
     code: str
     message: str
@@ -191,6 +203,7 @@ EventPayload = (
     | ModelCallRecordedV2
     | ModelCallFailedV2
     | TaskClassified
+    | TaskPreliminarilyClassified
     | ClassificationDiagnosticRecorded
     | ProblemFormalised
     | ProblemBlockerRecorded
@@ -223,6 +236,7 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         ModelCallRecorded,
         ModelCallFailed,
         TaskClassified,
+        TaskPreliminarilyClassified,
         ClassificationDiagnosticRecorded,
         ProblemFormalised,
         ProblemBlockerRecorded,

@@ -95,40 +95,65 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         (engine.make_event(handle.run_id, allocated, module_id="M02"),),
     )
 
+    # C05 remediation (finding #7): a TASK_TEXT anchor into the task's own
+    # narrative is plausible support for every classification axis below
+    # (unlike `/requested_output`, which is only ever relevant to
+    # `output_form` -- a deterministic, non-model-proposed axis -- and is now
+    # rejected as irrelevant for any of these material dimensions).
+    fixture_anchor: JsonValue = {
+        "source_kind": "TASK_TEXT",
+        "source_ref": {"object_type": "TaskEnvelope", "object_id": str(task.task_id)},
+        "selector": "/text",
+        "char_start": 0,
+        "char_end": len(task.text),
+    }
     valid: dict[str, JsonValue] = {
-        "task_type": "DECISION",
+        "task_type": {
+            "estimate": "DECISION",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
         "consequence": {
             "estimate": "LOW",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "reversibility": {
             "estimate": "HIGH",
             "confidence": 0.9,
             "conservative_upper": "HIGH",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "ambiguity": {
             "estimate": "MEDIUM",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "evidence_scarcity": {
             "estimate": "MEDIUM",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
-        "search_space": "BOUNDED",
-        "search_space_confidence": 0.9,
-        "horizon": "SHORT",
-        "horizon_confidence": 0.9,
+        "search_space": {
+            "estimate": "BOUNDED",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
+        "horizon": {
+            "estimate": "SHORT",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
     }
     model = QueueModel(
         [
@@ -175,7 +200,15 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         proposal,
         model_call_key=execution.record.idempotency_key if execution.record else None,
     )
-    payloads = (TaskClassified(signature=signature, record=classification_record),)
+    # C05 remediation (finding #2): `RunReducer.apply` now requires every
+    # MODEL-basis dimension in a `TaskClassified` to have a matching M09
+    # provenance node already applied before it -- so this hand-assembled
+    # batch must include that provenance too, exactly as
+    # `TaskClassifier.canonical_events` does, and in the same order.
+    provenance = TaskClassifier().provenance_events(
+        classification_record, created_at=clock.now(), uuids=uuid_factory
+    )
+    payloads = (*provenance, TaskClassified(signature=signature, record=classification_record))
     state = engine.inspect(handle.run_id)
     events = tuple(
         engine.make_event(handle.run_id, payload, module_id="semantic-runtime")
