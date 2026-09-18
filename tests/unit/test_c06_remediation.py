@@ -36,7 +36,13 @@ from fre.modules.source_anchors import (
     UnauthorizedArtifactReference,
 )
 from fre.prompts.schemas import ProblemFormalisationOutput
-from fre.runtime.events import ArtifactRegistered, LedgerNodeAdded, ProblemBlockerRecorded
+from fre.runtime.events import (
+    ArtifactRegistered,
+    LedgerNodeAdded,
+    ProblemBlockerRecorded,
+    StoredEvent,
+    event_wire_identity,
+)
 from fre.runtime.reducer import RunReducer
 
 
@@ -355,6 +361,14 @@ def test_material_unresolved_unknown_produces_blocker_non_material_does_not() ->
                     "description": "does not affect the decision",
                     "origin": EpistemicOriginLabel.UNRESOLVED,
                     "attributes": {"material": False},
+                    # Finding D (C06 remediation, round 2): a self-reported
+                    # LOW-materiality claim is honoured only when corroborated
+                    # by at least one independently-resolvable support
+                    # reference -- without one it is always treated as
+                    # material regardless of the claim (see
+                    # `test_self_reported_low_materiality_without_support_is_still_material`
+                    # below for the corroboration-free case).
+                    "support": ({"item_id": "material-gap"},),
                 },
             )
         }
@@ -631,3 +645,491 @@ def test_reducer_apply_accepts_m03_ledger_node_once_artifact_is_registered() -> 
     admitted_content = state.ledger.nodes[0].content
     assert isinstance(admitted_content, dict)
     assert admitted_content["id"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# C06 remediation, round 2: independent-review findings A-G.
+# ---------------------------------------------------------------------------
+
+
+def _stored_event(payload: object, run_id: UUID, sequence: int) -> StoredEvent:
+    """Shared helper for the hand-built `RunReducer.apply` forgery tests
+    below (mirrors the local `_stored` closures already used above)."""
+    event_type, schema_version = event_wire_identity(payload)  # type: ignore[arg-type]
+    return StoredEvent(
+        event_id=UUID(int=sequence + 1000),
+        run_id=run_id,
+        event_type=event_type,
+        action_id=UUID(int=sequence + 2000),
+        module_id="test",
+        schema_version=schema_version,
+        module_version="1.0",
+        input_hash=hashlib.sha256(b"noop").hexdigest(),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        sequence=sequence,
+        payload=payload.model_dump(mode="json"),  # type: ignore[attr-defined]
+    )
+
+
+@pytest.mark.unit
+def test_reducer_rejects_cross_batch_same_proposal_item_reference() -> None:
+    """Finding A (P0, empirically demonstrated exploitable): a hand-built
+    `LedgerNodeAdded` citing an item-id from an unrelated, already-committed
+    EARLIER M03 batch/proposal must be REJECTED by the reducer -- exactly as
+    the same content is, and always was, rejected by
+    `ProblemFormaliser.formalise()` (whose `index` is scoped to the current
+    proposal only). Before this fix, `known_m03_ids` was built from the
+    ENTIRE ledger's M03 history with no batch scoping at all, so this exact
+    forgery was silently ACCEPTED."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    # An unrelated, already-committed earlier batch contributes "shared-id".
+    earlier_batch_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.UNKNOWN,
+        content={
+            "batch_id": "batch-1",
+            "id": "shared-id",
+            "kind": "UNKNOWN",
+            "description": "an unrelated, already-committed item",
+            "origin": "UNRESOLVED",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.UNRESOLVED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    state = reducer.apply(state, _stored_event(LedgerNodeAdded(node=earlier_batch_node), run_id, 2))
+
+    # A DIFFERENT batch/proposal (its own batch_id) forges a citation of
+    # "shared-id" as if it were a same-proposal support reference.
+    forged_node = make_node(
+        node_id=UUID(int=3001),
+        revision=1,
+        node_type=LedgerNodeType.INFERENCE,
+        content={
+            "batch_id": "batch-2",
+            "id": "citing",
+            "kind": "UNKNOWN",
+            "description": "cites an unrelated batch's item as support",
+            "origin": "SUPPORTED_INFERENCE",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [{"item_id": "shared-id"}],
+            "basis": "forged cross-batch citation",
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.PROVISIONAL,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4001),
+        module_id="M03",
+    )
+    with pytest.raises(ValueError, match="not been admitted to the ledger yet"):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 3))
+
+    # Same cross-proposal citation, through the real entry point: always
+    # rejected, both before and after this fix.
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "citing",
+                    "kind": "UNKNOWN",
+                    "description": "cites an item from a different proposal",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "forged cross-batch citation",
+                    "support": ({"item_id": "shared-id"},),
+                },
+            )
+        }
+    )
+    with pytest.raises(InvalidSourceAnchor):
+        ProblemFormaliser().formalise(envelope(), proposal)
+
+
+@pytest.mark.unit
+def test_reducer_rejects_explicit_input_node_with_unregistered_artifact_anchor() -> None:
+    """Finding B (P0, empirically demonstrated exploitable):
+    `EpistemicItemProvenance.anchors` (mandatory for EXPLICIT_INPUT origin)
+    was never re-checked by the reducer at all -- only `content["support"]`
+    was inspected. Forge an EXPLICIT_INPUT node whose sole anchor is an
+    ARTIFACT-kind anchor pointing at an artifact nobody ever registered."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    forged_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.FACT,
+        content={
+            "batch_id": "batch-1",
+            "id": "forged-fact",
+            "kind": "UNKNOWN",
+            "description": "claims explicit input from an unregistered artifact",
+            "origin": "EXPLICIT_INPUT",
+            "anchors": [
+                {
+                    "source_kind": "ARTIFACT",
+                    "source_ref": {"artifact_id": str(UUID(int=9)), "sha256": "e" * 64},
+                    "selector": "",
+                }
+            ],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.SUPPORTED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    with pytest.raises(ValueError, match="artifact that is not registered"):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 2))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_explicit_input_node_with_no_anchors_at_all() -> None:
+    """Finding B, second half: EXPLICIT_INPUT with an empty `anchors` list is
+    just as forged as one with an unregistered artifact -- both must be
+    rejected at the reducer, not only by `EpistemicItemProvenance`'s own
+    pydantic validator (which a hand-built dict content bypasses entirely)."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    forged_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.FACT,
+        content={
+            "batch_id": "batch-1",
+            "id": "forged-fact",
+            "kind": "UNKNOWN",
+            "description": "claims explicit input with no anchor at all",
+            "origin": "EXPLICIT_INPUT",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.SUPPORTED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    with pytest.raises(ValueError, match="EXPLICIT_INPUT origin without any anchor"):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 2))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_support_citing_a_relation_item() -> None:
+    """Finding C: a minimal, kind-based relevance safeguard, extended to the
+    reducer for the first time -- a `SupportProblemItemRef` naming a
+    `RELATION`-kind target (relations describe edges between items, never
+    evidence in their own right) is rejected here too, not only in
+    `formalise()`. This cannot and does not verify semantic relevance of the
+    target's actual content -- only that its structural kind is even
+    evidentially eligible."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    relation_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.UNKNOWN,
+        content={
+            "batch_id": "batch-1",
+            "id": "rel",
+            "kind": "RELATION",
+            "description": "a depends on b",
+            "origin": "UNRESOLVED",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {"source_id": "a", "target_id": "b", "relation_kind": "DEPENDS_ON"},
+        },
+        status=EpistemicStatus.UNRESOLVED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    state = reducer.apply(state, _stored_event(LedgerNodeAdded(node=relation_node), run_id, 2))
+
+    forged_node = make_node(
+        node_id=UUID(int=3001),
+        revision=1,
+        node_type=LedgerNodeType.INFERENCE,
+        content={
+            "batch_id": "batch-1",
+            "id": "citing",
+            "kind": "UNKNOWN",
+            "description": "cites a relation pseudo-item as evidence",
+            "origin": "SUPPORTED_INFERENCE",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [{"item_id": "rel"}],
+            "basis": "forged",
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.PROVISIONAL,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4001),
+        module_id="M03",
+    )
+    with pytest.raises(IncompatibleSupportReferenceKind):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 3))
+
+
+@pytest.mark.unit
+def test_self_reported_low_materiality_without_support_is_still_material() -> None:
+    """Finding D: a self-reported LOW-materiality claim (`decision_relevance`
+    below threshold, or `material=False`) with NO independently-resolvable
+    support must still produce a blocker -- the self-report alone, with
+    nothing to corroborate it, is never trusted (there is no independent,
+    deterministic materiality signal available for M03 items the way M01 has
+    an execution-permission-derived floor)."""
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "unsubstantiated-low",
+                    "kind": "UNKNOWN",
+                    "description": "claims low relevance with nothing to back it",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {"decision_relevance": 0.1},
+                },
+                {
+                    "id": "unsubstantiated-false",
+                    "kind": "UNKNOWN",
+                    "description": "claims non-materiality with nothing to back it",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {"material": False},
+                },
+            )
+        }
+    )
+    events = ProblemFormaliser().canonical_events(
+        envelope(),
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 20)),
+    )
+    blocker_ids = {
+        event.blocker.blocker_id for event in events if isinstance(event, ProblemBlockerRecorded)
+    }
+    assert blocker_ids == {"unknown:unsubstantiated-low", "unknown:unsubstantiated-false"}
+
+
+@pytest.mark.unit
+def test_reducer_rejects_malformed_text_span_inside_a_support_anchor() -> None:
+    """Finding E: a `SourceAnchor`-kind `support` entry with an out-of-order
+    text span (`char_end <= char_start`) is caught by the reducer purely by
+    parsing it back into the typed `SourceAnchor` model, whose own
+    `valid_range` validator enforces this structurally -- without needing
+    the originating `TaskEnvelope` at all. `TASK_FIELD`/`TASK_TEXT`
+    resolution against that envelope remains `formalise()`-only."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    forged_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.INFERENCE,
+        content={
+            "batch_id": "batch-1",
+            "id": "bad-span",
+            "kind": "UNKNOWN",
+            "description": "cites a malformed text span as support",
+            "origin": "SUPPORTED_INFERENCE",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [
+                {
+                    "source_kind": "TASK_TEXT",
+                    "source_ref": {
+                        "object_type": "TaskEnvelope",
+                        "object_id": str(UUID(int=1)),
+                    },
+                    "selector": "/text",
+                    "char_start": 9999,
+                    "char_end": 3,
+                }
+            ],
+            "basis": "forged",
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.PROVISIONAL,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    with pytest.raises(ValueError, match="malformed support reference"):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 2))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_cross_batch_duplicate_item_id() -> None:
+    """Finding F: two independent batches each formalising a distinct item
+    under the SAME `id` string, with different content, is never silently
+    accepted as an unrelated collision. Only a `LedgerNodeRevised` event
+    represents a legitimate revision of an existing item's content (a
+    deliberate design choice, documented on
+    `_validate_m03_ledger_node_provenance`); a second `LedgerNodeAdded`
+    reusing an id already claimed by a different batch is always rejected."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+
+    first_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.UNKNOWN,
+        content={
+            "batch_id": "batch-1",
+            "id": "dup-id",
+            "kind": "UNKNOWN",
+            "description": "the first, genuine item under this id",
+            "origin": "UNRESOLVED",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.UNRESOLVED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    state = reducer.apply(state, _stored_event(LedgerNodeAdded(node=first_node), run_id, 2))
+
+    colliding_node = make_node(
+        node_id=UUID(int=3001),
+        revision=1,
+        node_type=LedgerNodeType.UNKNOWN,
+        content={
+            "batch_id": "batch-2",
+            "id": "dup-id",
+            "kind": "UNKNOWN",
+            "description": "a completely different item that reuses the same id",
+            "origin": "UNRESOLVED",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [],
+            "basis": None,
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.UNRESOLVED,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4001),
+        module_id="M03",
+    )
+    with pytest.raises(ValueError, match="collides with an item already admitted"):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=colliding_node), run_id, 3))
+
+
+@pytest.mark.unit
+def test_reducer_and_formalise_share_identical_support_ref_error_taxonomy() -> None:
+    """Finding G: the reducer's re-validation now parses `support` back into
+    the same typed `SupportRef` models and resolves them through the same
+    envelope-independent helper `formalise()`'s own validation uses
+    (`resolve_support_ref_at_reduction` / `_validate_single_support_ref`
+    both delegate to `_check_artifact_support_ref`), rather than maintaining
+    a second, independently-drifting duck-typed reimplementation. Proven
+    here by both call sites raising the exact SAME exception class for the
+    exact same malformed reference shape."""
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import RunCreated
+
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "x",
+                    "kind": "UNKNOWN",
+                    "description": "artifact-supported",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "from an attachment",
+                    "support": (SupportArtifactRef(artifact_id=UUID(int=99), sha256="a" * 64),),
+                },
+            )
+        }
+    )
+    with pytest.raises(UnauthorizedArtifactReference):
+        ProblemFormaliser().formalise(envelope(), proposal, available_artifacts=frozenset())
+
+    run_id = UUID(int=1)
+    reducer = RunReducer()
+    state = reducer.initial(run_id)
+    state = reducer.apply(state, _stored_event(RunCreated(config_hash="c" * 64), run_id, 1))
+    forged_node = make_node(
+        node_id=UUID(int=3000),
+        revision=1,
+        node_type=LedgerNodeType.INFERENCE,
+        content={
+            "batch_id": "batch-1",
+            "id": "x",
+            "kind": "UNKNOWN",
+            "description": "artifact-supported",
+            "origin": "SUPPORTED_INFERENCE",
+            "anchors": [],
+            "supporting_refs": [],
+            "support": [{"artifact_id": str(UUID(int=99)), "sha256": "a" * 64}],
+            "basis": "from an attachment",
+            "policy_basis": None,
+            "attributes": {},
+        },
+        status=EpistemicStatus.PROVISIONAL,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        action_id=UUID(int=4000),
+        module_id="M03",
+    )
+    with pytest.raises(UnauthorizedArtifactReference):
+        reducer.apply(state, _stored_event(LedgerNodeAdded(node=forged_node), run_id, 2))

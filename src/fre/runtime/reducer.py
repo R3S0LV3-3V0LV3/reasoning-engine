@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import Field, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 from fre.domain.budget import BudgetProjection, ResourceVector
 from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
@@ -13,15 +13,22 @@ from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
 from fre.domain.semantic import (
+    EpistemicOriginLabel,
     SemanticAccountingCondition,
     SemanticModelCallRecord,
     SemanticModelCallRecordV2,
+    SourceAnchor,
     StructuredModelStatus,
+    SupportRef,
 )
 from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
+from fre.modules.source_anchors import (
+    resolve_support_ref_at_reduction,
+    validate_anchor_artifact_registration,
+)
 from fre.prompts.schemas import OutputSchemaRegistry
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
@@ -179,63 +186,135 @@ class RunState(FrozenModel):
         return canonical_hash(self.snapshot_payload())
 
 
-def _validate_m03_ledger_node_support(
+_SUPPORT_REF_LIST_ADAPTER: TypeAdapter[tuple[SupportRef, ...]] = TypeAdapter(tuple[SupportRef, ...])
+_ANCHOR_LIST_ADAPTER: TypeAdapter[tuple[SourceAnchor, ...]] = TypeAdapter(tuple[SourceAnchor, ...])
+
+
+def _validate_m03_ledger_node_provenance(
     state: "RunState", content: "Mapping[str, JsonValue]"
 ) -> None:
-    """Re-resolve an M03 ledger node's embedded `support` refs against state
-    already applied earlier in this same reduction (see the long comment on
-    the `LedgerNodeAdded` branch above for why this exists at the reducer
-    level, not only in `ProblemFormaliser`)."""
-    support = content.get("support")
-    if not isinstance(support, list):
-        return
+    """Re-resolve an M03 ledger node's embedded `support` refs and `anchors`
+    against state already applied earlier in this same reduction (see the
+    long comment on the `LedgerNodeAdded` branch above for why this exists at
+    the reducer level, not only in `ProblemFormaliser`).
+
+    C06 remediation, round 2 (findings A, B, C, E, F, G -- see the PR body for
+    the full mapping):
+
+    - (G) `support`/`anchors` are parsed back into the SAME typed pydantic
+      models (`SupportRef`/`SourceAnchor`) `source_anchors.py` already
+      defines, and resolved through the SAME envelope-independent resolution
+      helpers formalise-time validation uses
+      (`resolve_support_ref_at_reduction`, `validate_anchor_artifact_
+      registration`) -- not a second, independently-drifting duck-typed
+      reimplementation of "what counts as resolvable evidence".
+    - (A) A `SupportProblemItemRef` is resolved only against OTHER M03
+      ledger nodes that share this node's own `batch_id` (embedded in
+      `content` by `ProblemFormaliser._ledger_events` -- one fresh id per
+      `canonical_events`/`_ledger_events` call), never against arbitrary
+      all-time ledger history under a matching `id` string. A node with no
+      `batch_id` of its own (or one that matches no other applied node's
+      `batch_id`) can never resolve a same-proposal item reference this way
+      -- this closes the exact exploit: a hand-built `LedgerNodeAdded`
+      citing an item-id from an unrelated, already-committed earlier
+      proposal is now rejected here exactly as `formalise()` already
+      rejects it (its `index` is scoped to the current proposal only).
+    - (F) A `content["id"]` colliding with an already-admitted M03 node's id
+      from a DIFFERENT batch is rejected outright: only `LedgerNodeRevised`
+      represents a legitimate revision of an existing item's content; a
+      fresh `LedgerNodeAdded` reusing an id already claimed by another
+      batch is always a forged/unintended collision, never an intentional
+      revision, and this is a deliberate design choice (documented here,
+      not an oversight) -- a future caller needing genuine cross-batch
+      "supersede under the same id" semantics would need a new, explicit
+      event for it.
+    - (B) `anchors` are re-validated too, not only `support`: an
+      `EXPLICIT_INPUT`-origin node must carry at least one anchor, and any
+      `ARTIFACT`-kind anchor among them is re-resolved against
+      `state.artifacts`.
+    - (C) `resolve_support_ref_at_reduction` also rejects a
+      `SupportProblemItemRef` naming a `RELATION`-kind target here, not only
+      in `formalise()` -- a minimal, kind-based relevance safeguard. This
+      cannot and does not verify that a resolved target's *content*
+      actually substantiates the citing claim; full semantic-relevance
+      verification is not mechanically achievable and remains a residual,
+      documented limitation of both this reducer check and `formalise()`
+      itself.
+
+    Neither this function nor its shared helpers can re-resolve a
+    `TASK_FIELD`/`TASK_TEXT`-kind anchor against the originating
+    `TaskEnvelope` (the reducer has no envelope in scope) -- that remains
+    `formalise()`-only, exactly as before. Their *structural* shape (a
+    non-empty, correctly ordered span; a well-formed excerpt hash) is,
+    however, guaranteed the moment they are parsed back into the typed
+    `SourceAnchor` model below, via its own `valid_range` validator and
+    field constraints (finding E).
+    """
     own_id = content.get("id")
-    known_nodes = {(str(node.node_id), node.revision) for node in state.ledger.nodes}
-    known_m03_ids = {
-        node.content["id"]
-        for node in state.ledger.nodes
-        if node.producing_module == "M03"
-        and isinstance(node.content, dict)
-        and "id" in node.content
-    }
-    for ref in support:
-        if not isinstance(ref, dict):
-            raise ValueError("M03 ledger node carries a malformed support reference")
-        if "sha256" in ref and "artifact_id" in ref:
-            if ref["sha256"] not in state.artifacts:
-                raise ValueError(
-                    "M03 ledger node cites an artifact that is not registered in this run"
-                )
-        elif "node_id" in ref and "revision" in ref:
-            if (str(ref["node_id"]), ref["revision"]) not in known_nodes:
-                raise ValueError(
-                    "M03 ledger node cites a ledger revision that has not been applied yet"
-                )
-        elif "item_id" in ref:
-            if ref["item_id"] == own_id:
-                raise ValueError("M03 ledger node cites itself as its own support")
-            if ref["item_id"] not in known_m03_ids:
-                raise ValueError(
-                    "M03 ledger node cites a same-proposal item that has not been admitted "
-                    "to the ledger yet"
-                )
-        elif "source_kind" in ref:
-            # A `SourceAnchor`'s resolution against the originating
-            # `TaskEnvelope` cannot be re-checked here -- the reducer has no
-            # envelope in scope, only the ledger/artifact/budget projections
-            # built up by prior events. An `ARTIFACT`-kind anchor still
-            # names a concrete, checkable target though.
-            source_ref = ref.get("source_ref")
+    own_id_str = own_id if isinstance(own_id, str) else None
+    own_batch_id = content.get("batch_id")
+
+    # (F) Cross-batch duplicate id: a fresh LedgerNodeAdded must never reuse
+    # an id already admitted under a different batch/proposal. Revision has
+    # its own dedicated event (`LedgerNodeRevised`); this path is
+    # additions-only.
+    if own_id_str is not None:
+        for node in state.ledger.nodes:
             if (
-                ref.get("source_kind") == "ARTIFACT"
-                and isinstance(source_ref, dict)
-                and source_ref.get("sha256") not in state.artifacts
+                node.producing_module == "M03"
+                and isinstance(node.content, dict)
+                and node.content.get("id") == own_id_str
+                and node.content.get("batch_id") != own_batch_id
             ):
                 raise ValueError(
-                    "M03 ledger node cites an anchor artifact that is not registered in this run"
+                    "M03 ledger node id collides with an item already admitted under a "
+                    "different batch/proposal; a genuine revision requires a "
+                    "LedgerNodeRevised event, not a second LedgerNodeAdded"
                 )
-        else:
-            raise ValueError("M03 ledger node carries an unrecognised support reference shape")
+
+    # (A) Same-proposal item references resolve only within the batch that
+    # produced this very node -- never against arbitrary prior history.
+    known_m03_content_by_id: dict[str, Mapping[str, JsonValue]] = {}
+    if own_batch_id is not None:
+        for node in state.ledger.nodes:
+            node_item_id = node.content.get("id") if isinstance(node.content, dict) else None
+            if (
+                node.producing_module == "M03"
+                and isinstance(node.content, dict)
+                and isinstance(node_item_id, str)
+                and node.content.get("batch_id") == own_batch_id
+            ):
+                known_m03_content_by_id[node_item_id] = node.content
+    known_ledger_revisions = frozenset((node.node_id, node.revision) for node in state.ledger.nodes)
+    available_artifacts = frozenset(state.artifacts)
+
+    support = content.get("support")
+    if isinstance(support, list):
+        try:
+            parsed_support = _SUPPORT_REF_LIST_ADAPTER.validate_python(support, strict=False)
+        except ValidationError as error:
+            raise ValueError("M03 ledger node carries a malformed support reference") from error
+        for ref in parsed_support:
+            resolve_support_ref_at_reduction(
+                ref,
+                own_id=own_id_str,
+                known_m03_content_by_id=known_m03_content_by_id,
+                known_ledger_revisions=known_ledger_revisions,
+                available_artifacts=available_artifacts,
+            )
+
+    # (B) `anchors` were never re-checked at all before this fix.
+    anchors = content.get("anchors")
+    parsed_anchors: tuple[SourceAnchor, ...] = ()
+    if isinstance(anchors, list):
+        try:
+            parsed_anchors = _ANCHOR_LIST_ADAPTER.validate_python(anchors, strict=False)
+        except ValidationError as error:
+            raise ValueError("M03 ledger node carries a malformed anchor") from error
+        for anchor in parsed_anchors:
+            validate_anchor_artifact_registration(anchor, available_artifacts)
+    if content.get("origin") == EpistemicOriginLabel.EXPLICIT_INPUT.value and not parsed_anchors:
+        raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
 class RunReducer:
@@ -310,7 +389,7 @@ class RunReducer:
             # ledger/artifact reference or a same-proposal item reference to
             # a node that was never actually admitted is caught here too.
             if payload.node.producing_module == "M03" and isinstance(payload.node.content, dict):
-                _validate_m03_ledger_node_support(state, payload.node.content)
+                _validate_m03_ledger_node_provenance(state, payload.node.content)
             changes["ledger"] = EpistemicLedger().append_node(state.ledger, payload.node)
         elif isinstance(payload, LedgerEdgeAdded):
             changes["ledger"] = EpistemicLedger().append_edge(state.ledger, payload.edge)

@@ -58,7 +58,24 @@ from fre.runtime.events import (
 # absent *both* signals the conservative default is `True` -- an unresolved
 # item's materiality must never be silently downgraded to "not material" by
 # mere omission.
-MATERIALITY_POLICY_VERSION = "1.0"
+#
+# C06 remediation, round 2 (finding D): `attributes["material"]`/
+# `attributes["decision_relevance"]` are self-reported by whatever produced
+# the proposal, with no independent, deterministic signal available for M03
+# items the way M01 has an execution-permission-derived floor. Trusting a
+# self-reported LOW-materiality claim outright would let a proposal simply
+# assert its way past a blocker for a genuinely unresolved item. The smaller,
+# well-justified fix chosen here (over requiring a full independent-signal
+# corroboration scheme, which would be a much larger scope change): a
+# self-reported claim of LOW materiality is honoured only when it is backed
+# by at least one independently-resolvable `support` reference (already
+# proven resolvable by `validate_support_graph` before `_ledger_events` ever
+# runs); an UNRESOLVED/UNKNOWN item with NO resolvable support is always
+# treated as material regardless of what it self-reports, because there is
+# nothing else to corroborate the claim with. A self-reported claim of HIGH
+# materiality (or no signal at all) is unaffected -- the conservative
+# default was already "material" in both cases.
+MATERIALITY_POLICY_VERSION = "1.1"
 MATERIALITY_DECISION_RELEVANCE_THRESHOLD = 0.5
 
 
@@ -91,11 +108,27 @@ def _topologically_ordered_items(
 
 def _is_material(item: ProblemItemProposal) -> bool:
     material = item.attributes.get("material")
+    relevance = item.attributes.get("decision_relevance")
+    numeric_relevance = (
+        float(relevance)
+        if isinstance(relevance, int | float) and not isinstance(relevance, bool)
+        else None
+    )
+    claims_low_materiality = (material is False) or (
+        numeric_relevance is not None
+        and numeric_relevance < MATERIALITY_DECISION_RELEVANCE_THRESHOLD
+    )
+    # Finding D: a self-reported LOW-materiality claim is trusted only when
+    # corroborated by at least one independently-resolvable support
+    # reference. Without one, the self-report is the sole, unverifiable
+    # signal -- fall back to the conservative "material" default regardless
+    # of what was claimed.
+    if claims_low_materiality and not item.support:
+        return True
     if isinstance(material, bool):
         return material
-    relevance = item.attributes.get("decision_relevance")
-    if isinstance(relevance, int | float) and not isinstance(relevance, bool):
-        return float(relevance) >= MATERIALITY_DECISION_RELEVANCE_THRESHOLD
+    if numeric_relevance is not None:
+        return numeric_relevance >= MATERIALITY_DECISION_RELEVANCE_THRESHOLD
     return True
 
 
@@ -143,6 +176,14 @@ class ProblemFormaliser:
         events: list[EventPayload] = []
         refs: dict[str, LedgerNodeRef] = {}
         blocker_refs: dict[str, LedgerNodeRef] = {}
+        # C06 remediation, round 2 (finding A): one fresh identifier per call
+        # to `_ledger_events`/`canonical_events`, embedded in every M03
+        # ledger node's own `content` below. `RunReducer` uses this to scope
+        # `SupportProblemItemRef` resolution to nodes from THIS SAME batch
+        # only -- never against arbitrary all-time ledger history under a
+        # matching `id` string (the empirically-demonstrated exploit this
+        # closes; see `_validate_m03_ledger_node_provenance`'s docstring).
+        batch_id = str(uuids.new())
         self._validate_items(proposal.items)
         contested_ids: set[str] = set()
         for item in proposal.items:
@@ -170,7 +211,7 @@ class ProblemFormaliser:
                 node_id=node_id,
                 revision=1,
                 node_type=node_types[item.origin],
-                content=item.model_dump(mode="json"),
+                content={"batch_id": batch_id, **item.model_dump(mode="json")},
                 status=(
                     EpistemicStatus.CONTESTED if item.id in contested_ids else statuses[item.origin]
                 ),
