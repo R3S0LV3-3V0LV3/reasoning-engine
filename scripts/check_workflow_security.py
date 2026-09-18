@@ -13,14 +13,42 @@ WORKFLOW_DIR = Path(".github/workflows")
 FULL_SHA_LENGTH = 40
 PROHIBITED_TRIGGERS = frozenset({"pull_request_target", "workflow_run"})
 SHELL_CONTROL_CHARACTERS = frozenset(";&|()")
-ALLOWED_DIRECT_PYTHON_SCRIPTS = frozenset(
+ALLOWED_WORKFLOW_COMMANDS = frozenset(
     {
-        "scripts/check_codeql_sarif.py",
-        "scripts/verify_package.py",
+        ("python", "scripts/check_codeql_sarif.py", "codeql-results"),
+        ("python", "scripts/verify_package.py"),
+        ("uv", "build", "--no-build-isolation"),
+        (
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            ".venv/bin/python",
+            "--no-deps",
+            ".",
+            "--no-build-isolation",
+        ),
+        ("uv", "run", "--no-sync", "mypy", "--strict", "src", "tests"),
+        ("uv", "run", "--no-sync", "pytest"),
+        ("uv", "run", "--no-sync", "pytest", "tests/integration"),
+        ("uv", "run", "--no-sync", "pytest", "tests/property"),
+        ("uv", "run", "--no-sync", "pytest", "tests/unit"),
+        (
+            "uv",
+            "run",
+            "--no-sync",
+            "pytest",
+            "tests/unit/test_foundation_freeze.py",
+            "tests/integration/test_wave1_gate.py",
+            "tests/integration/test_wave2_gate.py",
+            "tests/integration/test_transactional_preduction.py",
+        ),
+        ("uv", "run", "--no-sync", "python", "scripts/check_workflow_security.py"),
+        ("uv", "run", "--no-sync", "ruff", "check", "."),
+        ("uv", "run", "--no-sync", "ruff", "format", "--check", "."),
+        ("uv", "sync", "--locked", "--all-groups", "--no-install-project"),
     }
 )
-ALLOWED_UV_RUN_TOOLS = frozenset({"mypy", "pytest", "python", "ruff"})
-ALLOWED_UV_RUN_PYTHON_SCRIPTS = frozenset({"scripts/check_workflow_security.py"})
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -109,6 +137,9 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
         command = line.strip()
         if not command:
             continue
+        if "`" in command or "$(" in command:
+            failures.append(f"{path}: command substitution is prohibited: {command}")
+            continue
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
         lexer.whitespace_split = True
         lexer.commenters = ""
@@ -121,43 +152,8 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
         if any(token and set(token) <= SHELL_CONTROL_CHARACTERS for token in tokens):
             failures.append(f"{path}: compound shell commands are prohibited: {command}")
             continue
-
-        executable = Path(tokens[0]).name
-        if executable in {"python", "python3"}:
-            if len(tokens) < 2 or tokens[1] not in ALLOWED_DIRECT_PYTHON_SCRIPTS:
-                failures.append(f"{path}: unapproved direct Python command: {command}")
-            continue
-        if executable != "uv" or len(tokens) < 2:
+        if tuple(tokens) not in ALLOWED_WORKFLOW_COMMANDS:
             failures.append(f"{path}: unapproved workflow command: {command}")
-            continue
-
-        subcommand = tokens[1]
-        arguments = tokens[2:]
-        if subcommand == "sync":
-            if "--no-install-project" not in arguments:
-                failures.append(f"{path}: uv sync must set --no-install-project")
-            continue
-        if subcommand == "build":
-            if "--no-build-isolation" not in arguments:
-                failures.append(f"{path}: uv build must set --no-build-isolation")
-            continue
-        if subcommand == "pip" and arguments[:1] == ["install"]:
-            if "." in arguments and "--no-build-isolation" not in arguments:
-                failures.append(f"{path}: project installation must set --no-build-isolation")
-            continue
-        if subcommand == "run":
-            if arguments[:1] != ["--no-sync"]:
-                failures.append(f"{path}: uv run must begin with --no-sync")
-                continue
-            if len(arguments) < 2 or Path(arguments[1]).name not in ALLOWED_UV_RUN_TOOLS:
-                failures.append(f"{path}: unapproved uv run command: {command}")
-                continue
-            if Path(arguments[1]).name == "python" and (
-                len(arguments) < 3 or arguments[2] not in ALLOWED_UV_RUN_PYTHON_SCRIPTS
-            ):
-                failures.append(f"{path}: unapproved uv-run Python command: {command}")
-            continue
-        failures.append(f"{path}: unapproved uv subcommand: {subcommand}")
     return failures
 
 

@@ -253,11 +253,8 @@ jobs:
     )
 
     failures = validate_workflow(path)
-    assert any("uv sync must set --no-install-project" in item for item in failures)
-    assert sum("uv run must begin with --no-sync" in item for item in failures) == 2
+    assert sum("unapproved workflow command" in item for item in failures) == 5
     assert any("compound shell commands are prohibited" in item for item in failures)
-    assert any("uv build must set --no-build-isolation" in item for item in failures)
-    assert any("project installation must set --no-build-isolation" in item for item in failures)
 
 
 def test_rejects_shell_and_dynamic_python_evaluators(tmp_path: Path) -> None:
@@ -278,10 +275,30 @@ jobs:
     )
 
     failures = validate_workflow(path)
-    assert sum("unapproved workflow command" in item for item in failures) == 2
-    assert any("unapproved direct Python command" in item for item in failures)
-    assert any("unapproved uv run command" in item for item in failures)
-    assert any("unapproved uv-run Python command" in item for item in failures)
+    assert sum("unapproved workflow command" in item for item in failures) == 5
+
+
+def test_rejects_substitution_path_spoofing_and_unlocked_installs(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    steps:
+      - run: uv sync --locked --all-groups --no-install-project `uv run pytest`
+      - run: ./uv sync --locked --all-groups --no-install-project
+      - run: uv run --no-sync ./pytest
+      - run: uv sync --all-groups --no-install-project
+      - run: uv pip install some-unlocked-package
+      - run: uv pip install --python .venv/bin/python --no-deps ./ --no-build-isolation
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("command substitution is prohibited" in item for item in failures)
+    assert sum("unapproved workflow command" in item for item in failures) == 5
 
 
 def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:
