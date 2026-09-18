@@ -16,7 +16,12 @@ from fre.domain.ledger import (
     LedgerNodeRef,
 )
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
-from fre.domain.representation import RepresentationArtifact, RepresentationPlan
+from fre.domain.representation import (
+    RepresentationArtifact,
+    RepresentationArtifactV2,
+    RepresentationPlan,
+    RepresentationPlanV2,
+)
 from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
 from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
@@ -177,6 +182,14 @@ class RepresentationArtifactCompiled(FrozenModel):
     artifact: RepresentationArtifact
 
 
+class RepresentationPlanSelectedV2(FrozenModel):
+    plan: RepresentationPlanV2
+
+
+class RepresentationArtifactCompiledV2(FrozenModel):
+    artifact: RepresentationArtifactV2
+
+
 EventPayload = (
     RunCreated
     | RunStatusChanged
@@ -210,6 +223,8 @@ EventPayload = (
     | ProblemContradictionRecorded
     | RepresentationPlanSelected
     | RepresentationArtifactCompiled
+    | RepresentationPlanSelectedV2
+    | RepresentationArtifactCompiledV2
 )
 EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
     (payload.__name__, "1.0"): payload
@@ -250,12 +265,16 @@ EVENT_PAYLOADS.update(
         ("ModelCallRecorded", "2.0"): ModelCallRecordedV2,
         ("ModelCallFailed", "2.0"): ModelCallFailedV2,
         ("StopDecisionRecorded", "2.0"): StopDecisionRecordedV2,
+        ("RepresentationPlanSelected", "2.0"): RepresentationPlanSelectedV2,
+        ("RepresentationArtifactCompiled", "2.0"): RepresentationArtifactCompiledV2,
     }
 )
 EVENT_WIRE_IDENTITIES: dict[type[FrozenModel], tuple[str, SchemaVersion]] = {
     ModelCallRecordedV2: ("ModelCallRecorded", "2.0"),
     ModelCallFailedV2: ("ModelCallFailed", "2.0"),
     StopDecisionRecordedV2: ("StopDecisionRecorded", "2.0"),
+    RepresentationPlanSelectedV2: ("RepresentationPlanSelected", "2.0"),
+    RepresentationArtifactCompiledV2: ("RepresentationArtifactCompiled", "2.0"),
 }
 
 
