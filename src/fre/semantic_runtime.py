@@ -55,6 +55,10 @@ class SemanticOwnershipError(ValueError):
     """The selected prompt/schema does not belong to the requested operation."""
 
 
+class SemanticSchemaBindingError(ValueError):
+    """The request's schema hash does not match the registry's canonical bytes."""
+
+
 class SemanticPolicyMismatchError(ValueError):
     """The runtime policy graph does not match the run's persisted identity."""
 
@@ -235,10 +239,25 @@ class SemanticModelRuntime:
             messages=messages,
             output_schema_id=schema.schema_id,
             output_schema_version=schema.schema_version,
+            output_schema_hash=schema.schema_hash,
             max_input_tokens=policy.reserve_input_tokens,
             max_output_tokens=policy.reserve_output_tokens,
             idempotency_key=identity,
         )
+        # Re-check the schema hash against a fresh registry lookup, immediately
+        # before the provider is invoked. `schema` was captured earlier in
+        # `execute()`; this guards against the request having been mutated,
+        # replayed, or constructed by a caller who bypassed the registry lookup
+        # above, and against the registry's own integrity check having since
+        # started failing (`OutputSchemaRegistry.get` re-validates on every call).
+        current_definition, _ = self.schemas.get(
+            request.output_schema_id, request.output_schema_version
+        )
+        if current_definition.schema_hash != request.output_schema_hash:
+            self._release(run_id, reservation.reservation_id)
+            raise SemanticSchemaBindingError(
+                "structured request schema hash does not match the registered schema bytes"
+            )
         try:
             result = await self.model.generate(request)
         except BaseException:

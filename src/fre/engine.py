@@ -8,7 +8,7 @@ from fre.adapters.storage_sqlite import SQLiteStore
 from fre.domain.common import ArtifactDescriptor, FrozenModel, JsonValue, canonical_hash
 from fre.ports.clock import Clock, UUIDFactory
 from fre.runtime.events import RunCreated, StoredEvent, UncommittedEvent, event_wire_identity
-from fre.runtime.reducer import RunReducer, RunState
+from fre.runtime.reducer import RunReducer, RunState, validate_semantic_reservation_admission
 
 
 class RunHandle(FrozenModel):
@@ -78,8 +78,8 @@ class FrontierReasoningEngine:
         preview = self.inspect(run_id)
         if preview.version != expected_version:
             return self.store.append(run_id, expected_version, events)
-        for offset, event in enumerate(events, 1):
-            stored = StoredEvent.model_validate(
+        stored_events = tuple(
+            StoredEvent.model_validate(
                 {
                     **event.model_dump(),
                     "created_at": event.created_at,
@@ -87,6 +87,14 @@ class FrontierReasoningEngine:
                 },
                 strict=True,
             )
+            for offset, event in enumerate(events, 1)
+        )
+        # Cross-event batch admission (F09): proves every semantic model-call
+        # outcome in this batch is backed by its own matching budget
+        # settlement, not merely a caller's claim, before any event in the
+        # batch reaches the per-event reducer or the store.
+        validate_semantic_reservation_admission(stored_events)
+        for stored in stored_events:
             preview = self.reducer.apply(preview, stored)
         return self.store.append(run_id, expected_version, events)
 

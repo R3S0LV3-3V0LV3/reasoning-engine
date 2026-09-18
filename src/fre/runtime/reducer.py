@@ -5,13 +5,18 @@ from uuid import UUID
 
 from pydantic import Field
 
-from fre.domain.budget import BudgetProjection
+from fre.domain.budget import BudgetProjection, ResourceVector
 from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.context import ContextCompilationRecord, ContextPacket
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
-from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
+from fre.domain.semantic import (
+    SemanticAccountingCondition,
+    SemanticModelCallRecord,
+    SemanticModelCallRecordV2,
+    StructuredModelStatus,
+)
 from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
@@ -361,6 +366,38 @@ class RunReducer:
             for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
                 if artifact is not None and artifact.sha256 not in state.artifacts:
                     raise ValueError("semantic model-call artifact is not registered")
+            # V1 events (`ModelCallRecorded`/`ModelCallFailed`, plain
+            # `SemanticModelCallRecord`) predate reservation-linked accounting and
+            # carry no `reservation_id` -- they remain decode-only and are not
+            # subject to the batch-admission checks below.
+            if isinstance(payload, ModelCallRecordedV2):
+                if payload.record.status is not StructuredModelStatus.SUCCESS:
+                    raise ValueError("a recorded semantic success must carry SUCCESS status")
+                if payload.record.accounting_condition is not None:
+                    raise ValueError(
+                        "a recorded semantic success may not carry an accounting condition"
+                    )
+                if payload.record.validation_diagnostics:
+                    raise ValueError(
+                        "a recorded semantic success may not carry validation diagnostics"
+                    )
+            if isinstance(payload, ModelCallFailedV2) and (
+                payload.record.status is StructuredModelStatus.SUCCESS
+                and payload.record.accounting_condition
+                is not SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
+            ):
+                raise ValueError(
+                    "a semantic failure may not present SUCCESS status without a "
+                    "recognised override"
+                )
+            # The cross-event proof that a `reservation_id` was genuinely settled
+            # (never merely released) with matching charged usage is a
+            # batch-admission property, not a single-event one: it requires
+            # seeing the paired `BudgetReservationSettled`/`Released` event that
+            # this same append() batch always carries alongside the record. See
+            # `validate_semantic_reservation_admission`, run by
+            # `FrontierReasoningEngine.append` over the whole proposed batch
+            # before any event in it is applied here.
             changes["model_calls"] = (*state.model_calls, payload.record)
         elif isinstance(payload, TaskClassified):
             changes["task_signature"] = payload.signature
@@ -431,3 +468,59 @@ class RunReducer:
         for event in events:
             state = self.apply(state, event)
         return state
+
+
+def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> None:
+    """Batch-admission proof that every authoritative semantic outcome in
+    `events` is backed by real, matching budget-accounting evidence -- from
+    within the very same proposed batch, not merely trusted from the caller.
+
+    `SemanticModelRuntime._invoke` always appends a reservation-settlement (or,
+    on interruption before a record exists, a release with no paired record)
+    together with the `ModelCallRecorded`/`ModelCallFailed` v2 event in one
+    `FrontierReasoningEngine.append` call. This function is the batch-scoped
+    half of the F09 fix: it walks the proposed batch once, in order, and for
+    every `ModelCallRecordedV2`/`ModelCallFailedV2` requires exactly one
+    still-unconsumed `BudgetReservationSettled` (never a `BudgetReservationReleased`)
+    for that record's own `reservation_id`, earlier in the same batch, whose
+    `actual_usage` matches the record's `charged_usage` bit-for-bit.
+
+    This closes the exact reviewer-flagged gap: a forged `ModelCallRecordedV2`
+    paired with a `BudgetReservationReleased` (instead of `Settled`) for its
+    reservation, or with a settlement for someone else's reservation_id, is
+    rejected here before a single event in the batch is persisted.
+
+    v1 events (`ModelCallRecorded`/`ModelCallFailed`, carrying a plain
+    `SemanticModelCallRecord` with no `reservation_id`) predate reservation
+    accounting and are intentionally left decode-only: they are ignored here.
+
+    Whether the settled/released reservation itself existed beforehand is
+    still enforced independently and unconditionally by `BudgetMeter.settle`/
+    `.release` (raising `InvalidReservationSettlement`/`ReservationConflict`)
+    the moment the reducer applies that same event -- this function does not
+    duplicate that check, only the cross-event linkage `apply()` cannot see
+    one event at a time.
+    """
+    pending: dict[str, list[tuple[str, ResourceVector | None]]] = {}
+    for event in events:
+        payload = event.validated_payload()
+        if isinstance(payload, BudgetReservationSettled):
+            pending.setdefault(payload.reservation_id, []).append(("SETTLED", payload.actual_usage))
+        elif isinstance(payload, BudgetReservationReleased):
+            pending.setdefault(payload.reservation_id, []).append(("RELEASED", None))
+        elif isinstance(payload, (ModelCallRecordedV2, ModelCallFailedV2)):
+            queue = pending.get(payload.record.reservation_id)
+            if not queue:
+                raise ValueError(
+                    "semantic model-call reservation settlement evidence is missing from this batch"
+                )
+            kind, actual_usage = queue.pop(0)
+            if kind != "SETTLED":
+                raise ValueError(
+                    "semantic model-call must be paired with a reservation settlement "
+                    "in this batch, not a release"
+                )
+            if actual_usage != payload.record.charged_usage:
+                raise ValueError(
+                    "semantic model-call charged usage does not match its budget settlement"
+                )
