@@ -17,7 +17,7 @@ from fre.domain.ledger import (
 )
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
-from fre.domain.semantic import SemanticModelCallRecord
+from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
 from fre.domain.stop import StopDecision
 from fre.domain.task import ClassificationRecord, TaskSignature
 
@@ -122,6 +122,15 @@ class ModelCallFailed(FrozenModel):
     reason: str
 
 
+class ModelCallRecordedV2(FrozenModel):
+    record: SemanticModelCallRecordV2
+
+
+class ModelCallFailedV2(FrozenModel):
+    record: SemanticModelCallRecordV2
+    reason: str
+
+
 class TaskClassified(FrozenModel):
     signature: TaskSignature
     record: ClassificationRecord
@@ -174,6 +183,8 @@ EventPayload = (
     | TerminalContextAssociated
     | ModelCallRecorded
     | ModelCallFailed
+    | ModelCallRecordedV2
+    | ModelCallFailedV2
     | TaskClassified
     | ClassificationDiagnosticRecorded
     | ProblemFormalised
@@ -206,6 +217,8 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         TerminalContextAssociated,
         ModelCallRecorded,
         ModelCallFailed,
+        ModelCallRecordedV2,
+        ModelCallFailedV2,
         TaskClassified,
         ClassificationDiagnosticRecorded,
         ProblemFormalised,

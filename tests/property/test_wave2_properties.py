@@ -4,7 +4,13 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fre.domain.budget import BudgetExceeded, BudgetProjection, DeploymentLimits, ResourceVector
+from fre.domain.budget import (
+    BudgetExceeded,
+    BudgetProjection,
+    BudgetReservation,
+    DeploymentLimits,
+    ResourceVector,
+)
 from fre.domain.context import CompilerProfile
 from fre.domain.ledger import EpistemicStatus, LedgerNodeType, LedgerProjection
 from fre.domain.task import (
@@ -60,6 +66,40 @@ def test_budget_consumption_never_exceeds_hard_ceiling(amount: int) -> None:
     assert meter.remaining(consumed).resources.iterations == 1 - amount
     with pytest.raises(BudgetExceeded):
         meter.consume(consumed, ResourceVector(iterations=2))
+
+
+@given(
+    st.integers(min_value=1, max_value=4096),
+    st.integers(min_value=1, max_value=2048),
+)
+def test_settled_invocation_reservation_never_becomes_available_again(
+    input_tokens: int, output_tokens: int
+) -> None:
+    allocator = BudgetAllocator()
+    plan, digest = allocator.allocate(signature(0, 0), default_tier_policy(), DeploymentLimits())
+    meter = BudgetMeter()
+    projection = BudgetProjection(plan=plan, policy_hash=digest)
+    reservation = BudgetReservation(
+        reservation_id="invoked",
+        action_id="semantic-call",
+        resources=ResourceVector(
+            llm_calls=1,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        ),
+    )
+
+    reserved = meter.reserve(projection, reservation)
+    settled = meter.settle(reserved, reservation.reservation_id, reservation.resources)
+    remaining = meter.remaining(settled).resources
+
+    assert settled.reservations == ()
+    assert settled.committed.llm_calls == 1
+    assert settled.committed.input_tokens == input_tokens
+    assert settled.committed.output_tokens == output_tokens
+    assert remaining.llm_calls == plan.limits.max_llm_calls - 1
+    assert remaining.input_tokens == plan.limits.max_input_tokens - input_tokens
+    assert remaining.output_tokens == plan.limits.max_output_tokens - output_tokens
 
 
 @given(st.integers(min_value=1, max_value=20))

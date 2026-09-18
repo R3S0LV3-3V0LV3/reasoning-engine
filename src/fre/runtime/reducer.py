@@ -11,7 +11,7 @@ from fre.domain.context import ContextCompilationRecord, ContextPacket
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
-from fre.domain.semantic import SemanticModelCallRecord
+from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
 from fre.domain.stop import StopDecision
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
@@ -34,7 +34,9 @@ from fre.runtime.events import (
     LedgerNodeRevised,
     LedgerNodeStatusChanged,
     ModelCallFailed,
+    ModelCallFailedV2,
     ModelCallRecorded,
+    ModelCallRecordedV2,
     ProblemBlockerRecorded,
     ProblemContradictionRecorded,
     ProblemFormalised,
@@ -74,7 +76,7 @@ class RunState(FrozenModel):
     stop_decisions: tuple[StopDecision, ...] = ()
     terminal_context_packet_hash: str | None = None
     terminal_context_disposition: str | None = None
-    model_calls: tuple[SemanticModelCallRecord, ...] = ()
+    model_calls: tuple[SemanticModelCallRecordV2 | SemanticModelCallRecord, ...] = ()
     task_signature: TaskSignature | None = None
     classification_record: ClassificationRecord | None = None
     classification_diagnostics: tuple[str, ...] = ()
@@ -303,12 +305,14 @@ class RunReducer:
                 raise ValueError("terminal context must match the latest recorded stop decision")
             changes["terminal_context_packet_hash"] = payload.packet_hash
             changes["terminal_context_disposition"] = payload.stop_disposition
-        elif isinstance(payload, (ModelCallRecorded, ModelCallFailed)):
+        elif isinstance(
+            payload, (ModelCallRecorded, ModelCallFailed, ModelCallRecordedV2, ModelCallFailedV2)
+        ):
             if any(
                 item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
             ):
                 raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, ModelCallRecorded) and (
+            if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
                 payload.record.raw_artifact is None or payload.record.proposal_artifact is None
             ):
                 raise ValueError(

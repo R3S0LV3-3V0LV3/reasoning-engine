@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from fre.domain.budget import ResourceVector
 from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, ObjectRef
 
 
@@ -76,6 +77,13 @@ class StructuredModelStatus(StrEnum):
 
 class SemanticAccountingCondition(StrEnum):
     USAGE_EXCEEDS_RESERVATION = "USAGE_EXCEEDS_RESERVATION"
+    PROVIDER_USAGE_EXCEEDED_RESERVATION = "PROVIDER_USAGE_EXCEEDED_RESERVATION"
+
+
+class SemanticChargeBasis(StrEnum):
+    REPORTED_USAGE = "REPORTED_USAGE"
+    CONSERVATIVE_RESERVED_CAPACITY = "CONSERVATIVE_RESERVED_CAPACITY"
+    RESERVATION_CAP_ON_PROVIDER_OVERAGE = "RESERVATION_CAP_ON_PROVIDER_OVERAGE"
 
 
 class SemanticCallUsage(FrozenModel):
@@ -138,3 +146,12 @@ class SemanticModelCallRecord(FrozenModel):
     fallback_used: bool = False
     accounting_condition: SemanticAccountingCondition | None = None
     validation_diagnostics: tuple[str, ...] = ()
+
+
+class SemanticModelCallRecordV2(SemanticModelCallRecord):
+    """Authoritative semantic-call accounting with an explicit reservation link."""
+
+    reservation_id: str = Field(min_length=1)
+    reported_usage: SemanticCallUsage
+    charged_usage: ResourceVector
+    charge_basis: SemanticChargeBasis
