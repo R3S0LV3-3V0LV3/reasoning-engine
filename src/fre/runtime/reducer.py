@@ -1,9 +1,10 @@
 """Pure reducer protocol and foundational run reducer."""
 
+from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from fre.domain.budget import BudgetProjection, ResourceVector
 from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
@@ -21,6 +22,7 @@ from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
+from fre.prompts.schemas import OutputSchemaRegistry
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
     ArtifactRegistered,
@@ -92,6 +94,25 @@ class RunState(FrozenModel):
     problem_contradictions: tuple[ContradictionDiagnostic, ...] = ()
     representation_plan: RepresentationPlan | None = None
     representation_artifacts: tuple[RepresentationArtifact, ...] = ()
+    # Reducer-local bookkeeping for the F09 reservation-settlement duplicate
+    # check embedded in `RunReducer.apply` (see the `ModelCallRecordedV2` /
+    # `ModelCallFailedV2` branch below and finding #2 in the C04 remediation
+    # round). Populated when a `BudgetReservationSettled` is applied and
+    # drained the moment the matching semantic model-call record is applied.
+    # `BudgetReservationSettled` is a general budget event, not exclusively a
+    # semantic-model-call one (plenty of Wave 2 budget usage settles
+    # reservations with no model call ever attached) -- so, unlike every other
+    # field here, an entry can legitimately sit unconsumed forever. It is
+    # therefore excluded from `model_dump`/the sealed snapshot hash entirely
+    # (`exclude=True`): it is a transient computation aid for the single
+    # `reduce()`/`apply()` sequence in progress, carried forward explicitly by
+    # `apply` (see the top of that method), never persisted, and always
+    # rebuilt honestly from genesis on the next full replay -- which is
+    # exactly what both real replay and `FrontierReasoningEngine.append`'s own
+    # preview loop already do.
+    pending_semantic_settlements: dict[str, ResourceVector] = Field(
+        default_factory=dict, exclude=True
+    )
 
     def snapshot_payload(self) -> dict[str, object]:
         """Return the hash payload, retaining Wave 1 shape for untouched streams."""
@@ -158,6 +179,21 @@ class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
 
+    def __init__(
+        self,
+        *,
+        artifact_reader: Callable[[str], bytes] | None = None,
+        schema_registry: OutputSchemaRegistry | None = None,
+    ) -> None:
+        # Both are optional so every existing bare `RunReducer()` construction
+        # (tests, snapshot/replay helpers that predate this dependency) keeps
+        # working unchanged; without them the content-provenance check below
+        # is skipped. `FrontierReasoningEngine` always wires both in its own
+        # default reducer so the production append/replay path is fully
+        # covered -- see `fre.engine.FrontierReasoningEngine.__init__`.
+        self._artifact_reader = artifact_reader
+        self._schema_registry = schema_registry
+
     def accepts_snapshot_version(self, version: str) -> bool:
         return version in self.compatible_snapshot_versions
 
@@ -168,7 +204,16 @@ class RunReducer:
         if event.run_id != state.run_id or event.sequence != state.version + 1:
             raise ValueError("event is not the next contiguous event for this state")
         payload = event.validated_payload()
-        changes: dict[str, object] = {"version": event.sequence}
+        # `pending_semantic_settlements` is excluded from `model_dump` (see its
+        # field docstring), so `RunState.model_validate({**state.model_dump(...),
+        # **changes})` below would otherwise silently reset it to empty on every
+        # single apply() call. Seed it from the incoming state unconditionally so
+        # it survives untouched across events that don't concern it; the branches
+        # below overwrite this default whenever they actually change it.
+        changes: dict[str, object] = {
+            "version": event.sequence,
+            "pending_semantic_settlements": state.pending_semantic_settlements,
+        }
         if isinstance(payload, RunCreated):
             if state.version != 0:
                 raise ValueError("RunCreated must be the first event")
@@ -267,6 +312,17 @@ class RunReducer:
             changes["budget"] = BudgetMeter().settle(
                 state.budget, payload.reservation_id, payload.actual_usage
             )
+            # Duplicate-tracking half of the F09 reducer-level check (finding
+            # #2): record that this reservation was genuinely settled, with
+            # this exact charged usage, so the semantic model-call record that
+            # is always appended alongside it in the same batch can be
+            # verified against real, applied evidence rather than its own
+            # unverified claim -- see the `ModelCallRecordedV2`/
+            # `ModelCallFailedV2` branch below.
+            changes["pending_semantic_settlements"] = {
+                **state.pending_semantic_settlements,
+                payload.reservation_id: payload.actual_usage,
+            }
         elif isinstance(payload, BudgetReservationReleased):
             changes["budget"] = BudgetMeter().release(state.budget, payload.reservation_id)
         elif isinstance(payload, ContextCompiled):
@@ -381,23 +437,116 @@ class RunReducer:
                     raise ValueError(
                         "a recorded semantic success may not carry validation diagnostics"
                     )
-            if isinstance(payload, ModelCallFailedV2) and (
-                payload.record.status is StructuredModelStatus.SUCCESS
-                and payload.record.accounting_condition
-                is not SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
-            ):
-                raise ValueError(
-                    "a semantic failure may not present SUCCESS status without a "
-                    "recognised override"
+            if isinstance(payload, ModelCallFailedV2):
+                if (
+                    payload.record.status is StructuredModelStatus.SUCCESS
+                    and payload.record.accounting_condition
+                    is not SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
+                ):
+                    raise ValueError(
+                        "a semantic failure may not present SUCCESS status without a "
+                        "recognised override"
+                    )
+                # Finding #8 (C04 remediation): PROVIDER_USAGE_EXCEEDED_RESERVATION is
+                # only a legitimate accounting condition when the provider actually
+                # overran its reservation AND either (a) still returned output that
+                # validated (SUCCESS, downgraded to a failure purely by the override)
+                # or (b) returned output that failed schema validation
+                # (INVALID_STRUCTURED_OUTPUT). No other status can co-occur with this
+                # accounting condition -- an arbitrary status (e.g. UNAVAILABLE,
+                # TRANSIENT_FAILURE, PERMANENT_FAILURE) paired with it is forged or
+                # corrupted data, not a real domain outcome.
+                if (
+                    payload.record.accounting_condition
+                    is SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
+                    and payload.record.status
+                    not in (
+                        StructuredModelStatus.SUCCESS,
+                        StructuredModelStatus.INVALID_STRUCTURED_OUTPUT,
+                    )
+                ):
+                    raise ValueError(
+                        "provider-usage-exceeded-reservation accounting is only valid "
+                        "when the semantic model call succeeded or returned invalid "
+                        "structured output"
+                    )
+            if isinstance(payload, (ModelCallRecordedV2, ModelCallFailedV2)):
+                # Finding #2 (C04 remediation): duplicate, reducer-local half of the
+                # F09 batch-admission proof. `validate_semantic_reservation_admission`
+                # (run by `FrontierReasoningEngine.append` over the whole proposed
+                # batch, order-independently -- see its own docstring and finding #5)
+                # remains the authoritative pre-persistence gate. This check makes the
+                # same property impossible to bypass by calling `RunReducer.apply`
+                # directly against a store that skips that gate: a semantic model-call
+                # record is only ever admitted here if a matching
+                # `BudgetReservationSettled` for its own `reservation_id`, with
+                # bit-for-bit matching `actual_usage`, was *already applied earlier in
+                # this same reduction* -- `BudgetReservationReleased` never populates
+                # `pending_semantic_settlements`, so a record referencing a released
+                # (or never-reserved) reservation_id is rejected here too.
+                #
+                # Unlike the batch-admission gate, this check is strictly sequential
+                # (order-dependent): it cannot accept a settlement that is applied
+                # *after* its record, because at record-apply time no later event has
+                # been seen yet. The one production caller
+                # (`SemanticModelRuntime._invoke`) always emits the settlement before
+                # the record in its event tuple, so this never rejects real traffic;
+                # `engine.append` also applies every event through this same reducer,
+                # in submitted order, before persisting (see `FrontierReasoningEngine.
+                # append`), so a batch that satisfies the order-independent gate but
+                # reverses this order is still rejected end-to-end by that second,
+                # stricter pass -- intentionally: see finding #5's test, which
+                # exercises `validate_semantic_reservation_admission` directly rather
+                # than the full `engine.append` path for exactly this reason.
+                pending_usage = state.pending_semantic_settlements.get(
+                    payload.record.reservation_id
                 )
-            # The cross-event proof that a `reservation_id` was genuinely settled
-            # (never merely released) with matching charged usage is a
-            # batch-admission property, not a single-event one: it requires
-            # seeing the paired `BudgetReservationSettled`/`Released` event that
-            # this same append() batch always carries alongside the record. See
-            # `validate_semantic_reservation_admission`, run by
-            # `FrontierReasoningEngine.append` over the whole proposed batch
-            # before any event in it is applied here.
+                if pending_usage is None:
+                    raise ValueError(
+                        "semantic model-call reservation settlement evidence is missing "
+                        "from applied state"
+                    )
+                if pending_usage != payload.record.charged_usage:
+                    raise ValueError(
+                        "semantic model-call charged usage does not match its applied "
+                        "budget settlement"
+                    )
+                changes["pending_semantic_settlements"] = {
+                    key: value
+                    for key, value in state.pending_semantic_settlements.items()
+                    if key != payload.record.reservation_id
+                }
+                # Finding #1 (C04 remediation): content-provenance proof. A SUCCESS
+                # record's `proposal_artifact` bytes must actually decode and validate
+                # against the exact schema its own `output_schema_id`/`_version`/`_hash`
+                # claim -- otherwise a forged record could point at arbitrary,
+                # schema-invalid bytes and still pass every structural check above.
+                # This also subsumes finding #4 (F13's schema-hash check): re-deriving
+                # a successful validation against the registry-resolved model type
+                # necessarily reconfirms the schema hash, structurally, not just at the
+                # one `_invoke` call site.
+                if (
+                    payload.record.status is StructuredModelStatus.SUCCESS
+                    and payload.record.proposal_artifact is not None
+                    and self._artifact_reader is not None
+                    and self._schema_registry is not None
+                ):
+                    definition, model_type = self._schema_registry.get(
+                        payload.record.output_schema_id, payload.record.output_schema_version
+                    )
+                    if definition.schema_hash != payload.record.output_schema_hash:
+                        raise ValueError(
+                            "semantic model-call output schema hash does not match the "
+                            "registered schema"
+                        )
+                    artifact_bytes = self._artifact_reader(payload.record.proposal_artifact.sha256)
+                    try:
+                        model_type.model_validate_json(artifact_bytes, strict=True)
+                    except (ValidationError, ValueError) as error:
+                        raise ValueError(
+                            "semantic model-call proposal artifact does not validate "
+                            "against its claimed output schema"
+                        ) from error
             changes["model_calls"] = (*state.model_calls, payload.record)
         elif isinstance(payload, TaskClassified):
             changes["task_signature"] = payload.signature
@@ -479,16 +628,39 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
     on interruption before a record exists, a release with no paired record)
     together with the `ModelCallRecorded`/`ModelCallFailed` v2 event in one
     `FrontierReasoningEngine.append` call. This function is the batch-scoped
-    half of the F09 fix: it walks the proposed batch once, in order, and for
-    every `ModelCallRecordedV2`/`ModelCallFailedV2` requires exactly one
-    still-unconsumed `BudgetReservationSettled` (never a `BudgetReservationReleased`)
-    for that record's own `reservation_id`, earlier in the same batch, whose
+    half of the F09 fix: for every `ModelCallRecordedV2`/`ModelCallFailedV2`
+    anywhere in the batch, it requires exactly one still-unconsumed
+    `BudgetReservationSettled` (never a `BudgetReservationReleased`) for that
+    record's own `reservation_id`, *somewhere in the same batch*, whose
     `actual_usage` matches the record's `charged_usage` bit-for-bit.
 
     This closes the exact reviewer-flagged gap: a forged `ModelCallRecordedV2`
     paired with a `BudgetReservationReleased` (instead of `Settled`) for its
     reservation, or with a settlement for someone else's reservation_id, is
     rejected here before a single event in the batch is persisted.
+
+    Finding #5 (C04 remediation): this function scans the *whole* batch in two
+    passes -- first collecting every settlement/release by `reservation_id`,
+    then validating every record against that complete map -- rather than a
+    single forward scan that only sees events positioned earlier in the
+    tuple. A record is therefore correctly admitted regardless of whether its
+    settlement happens to be ordered before or after it within the same
+    submitted batch; only membership in the same batch matters, not relative
+    position. (`RunReducer.apply`'s own embedded duplicate of this check,
+    applied sequentially per event during both this preview and later replay,
+    remains strictly order-dependent -- see the long comment on that check for
+    why that is intentional and does not regress real traffic.)
+
+    Finding #11 (C04 remediation, documentation-only): a settlement referenced
+    by a record MUST be in *this same batch* as that record -- this is a
+    deliberate design choice, not an oversight. This function only ever sees
+    one proposed `FrontierReasoningEngine.append` batch at a time and proves
+    linkage within it; it has no visibility into, and deliberately does not
+    trust, any settlement/release from a prior, already-persisted batch. A
+    future caller needing cross-batch or streaming settlement (e.g. settling a
+    reservation in one call and recording the outcome in a later one) would
+    need to extend this function to consult persisted history, not just
+    assume today's within-batch proof already covers that case.
 
     v1 events (`ModelCallRecorded`/`ModelCallFailed`, carrying a plain
     `SemanticModelCallRecord` with no `reservation_id`) predate reservation
@@ -501,6 +673,8 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
     duplicate that check, only the cross-event linkage `apply()` cannot see
     one event at a time.
     """
+    # Pass 1: collect every settlement/release in the batch by reservation_id,
+    # in encounter order, regardless of where the corresponding record sits.
     pending: dict[str, list[tuple[str, ResourceVector | None]]] = {}
     for event in events:
         payload = event.validated_payload()
@@ -508,7 +682,11 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
             pending.setdefault(payload.reservation_id, []).append(("SETTLED", payload.actual_usage))
         elif isinstance(payload, BudgetReservationReleased):
             pending.setdefault(payload.reservation_id, []).append(("RELEASED", None))
-        elif isinstance(payload, (ModelCallRecordedV2, ModelCallFailedV2)):
+    # Pass 2: validate every record against the complete map built above, so a
+    # settlement positioned after its record in the tuple is still found.
+    for event in events:
+        payload = event.validated_payload()
+        if isinstance(payload, (ModelCallRecordedV2, ModelCallFailedV2)):
             queue = pending.get(payload.record.reservation_id)
             if not queue:
                 raise ValueError(

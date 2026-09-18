@@ -13,12 +13,37 @@ from fre.domain.task import HorizonClass, Ordinal4, SearchSpaceClass, TaskType
 # registered from trusted, hardcoded model definitions today, but the registry
 # is a hard boundary: any future dynamic/plugin registration path must not be
 # able to smuggle a pathologically large or deeply-nested schema through it.
+# Finding #10 (C04 remediation, documentation-only -- logged as a deferred
+# cleanup item, see WAVE3_DEFERRED_CLEANUP_REGISTER.md): this bounds the
+# canonical (un-dereferenced) JSON-Schema byte size, i.e. `$ref`s counted as
+# their short pointer strings, not the fully dereferenced/expanded form a
+# consumer might materialize. A schema with many references to a large shared
+# `$def` could therefore expand to a much larger byte count than this cap
+# once dereferenced. This is accepted as-is today because there is no
+# dynamic/runtime schema registration path: every schema in
+# `default_output_schema_registry` is hardcoded at startup and reviewed, so
+# nothing here is attacker- or caller-controlled. Re-audit this assumption
+# before adding any registration path that accepts schemas at runtime.
 MAX_SCHEMA_CANONICAL_BYTES = 65_536
 MAX_SCHEMA_NESTING_DEPTH = 20
 # `$ref` is only supported when it stays within the schema's own local
 # `$defs` table. Remote/external refs and unbounded `patternProperties`
 # (regex-driven, a classic ReDoS vector) are rejected outright.
 _UNSUPPORTED_CONSTRUCTS = ("patternProperties",)
+# Finding #9 (C04 remediation): a string field's `"pattern"` constraint is
+# itself a regex-driven ReDoS vector -- an attacker-controlled or merely
+# careless catastrophically-backtracking pattern registered as an output
+# schema would let a single crafted (or even just unlucky) provider response
+# hang validation indefinitely. The safe default is to disallow `pattern`
+# entirely. Two of the three schemas registered today (`ClassificationOutput`,
+# `ProblemFormalisationOutput`, via the shared `ArtifactRef.sha256` and
+# `SourceAnchor.excerpt_hash` domain fields) already carry one -- but only
+# ever this one, fixed, hardcoded, linear, non-backtracking hex-digest
+# pattern, never anything attacker- or caller-supplied. Rather than break
+# those two schemas, the denylist allows exactly this pattern value and
+# rejects every other one; any newly registered schema that needs a different
+# `pattern` must add it here explicitly, as a deliberate, reviewed exception.
+_ALLOWED_SCHEMA_PATTERNS = frozenset({r"^[0-9a-f]{64}$"})
 
 
 def canonical_schema_bytes(model: type[BaseModel]) -> bytes:
@@ -50,6 +75,8 @@ def _schema_nesting_depth(
     root: JsonValue | None = None,
     depth: int = 0,
     visiting: frozenset[str] = frozenset(),
+    _height_cache: dict[str, int] | None = None,
+    _in_progress: set[str] | None = None,
 ) -> int:
     # Pydantic flattens nested submodels into a shared `$defs` table and
     # `$ref`s them in, so raw dict/list nesting alone would under-count the
@@ -60,31 +87,74 @@ def _schema_nesting_depth(
     # counted once (a finite, intentional recursive type) rather than
     # climbing forever. `depth` also strictly increases on every recursive
     # step regardless, so the bail-out below is a second, independent bound.
+    #
+    # `_height_cache`/`_in_progress` (finding #3, C04 remediation): a `$def`
+    # reused from many sibling paths (e.g. the same submodel referenced by
+    # several fields, each nested tens of levels deep) would otherwise be
+    # re-expanded once per reference *path*, which is exponential in the
+    # number of reuse sites. `_height_cache` memoizes each ref's own
+    # "intrinsic height" (its depth contribution computed once, starting
+    # fresh at depth 0, independent of where it is reached from) the first
+    # time it is fully resolved, so every later reference to the same ref
+    # anywhere in the schema is an O(1) lookup. `_in_progress` tracks refs
+    # currently being resolved *for their own height computation* so that a
+    # true mutual cycle between two distinct `$def`s (A -> B -> A) cannot spin
+    # forever before either is cached -- it is a stricter, computation-scoped
+    # analogue of `visiting`, which only protects a single calling path.
     root = value if root is None else root
+    height_cache = {} if _height_cache is None else _height_cache
+    in_progress = set() if _in_progress is None else _in_progress
     if depth > MAX_SCHEMA_NESTING_DEPTH:
         # Bail out early rather than recursing arbitrarily far on adversarial input.
         return depth
     if isinstance(value, dict):
         ref = value.get("$ref")
         if isinstance(ref, str):
-            if ref in visiting:
+            if ref in visiting or ref in in_progress:
                 return depth + 1
+            if ref in height_cache:
+                return depth + 1 + height_cache[ref]
             resolved = _resolve_local_ref(root, ref)
             if resolved is not None:
-                return _schema_nesting_depth(
-                    resolved, root=root, depth=depth + 1, visiting=visiting | {ref}
-                )
+                in_progress.add(ref)
+                try:
+                    height = _schema_nesting_depth(
+                        resolved,
+                        root=root,
+                        depth=0,
+                        visiting=frozenset({ref}),
+                        _height_cache=height_cache,
+                        _in_progress=in_progress,
+                    )
+                finally:
+                    in_progress.discard(ref)
+                height_cache[ref] = height
+                return depth + 1 + height
         if not value:
             return depth
         return max(
-            _schema_nesting_depth(item, root=root, depth=depth + 1, visiting=visiting)
+            _schema_nesting_depth(
+                item,
+                root=root,
+                depth=depth + 1,
+                visiting=visiting,
+                _height_cache=height_cache,
+                _in_progress=in_progress,
+            )
             for item in value.values()
         )
     if isinstance(value, list):
         if not value:
             return depth
         return max(
-            _schema_nesting_depth(item, root=root, depth=depth + 1, visiting=visiting)
+            _schema_nesting_depth(
+                item,
+                root=root,
+                depth=depth + 1,
+                visiting=visiting,
+                _height_cache=height_cache,
+                _in_progress=in_progress,
+            )
             for item in value
         )
     return depth
@@ -97,6 +167,10 @@ def _check_supported_constructs(value: JsonValue) -> None:
                 raise OutputSchemaError(f"unsupported schema construct: {key}")
             if key == "$ref" and isinstance(item, str) and not item.startswith("#/$defs/"):
                 raise OutputSchemaError("unsupported schema construct: external $ref")
+            if key == "pattern" and item not in _ALLOWED_SCHEMA_PATTERNS:
+                raise OutputSchemaError(
+                    "unsupported schema construct: pattern (not on the reviewed allowlist)"
+                )
             _check_supported_constructs(item)
     elif isinstance(value, list):
         for item in value:
