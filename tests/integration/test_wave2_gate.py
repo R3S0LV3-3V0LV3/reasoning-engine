@@ -11,7 +11,13 @@ from fre.domain.ledger import (
     LedgerNodeType,
     LedgerRelation,
 )
-from fre.domain.stop import AcceptanceStatus, StopInputs, StopPolicy, ValidationStatus
+from fre.domain.stop import (
+    AcceptanceStatus,
+    StopDecisionRecord,
+    StopInputs,
+    StopPolicy,
+    ValidationStatus,
+)
 from fre.domain.task import (
     HorizonClass,
     Ordinal4,
@@ -37,6 +43,8 @@ from fre.runtime.events import (
     LedgerEdgeAdded,
     LedgerNodeAdded,
     LedgerNodeRevised,
+    StopDecisionRecordedV2,
+    StoredEvent,
 )
 from fre.runtime.events import TestValueSet as ValueSet
 from fre.runtime.reducer import RunReducer
@@ -386,7 +394,7 @@ def test_finalization_rejects_stop_decisions_staled_by_authoritative_changes(
         runtime.finalize(run.run_id, decision)
 
 
-def test_duplicate_stop_decision_cannot_refresh_freshness_boundary(
+def test_equal_stop_decision_can_be_recomputed_against_fresh_state(
     engine: FrontierReasoningEngine,
 ) -> None:
     run = engine.create_run({"stale-stop": "duplicate"})
@@ -416,7 +424,7 @@ def test_duplicate_stop_decision_cannot_refresh_freshness_boundary(
         StopPolicy(version="stop/1.0"),
     )
     runtime = Wave2Runtime(engine)
-    runtime.record_decision(run.run_id, decision)
+    first_sequence = runtime.record_decision(run.run_id, decision)
     current = engine.inspect(run.run_id)
     engine.append(
         run.run_id,
@@ -424,10 +432,207 @@ def test_duplicate_stop_decision_cannot_refresh_freshness_boundary(
         (engine.make_event(run.run_id, ValueSet(key="late", value=True)),),
     )
 
-    with pytest.raises(ValueError, match="already recorded"):
-        runtime.record_decision(run.run_id, decision)
-    with pytest.raises(ValueError, match="stale"):
-        runtime.finalize(run.run_id, decision)
+    second_sequence = runtime.record_decision(run.run_id, decision)
+    rebound = engine.inspect(run.run_id)
+    assert second_sequence > first_sequence
+    assert len(rebound.stop_decision_records) == 2
+    assert rebound.stop_decision_records[0].decision == decision
+    assert rebound.stop_decision_records[1].decision == decision
+    assert (
+        rebound.stop_decision_records[0].evaluated_state_version
+        < rebound.stop_decision_records[1].evaluated_state_version
+    )
+    assert runtime.finalize(run.run_id, decision)
+
+
+def test_stop_decision_v2_rejects_tampered_or_duplicate_state_binding(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run = engine.create_run({"stop-binding": "tamper"})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    valid_record = StopDecisionRecord(
+        decision=decision,
+        evaluated_state_version=state.version,
+        evaluated_state_hash=state.state_hash,
+        budget_projection_hash=decision.budget_projection_hash,
+    )
+    tampered = valid_record.model_copy(update={"evaluated_state_hash": "f" * 64})
+    with pytest.raises(ValueError, match="state hash"):
+        engine.append(
+            run.run_id,
+            state.version,
+            (
+                engine.make_event(
+                    run.run_id, StopDecisionRecordedV2(record=tampered), module_id="M13"
+                ),
+            ),
+        )
+    assert engine.inspect(run.run_id).version == state.version
+
+    event = engine.make_event(
+        run.run_id, StopDecisionRecordedV2(record=valid_record), module_id="M13"
+    )
+    engine.append(run.run_id, state.version, (event,))
+    recorded = engine.inspect(run.run_id)
+    with pytest.raises(ValueError, match="state version"):
+        engine.append(
+            run.run_id,
+            recorded.version,
+            (
+                engine.make_event(
+                    run.run_id, StopDecisionRecordedV2(record=valid_record), module_id="M13"
+                ),
+            ),
+        )
+
+
+def test_stop_decision_v2_binding_survives_snapshot_and_replay(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run = engine.create_run({"stop-binding": "snapshot"})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    Wave2Runtime(engine).record_decision(run.run_id, decision)
+    wire_event = engine.store.load(run.run_id)[-1]
+    assert wire_event.event_type == "StopDecisionRecorded"
+    assert wire_event.schema_version == "2.0"
+    assert isinstance(wire_event.validated_payload(), StopDecisionRecordedV2)
+    expected = engine.inspect(run.run_id)
+    engine.snapshot(run.run_id)
+
+    assert engine.replay(run.run_id).stop_decision_records == expected.stop_decision_records
+    assert engine.verify(run.run_id).stop_decision_records == expected.stop_decision_records
+    assert (
+        engine.replay_from_snapshot(run.run_id).stop_decision_records
+        == expected.stop_decision_records
+    )
+
+
+def test_finalize_accepts_stop_decision_recorded_inside_multi_event_batch(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Wave2Runtime.finalize compares the sequence of the scanned
+    StopDecisionRecordedV2 event against ``latest_record.evaluated_state_version
+    + 1``. That relationship is not an assumption of "one event per version" --
+    it is guaranteed by RunReducer.apply's own invariants for any event that was
+    actually applied (event.sequence == pre-apply state.version + 1, and the
+    reducer separately requires record.evaluated_state_version == that same
+    pre-apply state.version). It therefore holds regardless of what else is
+    batched alongside the decision event, as long as the decision is evaluated
+    against the state as it will exist *after* any earlier same-batch events
+    are applied. This test appends an unrelated event and the stop decision
+    together in a single multi-event ``append()`` call and confirms finalize()
+    still recognizes and accepts the binding -- guarding SQLiteStore's
+    per-event (not per-batch) sequence assignment in ``_append_locked``."""
+    run = engine.create_run({"multi-event-batch": "stop-decision"})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    base_state = engine.inspect(run.run_id)
+    side_event = engine.make_event(
+        run.run_id, ValueSet(key="batched", value=True), module_id="test"
+    )
+    # Preview the side event to compute the state the decision must be bound
+    # to: the state as it will exist after THIS batch's first event applies,
+    # not the state before the batch started.
+    previewed_side_event = StoredEvent.model_validate(
+        {
+            **side_event.model_dump(),
+            "created_at": side_event.created_at,
+            "sequence": base_state.version + 1,
+        },
+        strict=True,
+    )
+    intermediate_state = RunReducer().apply(base_state, previewed_side_event)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(intermediate_state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    remaining = BudgetMeter().remaining(intermediate_state.budget)
+    record = StopDecisionRecord(
+        decision=decision,
+        evaluated_state_version=intermediate_state.version,
+        evaluated_state_hash=intermediate_state.state_hash,
+        budget_projection_hash=remaining.projection_hash,
+    )
+    decision_event = engine.make_event(
+        run.run_id, StopDecisionRecordedV2(record=record), module_id="M13"
+    )
+    engine.append(run.run_id, base_state.version, (side_event, decision_event))
+
+    state_after_batch = engine.inspect(run.run_id)
+    assert state_after_batch.stop_decision_records[-1] == record
+    assert state_after_batch.values == {"batched": True}
+
+    runtime = Wave2Runtime(engine)
+    terminal_hash = runtime.finalize(run.run_id, decision)
+    final_state = engine.inspect(run.run_id)
+    assert final_state.terminal_context_packet_hash == terminal_hash
+    assert final_state.status == decision.disposition.value
 
 
 @pytest.mark.integration
@@ -447,6 +652,80 @@ def test_wave1_state_hash_shape_remains_compatible(engine: FrontierReasoningEngi
     assert state.state_hash == canonical_hash(wave1_payload)
     engine.snapshot(run.run_id)
     assert engine.verify(run.run_id) == state
+
+
+@pytest.mark.integration
+def test_empty_v2_stop_decision_records_preserve_historic_v1_snapshot_shape(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Reducer "2.0" with an unpopulated stop_decision_records projection must
+    hash identically to a Wave 1/2 run that never knew the field existed --
+    RunState.snapshot_payload() pops the key only when it is empty."""
+    run = engine.create_run({"snapshot-matrix": "empty-v2-records"})
+    state = engine.inspect(run.run_id)
+    assert state.stop_decision_records == ()
+    payload = state.snapshot_payload()
+    assert "stop_decision_records" not in payload
+    assert (
+        state.state_hash
+        == RunReducer().reduce(run.run_id, engine.store.load(run.run_id)).state_hash
+    )
+
+
+@pytest.mark.integration
+def test_nonempty_v2_stop_decision_records_are_never_silently_dropped(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Guards RunState.snapshot_payload(): the ``stop_decision_records`` pop
+    must stay conditional on emptiness alone. If someone makes it unconditional
+    (dropping populated v2 records the same way empty ones are dropped for v1
+    compatibility), this test must fail -- the key would vanish and the hash
+    would stop depending on the recorded decision content."""
+    run = engine.create_run({"snapshot-matrix": "nonempty-v2-records"})
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature(), default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    empty_state = engine.inspect(run.run_id)
+    empty_hash = empty_state.state_hash
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(empty_state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    Wave2Runtime(engine).record_decision(run.run_id, decision)
+    populated_state = engine.inspect(run.run_id)
+    assert populated_state.stop_decision_records != ()
+    payload = populated_state.snapshot_payload()
+    assert "stop_decision_records" in payload
+    assert payload["stop_decision_records"] == [
+        record.model_dump(mode="json") for record in populated_state.stop_decision_records
+    ]
+    # The hash must move once the (non-empty) field is included -- if the pop
+    # became unconditional, populated_state.state_hash would collapse back to
+    # something computed without this field and could coincide with a state
+    # that never had a decision recorded at all in degenerate cases; comparing
+    # directly against the empty-records hash before this decision was
+    # recorded is the sharpest, least coincidence-prone check available.
+    assert populated_state.state_hash != empty_hash
+    engine.snapshot(run.run_id)
+    assert engine.verify(run.run_id).state_hash == populated_state.state_hash
+    assert engine.replay_from_snapshot(run.run_id).state_hash == populated_state.state_hash
 
 
 @pytest.mark.integration

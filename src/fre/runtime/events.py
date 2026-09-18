@@ -18,7 +18,7 @@ from fre.domain.ledger import (
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
 from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
-from fre.domain.stop import StopDecision
+from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 
 
@@ -108,6 +108,10 @@ class StopDecisionRecorded(FrozenModel):
     decision: StopDecision
 
 
+class StopDecisionRecordedV2(FrozenModel):
+    record: StopDecisionRecord
+
+
 class TerminalContextAssociated(FrozenModel):
     stop_disposition: str
     packet_hash: str
@@ -180,6 +184,7 @@ EventPayload = (
     | BudgetReservationReleased
     | ContextCompiled
     | StopDecisionRecorded
+    | StopDecisionRecordedV2
     | TerminalContextAssociated
     | ModelCallRecorded
     | ModelCallFailed
@@ -217,8 +222,6 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         TerminalContextAssociated,
         ModelCallRecorded,
         ModelCallFailed,
-        ModelCallRecordedV2,
-        ModelCallFailedV2,
         TaskClassified,
         ClassificationDiagnosticRecorded,
         ProblemFormalised,
@@ -228,6 +231,22 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         RepresentationArtifactCompiled,
     )
 }
+EVENT_PAYLOADS.update(
+    {
+        ("ModelCallRecorded", "2.0"): ModelCallRecordedV2,
+        ("ModelCallFailed", "2.0"): ModelCallFailedV2,
+        ("StopDecisionRecorded", "2.0"): StopDecisionRecordedV2,
+    }
+)
+EVENT_WIRE_IDENTITIES: dict[type[FrozenModel], tuple[str, SchemaVersion]] = {
+    ModelCallRecordedV2: ("ModelCallRecorded", "2.0"),
+    ModelCallFailedV2: ("ModelCallFailed", "2.0"),
+    StopDecisionRecordedV2: ("StopDecisionRecorded", "2.0"),
+}
+
+
+def event_wire_identity(payload: FrozenModel) -> tuple[str, SchemaVersion]:
+    return EVENT_WIRE_IDENTITIES.get(type(payload), (type(payload).__name__, "1.0"))
 
 
 class UncommittedEvent(FrozenModel):
