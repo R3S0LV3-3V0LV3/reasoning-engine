@@ -223,11 +223,12 @@ permissions:
   contents: read
 jobs:
   test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {PERSIST-CREDENTIALS: false}
       - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
-        with: {UPLOAD: never}
+        with: {OUTPUT: codeql-results, UPLOAD: never}
 """,
     )
 
@@ -301,6 +302,62 @@ jobs:
     assert sum("unapproved workflow command" in item for item in failures) == 5
 
 
+def test_rejects_untrusted_execution_context(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+env:
+  PATH: payload:/usr/bin:/bin
+defaults:
+  run:
+    shell: python payload.py {0}
+    working-directory: payload
+jobs:
+  test:
+    runs-on: self-hosted
+    container: attacker/image
+    steps:
+      - shell: python payload.py {0}
+        working-directory: payload
+        run: uv sync --locked --all-groups --no-install-project
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("custom workflow shells are prohibited" in item for item in failures)
+    assert any("non-root workflow working directories are prohibited" in item for item in failures)
+    assert any("unapproved workflow environment variable: PATH" in item for item in failures)
+    assert any("job test must run on ubuntu-latest" in item for item in failures)
+    assert any("job test may not define containers or services" in item for item in failures)
+
+
+def test_rejects_untrusted_pinned_actions_and_action_inputs(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: attacker/path-mutator@1111111111111111111111111111111111111111
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          tool-dir: payload
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert any("action is not in the trusted allowlist" in item for item in failures)
+    assert any("unapproved inputs for action attacker/path-mutator" in item for item in failures)
+    assert any("unapproved inputs for action astral-sh/setup-uv" in item for item in failures)
+
+
 def test_allows_pinned_read_only_workflow_and_local_codeql_analysis(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,
@@ -311,11 +368,12 @@ permissions:
   contents: read
 jobs:
   test:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: {persist-credentials: false}
       - uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca
-        with: {upload: never}
+        with: {output: codeql-results, upload: never}
 """,
     )
 

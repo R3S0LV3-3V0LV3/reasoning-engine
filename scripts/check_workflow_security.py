@@ -49,6 +49,37 @@ ALLOWED_WORKFLOW_COMMANDS = frozenset(
         ("uv", "sync", "--locked", "--all-groups", "--no-install-project"),
     }
 )
+ALLOWED_ENVIRONMENT_ENTRIES = {
+    "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+    "PYTHON_VERSION": "3.12",
+    "UV_VERSION": "0.11.16",
+}
+ALLOWED_ACTIONS = frozenset(
+    {
+        ("actions/checkout", "11d5960a326750d5838078e36cf38b85af677262"),
+        ("actions/dependency-review-action", "a1d282b36b6f3519aa1f3fc636f609c47dddb294"),
+        ("actions/setup-python", "a26af69be951a213d495a4c3e4e4022e16d87065"),
+        ("astral-sh/setup-uv", "d0cc045d04ccac9d8b7881df0226f9e82c39688e"),
+        ("github/codeql-action/analyze", "faaca9a8f6edddba5725ffe5adefdab6669a2eca"),
+        ("github/codeql-action/init", "faaca9a8f6edddba5725ffe5adefdab6669a2eca"),
+        ("gitleaks/gitleaks-action", "e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e"),
+    }
+)
+ALLOWED_ACTION_INPUTS: dict[str, tuple[dict[str, object], ...]] = {
+    "actions/checkout": (
+        {"persist-credentials": "false"},
+        {"fetch-depth": "0", "persist-credentials": "false"},
+    ),
+    "actions/dependency-review-action": ({"fail-on-severity": "high"},),
+    "actions/setup-python": (
+        {"python-version": "${{ env.PYTHON_VERSION }}"},
+        {"python-version": "3.12"},
+    ),
+    "astral-sh/setup-uv": ({"enable-cache": "true", "version": "${{ env.UV_VERSION }}"},),
+    "github/codeql-action/analyze": ({"output": "codeql-results", "upload": "never"},),
+    "github/codeql-action/init": ({"languages": "python", "queries": "security-extended"},),
+    "gitleaks/gitleaks-action": ({},),
+}
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -157,6 +188,36 @@ def _run_command_failures(value: object, path: Path) -> list[str]:
     return failures
 
 
+def _execution_context_failures(node: Mapping[str, Any], path: Path) -> list[str]:
+    failures: list[str] = []
+    if "shell" in node:
+        failures.append(f"{path}: custom workflow shells are prohibited")
+    if "working-directory" in node:
+        failures.append(f"{path}: non-root workflow working directories are prohibited")
+
+    environment = node.get("env")
+    if environment is None:
+        return failures
+    if not isinstance(environment, Mapping):
+        failures.append(f"{path}: workflow env must be a mapping")
+        return failures
+
+    seen: set[str] = set()
+    for key, value in environment.items():
+        name = str(key)
+        normalized_name = name.casefold()
+        if normalized_name in seen:
+            failures.append(f"{path}: duplicate case-insensitive environment key {name!r}")
+            continue
+        seen.add(normalized_name)
+        if name not in ALLOWED_ENVIRONMENT_ENTRIES:
+            failures.append(f"{path}: unapproved workflow environment variable: {name}")
+            continue
+        if value != ALLOWED_ENVIRONMENT_ENTRIES[name]:
+            failures.append(f"{path}: unapproved value for workflow environment variable {name}")
+    return failures
+
+
 def validate_workflow(path: Path) -> list[str]:
     try:
         document = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
@@ -178,7 +239,14 @@ def validate_workflow(path: Path) -> list[str]:
         return failures
 
     for job_name, job in jobs.items():
-        if isinstance(job, Mapping) and "permissions" in job:
+        if not isinstance(job, Mapping):
+            failures.append(f"{path}: job {job_name} must be a mapping")
+            continue
+        if job.get("runs-on") != "ubuntu-latest":
+            failures.append(f"{path}: job {job_name} must run on ubuntu-latest")
+        if "container" in job or "services" in job:
+            failures.append(f"{path}: job {job_name} may not define containers or services")
+        if "permissions" in job:
             failures.extend(
                 _permission_failures(
                     job.get("permissions"),
@@ -187,6 +255,7 @@ def validate_workflow(path: Path) -> list[str]:
             )
 
     for node in _walk(document):
+        failures.extend(_execution_context_failures(node, path))
         failures.extend(_run_command_failures(node.get("run"), path))
         use = node.get("uses")
         if not isinstance(use, str):
@@ -205,6 +274,11 @@ def validate_workflow(path: Path) -> list[str]:
 
         inputs, input_failures = _normalized_inputs(node.get("with"), path, action)
         failures.extend(input_failures)
+        if (normalized_action, revision) not in ALLOWED_ACTIONS:
+            failures.append(f"{path}: action is not in the trusted allowlist: {use}")
+        allowed_input_profiles = ALLOWED_ACTION_INPUTS.get(normalized_action)
+        if allowed_input_profiles is None or inputs not in allowed_input_profiles:
+            failures.append(f"{path}: unapproved inputs for action {action}")
         if normalized_action == "actions/checkout":
             persist_credentials = inputs.get("persist-credentials")
             if persist_credentials != "false":
