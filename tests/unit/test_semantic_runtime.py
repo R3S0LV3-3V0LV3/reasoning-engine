@@ -11,6 +11,9 @@ from fre.domain.common import JsonValue, OutputContract, PermissionSet
 from fre.domain.semantic import (
     SemanticAccountingCondition,
     SemanticCallUsage,
+    SemanticChargeBasis,
+    SemanticModelCallRecord,
+    SemanticModelCallRecordV2,
     StructuredModelRequest,
     StructuredModelResult,
     StructuredModelStatus,
@@ -21,7 +24,13 @@ from fre.modules.m01_classifier import TaskClassifier
 from fre.modules.m02_budget import BudgetAllocator, default_tier_policy
 from fre.prompts import default_output_schema_registry, default_prompt_registry
 from fre.prompts.registry import PromptDefinition
-from fre.runtime.events import BudgetAllocated
+from fre.runtime.events import (
+    BudgetAllocated,
+    BudgetReservationReleased,
+    BudgetReservationSettled,
+    ModelCallFailedV2,
+    ModelCallRecorded,
+)
 from fre.semantic_runtime import (
     SemanticExecution,
     SemanticModelRuntime,
@@ -226,29 +235,54 @@ def test_zero_repairs_and_repair_budget_refusal_preserve_initial_record(
 
 
 @pytest.mark.unit
-def test_empty_raw_success_overreported_usage_and_interruption_recovery(
+def test_overreported_usage_charges_reservation_and_blocks_a_second_call(
     engine: FrontierReasoningEngine,
 ) -> None:
-    run_id, value = setup(engine)
+    run_id, value = setup(engine, calls=1)
     over = result().model_copy(
         update={"usage": SemanticCallUsage(input_tokens=9999, output_tokens=9999)}
     )
     model = CapturingModel([over])
-    execution = run(
-        SemanticModelRuntime(
-            model, engine, default_prompt_registry(), default_output_schema_registry()
-        ),
-        run_id,
-        value,
+    runtime = SemanticModelRuntime(
+        model, engine, default_prompt_registry(), default_output_schema_registry()
     )
-    assert execution.record is not None
+    execution = run(runtime, run_id, value)
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
     assert (
         execution.record.accounting_condition
-        is SemanticAccountingCondition.USAGE_EXCEEDS_RESERVATION
+        is SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
     )
-    assert engine.inspect(run_id).budget.committed.llm_calls == 0
-    assert engine.inspect(run_id).budget.reservations == ()
+    assert execution.proposal is None
+    assert execution.record.reported_usage.input_tokens == 9999
+    assert execution.record.reported_usage.output_tokens == 9999
+    assert execution.record.charged_usage.llm_calls == 1
+    assert execution.record.charged_usage.input_tokens == 4096
+    assert execution.record.charged_usage.output_tokens == 2048
+    assert execution.record.charge_basis is SemanticChargeBasis.RESERVATION_CAP_ON_PROVIDER_OVERAGE
+    assert any(isinstance(item, BudgetReservationSettled) for item in execution.event_payloads)
+    assert any(isinstance(item, ModelCallFailedV2) for item in execution.event_payloads)
+    assert not any(isinstance(item, BudgetReservationReleased) for item in execution.event_payloads)
 
+    state = engine.inspect(run_id)
+    assert state.budget.committed.llm_calls == 1
+    assert state.budget.committed.input_tokens == 4096
+    assert state.budget.committed.output_tokens == 2048
+    assert state.budget.reservations == ()
+    replayed = engine.replay(run_id)
+    replayed_record = replayed.model_calls[-1]
+    assert isinstance(replayed_record, SemanticModelCallRecordV2)
+    assert replayed_record.reported_usage == execution.record.reported_usage
+    assert replayed_record.charged_usage == execution.record.charged_usage
+
+    refused = run(runtime, run_id, {"distinct_input": value})
+    assert refused.cause == "BUDGET_UNAVAILABLE" and refused.record is None
+    assert len(model.requests) == 1
+
+
+@pytest.mark.unit
+def test_interruption_and_provider_exception_before_usage_release_reservation(
+    engine: FrontierReasoningEngine,
+) -> None:
     cancelled_run, cancelled_value = setup(engine)
     cancelled = CapturingModel([asyncio.CancelledError()])
     runtime = SemanticModelRuntime(
@@ -256,7 +290,117 @@ def test_empty_raw_success_overreported_usage_and_interruption_recovery(
     )
     with pytest.raises(asyncio.CancelledError):
         run(runtime, cancelled_run, cancelled_value)
-    assert engine.inspect(cancelled_run).budget.reservations == ()
+    cancelled_state = engine.inspect(cancelled_run)
+    assert cancelled_state.budget.reservations == ()
+    assert cancelled_state.budget.committed.llm_calls == 0
+
+    failed_run, failed_value = setup(engine)
+    failed = CapturingModel([RuntimeError("provider failed before reporting usage")])
+    failed_runtime = SemanticModelRuntime(
+        failed, engine, default_prompt_registry(), default_output_schema_registry()
+    )
+    with pytest.raises(RuntimeError, match="provider failed"):
+        run(failed_runtime, failed_run, failed_value)
+    failed_state = engine.inspect(failed_run)
+    assert failed_state.budget.reservations == ()
+    assert failed_state.budget.committed.llm_calls == 0
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("usage", "expected_input", "expected_output", "basis"),
+    (
+        (SemanticCallUsage(input_tokens=0, output_tokens=0), 0, 0, "REPORTED_USAGE"),
+        (SemanticCallUsage(input_tokens=100, output_tokens=50), 100, 50, "REPORTED_USAGE"),
+        (
+            SemanticCallUsage(input_tokens=4096, output_tokens=2048),
+            4096,
+            2048,
+            "REPORTED_USAGE",
+        ),
+        (
+            SemanticCallUsage(),
+            4096,
+            2048,
+            "CONSERVATIVE_RESERVED_CAPACITY",
+        ),
+    ),
+)
+def test_normal_usage_settlement_preserves_accepted_charge_behavior(
+    engine: FrontierReasoningEngine,
+    usage: SemanticCallUsage,
+    expected_input: int,
+    expected_output: int,
+    basis: str,
+) -> None:
+    run_id, value = setup(engine)
+    model = CapturingModel([result().model_copy(update={"usage": usage})])
+    execution = run(
+        SemanticModelRuntime(
+            model, engine, default_prompt_registry(), default_output_schema_registry()
+        ),
+        run_id,
+        value,
+    )
+
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
+    assert execution.record.accounting_condition is None
+    assert execution.record.policy_charge.input_tokens == expected_input
+    assert execution.record.policy_charge.output_tokens == expected_output
+    assert execution.record.charge_basis.value == basis
+    state = engine.inspect(run_id)
+    assert state.budget.committed.input_tokens == expected_input
+    assert state.budget.committed.output_tokens == expected_output
+    assert state.budget.reservations == ()
+
+
+@pytest.mark.unit
+def test_v1_model_call_event_decode_remains_compatible(engine: FrontierReasoningEngine) -> None:
+    run_id, value = setup(engine)
+    model = CapturingModel([result()])
+    execution = run(
+        SemanticModelRuntime(
+            model, engine, default_prompt_registry(), default_output_schema_registry()
+        ),
+        run_id,
+        value,
+    )
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
+    legacy_record = SemanticModelCallRecord.model_validate(
+        execution.record.model_dump(
+            exclude={"reservation_id", "reported_usage", "charged_usage", "charge_basis"}
+        ),
+        strict=True,
+    )
+    legacy_event = engine.make_event(
+        run_id, ModelCallRecorded(record=legacy_record), module_id="semantic-runtime"
+    )
+
+    decoded = legacy_event.validated_payload()
+    assert isinstance(decoded, ModelCallRecorded)
+    assert decoded.record == legacy_record
+    assert "reservation_id" not in decoded.record.model_dump()
+
+
+@pytest.mark.unit
+def test_v2_model_call_record_rejects_inconsistent_accounting(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run_id, value = setup(engine)
+    model = CapturingModel([result()])
+    execution = run(
+        SemanticModelRuntime(
+            model, engine, default_prompt_registry(), default_output_schema_registry()
+        ),
+        run_id,
+        value,
+    )
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
+    inconsistent = execution.record.model_dump()
+    inconsistent["reported_usage"] = {"input_tokens": 1, "output_tokens": 1}
+
+    with pytest.raises(ValueError, match="reported usage"):
+        SemanticModelCallRecordV2.model_validate(inconsistent, strict=True)
 
 
 @pytest.mark.unit

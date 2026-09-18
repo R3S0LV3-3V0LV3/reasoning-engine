@@ -9,7 +9,9 @@ from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, canonical_has
 from fre.domain.semantic import (
     SemanticAccountingCondition,
     SemanticCallCharge,
+    SemanticChargeBasis,
     SemanticModelCallRecord,
+    SemanticModelCallRecordV2,
     StructuredModelRequest,
     StructuredModelResult,
     StructuredModelStatus,
@@ -24,8 +26,8 @@ from fre.runtime.events import (
     BudgetReservationSettled,
     BudgetReserved,
     EventPayload,
-    ModelCallFailed,
-    ModelCallRecorded,
+    ModelCallFailedV2,
+    ModelCallRecordedV2,
 )
 
 
@@ -42,7 +44,7 @@ class SemanticRuntimePolicy(FrozenModel):
 
 class SemanticExecution(FrozenModel):
     proposal: BaseModel | None = None
-    record: SemanticModelCallRecord | None = None
+    record: SemanticModelCallRecordV2 | SemanticModelCallRecord | None = None
     event_payloads: tuple[EventPayload, ...] = ()
     reused: bool = False
     repaired: bool = False
@@ -275,8 +277,20 @@ class SemanticModelRuntime:
             getattr(actual, name) > getattr(reservation.resources, name)
             for name in ("llm_calls", "input_tokens", "output_tokens")
         )
-        accounting = SemanticAccountingCondition.USAGE_EXCEEDS_RESERVATION if over else None
-        record = SemanticModelCallRecord(
+        charged = reservation.resources if over else actual
+        charge_basis = (
+            SemanticChargeBasis.RESERVATION_CAP_ON_PROVIDER_OVERAGE
+            if over
+            else (
+                SemanticChargeBasis.REPORTED_USAGE
+                if result.usage.input_tokens is not None and result.usage.output_tokens is not None
+                else SemanticChargeBasis.CONSERVATIVE_RESERVED_CAPACITY
+            )
+        )
+        accounting = (
+            SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION if over else None
+        )
+        record = SemanticModelCallRecordV2(
             call_id=self.engine.uuids.new(),
             idempotency_key=identity,
             module_id=module_id,
@@ -300,12 +314,14 @@ class SemanticModelRuntime:
             usage=result.usage,
             policy_charge=SemanticCallCharge(
                 llm_calls=1,
-                input_tokens=actual.input_tokens,
-                output_tokens=actual.output_tokens,
-                basis="REPORTED_USAGE"
-                if result.usage.input_tokens is not None and result.usage.output_tokens is not None
-                else "CONSERVATIVE_RESERVED_CAPACITY",
+                input_tokens=charged.input_tokens,
+                output_tokens=charged.output_tokens,
+                basis=charge_basis.value,
             ),
+            reservation_id=reservation.reservation_id,
+            reported_usage=result.usage,
+            charged_usage=charged,
+            charge_basis=charge_basis,
             repair_parent_key=repair_parent,
             accounting_condition=accounting,
             validation_diagnostics=tuple(diagnostics),
@@ -325,17 +341,13 @@ class SemanticModelRuntime:
                     byte_size=len(proposal_bytes),
                 )
             )
-        accounting_event: EventPayload = (
-            BudgetReservationReleased(reservation_id=reservation.reservation_id)
-            if over
-            else BudgetReservationSettled(
-                reservation_id=reservation.reservation_id, actual_usage=actual
-            )
+        accounting_event: EventPayload = BudgetReservationSettled(
+            reservation_id=reservation.reservation_id, actual_usage=charged
         )
         recorded: EventPayload = (
-            ModelCallRecorded(record=record)
+            ModelCallRecordedV2(record=record)
             if (status is StructuredModelStatus.SUCCESS and not over)
-            else ModelCallFailed(
+            else ModelCallFailedV2(
                 record=record,
                 reason=("; ".join(diagnostics) or accounting.value if accounting else status.value),
             )

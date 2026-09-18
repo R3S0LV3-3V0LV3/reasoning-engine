@@ -43,7 +43,7 @@ from fre.prompts.schemas import ClassificationOutput, ProblemFormalisationOutput
 from fre.runtime.budget_meter import BudgetMeter
 from fre.runtime.events import (
     BudgetAllocated,
-    ModelCallRecorded,
+    ModelCallRecordedV2,
     ProblemBlockerRecorded,
     ProblemFormalised,
     RepresentationArtifactCompiled,
@@ -165,7 +165,7 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
     )
     assert execution.repaired and len(model.calls) == 2
     successful_call = next(
-        item for item in execution.event_payloads if isinstance(item, ModelCallRecorded)
+        item for item in execution.event_payloads if isinstance(item, ModelCallRecordedV2)
     )
     assert successful_call.record.raw_artifact is not None
     assert successful_call.record.proposal_artifact is not None
