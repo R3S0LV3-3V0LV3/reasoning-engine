@@ -333,6 +333,48 @@ jobs:
     assert any("job test may not define containers or services" in item for item in failures)
 
 
+def test_rejects_conditions_and_continue_on_error_that_disable_gates(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: pull_request
+permissions: read-all
+jobs:
+  skipped:
+    runs-on: ubuntu-latest
+    if: false
+    continue-on-error: true
+    steps:
+      - if: false
+        continue-on-error: true
+        run: uv run --no-sync pytest
+""",
+    )
+
+    failures = validate_workflow(path)
+    assert sum("unapproved workflow condition" in item for item in failures) == 2
+    assert sum("continue-on-error is prohibited" in item for item in failures) == 2
+
+
+def test_allows_exact_dependency_review_pull_request_condition(tmp_path: Path) -> None:
+    path = _workflow(
+        tmp_path,
+        """
+on: [push, pull_request]
+permissions: read-all
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
+        if: github.event_name == 'pull_request'
+        with: {fail-on-severity: high}
+""",
+    )
+
+    assert validate_workflow(path) == []
+
+
 def test_rejects_untrusted_pinned_actions_and_action_inputs(tmp_path: Path) -> None:
     path = _workflow(
         tmp_path,

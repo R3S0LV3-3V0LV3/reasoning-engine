@@ -80,6 +80,14 @@ ALLOWED_ACTION_INPUTS: dict[str, tuple[dict[str, object], ...]] = {
     "github/codeql-action/init": ({"languages": "python", "queries": "security-extended"},),
     "gitleaks/gitleaks-action": ({},),
 }
+ALLOWED_CONDITIONAL_STEPS = frozenset(
+    {
+        (
+            "actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+            "github.event_name == 'pull_request'",
+        ),
+    }
+)
 
 
 def _walk(value: object) -> Iterator[Mapping[str, Any]]:
@@ -194,6 +202,12 @@ def _execution_context_failures(node: Mapping[str, Any], path: Path) -> list[str
         failures.append(f"{path}: custom workflow shells are prohibited")
     if "working-directory" in node:
         failures.append(f"{path}: non-root workflow working directories are prohibited")
+    if "continue-on-error" in node:
+        failures.append(f"{path}: continue-on-error is prohibited")
+    if "if" in node:
+        conditional_step = (node.get("uses"), node.get("if"))
+        if conditional_step not in ALLOWED_CONDITIONAL_STEPS:
+            failures.append(f"{path}: unapproved workflow condition")
 
     environment = node.get("env")
     if environment is None:
