@@ -95,40 +95,58 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         (engine.make_event(handle.run_id, allocated, module_id="M02"),),
     )
 
+    fixture_anchor: JsonValue = {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {"object_type": "TaskEnvelope", "object_id": str(task.task_id)},
+        "selector": "/requested_output",
+    }
     valid: dict[str, JsonValue] = {
-        "task_type": "DECISION",
+        "task_type": {
+            "estimate": "DECISION",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
         "consequence": {
             "estimate": "LOW",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "reversibility": {
             "estimate": "HIGH",
             "confidence": 0.9,
             "conservative_upper": "HIGH",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "ambiguity": {
             "estimate": "MEDIUM",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
         "evidence_scarcity": {
             "estimate": "MEDIUM",
             "confidence": 0.9,
             "conservative_upper": "MEDIUM",
-            "anchors": [],
+            "anchors": [fixture_anchor],
             "rationale": "fixture",
         },
-        "search_space": "BOUNDED",
-        "search_space_confidence": 0.9,
-        "horizon": "SHORT",
-        "horizon_confidence": 0.9,
+        "search_space": {
+            "estimate": "BOUNDED",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
+        "horizon": {
+            "estimate": "SHORT",
+            "confidence": 0.9,
+            "anchors": [fixture_anchor],
+            "rationale": "fixture",
+        },
     }
     model = QueueModel(
         [

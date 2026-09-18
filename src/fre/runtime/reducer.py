@@ -55,6 +55,7 @@ from fre.runtime.events import (
     StopDecisionRecordedV2,
     StoredEvent,
     TaskClassified,
+    TaskPreliminarilyClassified,
     TerminalContextAssociated,
     TestValueSet,
 )
@@ -87,6 +88,7 @@ class RunState(FrozenModel):
     terminal_context_disposition: str | None = None
     model_calls: tuple[SemanticModelCallRecordV2 | SemanticModelCallRecord, ...] = ()
     task_signature: TaskSignature | None = None
+    preliminary_task_signature: TaskSignature | None = None
     classification_record: ClassificationRecord | None = None
     classification_diagnostics: tuple[str, ...] = ()
     problem_spec: ProblemSpec | None = None
@@ -134,6 +136,7 @@ class RunState(FrozenModel):
         wave_3_absent = (
             not self.model_calls
             and self.task_signature is None
+            and self.preliminary_task_signature is None
             and self.classification_record is None
             and not self.classification_diagnostics
             and self.problem_spec is None
@@ -148,6 +151,7 @@ class RunState(FrozenModel):
             for key in (
                 "model_calls",
                 "task_signature",
+                "preliminary_task_signature",
                 "classification_record",
                 "classification_diagnostics",
                 "problem_spec",
@@ -548,6 +552,8 @@ class RunReducer:
                             "against its claimed output schema"
                         ) from error
             changes["model_calls"] = (*state.model_calls, payload.record)
+        elif isinstance(payload, TaskPreliminarilyClassified):
+            changes["preliminary_task_signature"] = payload.signature
         elif isinstance(payload, TaskClassified):
             changes["task_signature"] = payload.signature
             changes["classification_record"] = payload.record

@@ -17,7 +17,13 @@ from fre.domain.task import (
 )
 from fre.modules.m01_classifier import TaskClassifier
 from fre.modules.source_anchors import InvalidSourceAnchor, validate_source_anchor
-from fre.prompts.schemas import ClassificationDimensionProposal, ClassificationOutput
+from fre.prompts.schemas import (
+    ClassificationDimensionProposal,
+    ClassificationOutput,
+    HorizonProposal,
+    SearchSpaceProposal,
+    TaskTypeProposal,
+)
 
 
 def task(**updates: object) -> TaskEnvelope:
@@ -49,16 +55,38 @@ def proposal(source_anchor: SourceAnchor) -> ClassificationOutput:
         anchors=(source_anchor,),
         rationale="anchored",
     )
+    # `reversibility` is descending-risk: its conservative bound must sit at
+    # or below the estimate (see `_validate_ordinal_bound` in m01_classifier).
+    reversibility_dimension = ClassificationDimensionProposal(
+        estimate=Ordinal4.MEDIUM,
+        confidence=0.9,
+        conservative_upper=Ordinal4.LOW,
+        anchors=(source_anchor,),
+        rationale="anchored",
+    )
     return ClassificationOutput(
-        task_type=TaskType.ANALYSIS,
+        task_type=TaskTypeProposal(
+            estimate=TaskType.ANALYSIS,
+            confidence=0.9,
+            anchors=(source_anchor,),
+            rationale="anchored",
+        ),
         consequence=dimension,
-        reversibility=dimension,
+        reversibility=reversibility_dimension,
         ambiguity=dimension,
         evidence_scarcity=dimension,
-        search_space=SearchSpaceClass.CLOSED,
-        search_space_confidence=0.9,
-        horizon=HorizonClass.SHORT,
-        horizon_confidence=0.9,
+        search_space=SearchSpaceProposal(
+            estimate=SearchSpaceClass.CLOSED,
+            confidence=0.9,
+            anchors=(source_anchor,),
+            rationale="anchored",
+        ),
+        horizon=HorizonProposal(
+            estimate=HorizonClass.SHORT,
+            confidence=0.9,
+            anchors=(source_anchor,),
+            rationale="anchored",
+        ),
     )
 
 

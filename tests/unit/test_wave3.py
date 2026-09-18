@@ -54,26 +54,46 @@ def envelope(*, external_write: bool = False) -> TaskEnvelope:
     )
 
 
+def _anchor() -> dict[str, object]:
+    return {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {
+            "object_type": "TaskEnvelope",
+            "object_id": "00000000-0000-0000-0000-000000000001",
+        },
+        "selector": "/explicit_constraints/0",
+    }
+
+
 def classification(confidence: float = 0.9) -> ClassificationOutput:
     dimension = {
         "estimate": "LOW",
         "confidence": confidence,
         "conservative_upper": "MEDIUM",
-        "anchors": (),
+        "anchors": [_anchor()],
         "rationale": "fixture",
     }
+    # `reversibility` is descending-risk (higher ordinal == more reversible, i.e.
+    # safer), so its conservative bound must sit at or below the estimate --
+    # the opposite orientation from every other ordinal axis.
+    reversibility_dimension = {
+        "estimate": "MEDIUM",
+        "confidence": confidence,
+        "conservative_upper": "LOW",
+        "anchors": [_anchor()],
+        "rationale": "fixture",
+    }
+    categorical = {"confidence": confidence, "anchors": [_anchor()], "rationale": "fixture"}
     return ClassificationOutput.model_validate_json(
         json.dumps(
             {
-                "task_type": "DECISION",
+                "task_type": {"estimate": "DECISION", **categorical},
                 "consequence": dimension,
-                "reversibility": dimension,
+                "reversibility": reversibility_dimension,
                 "ambiguity": dimension,
                 "evidence_scarcity": dimension,
-                "search_space": "CLOSED",
-                "search_space_confidence": confidence,
-                "horizon": "SHORT",
-                "horizon_confidence": confidence,
+                "search_space": {"estimate": "CLOSED", **categorical},
+                "horizon": {"estimate": "SHORT", **categorical},
             }
         )
     )
@@ -128,9 +148,14 @@ def test_m01_risk_floor_low_confidence_and_fallback_feed_frozen_m02() -> None:
     assert risk.consequence in {Ordinal4.HIGH, Ordinal4.CRITICAL}
     assert risk.irreversibility in {Ordinal4.HIGH, Ordinal4.CRITICAL}
     assert fallback.consequence is Ordinal4.CRITICAL
+    # `output_form` is always deterministic (confidence 1.0); every other axis
+    # is genuinely unmodeled in full-fallback mode and so carries no confidence.
     assert record.fallback_used and all(
-        value is None for value in fallback.dimension_confidence.values()
+        value is None
+        for name, value in fallback.dimension_confidence.items()
+        if name != "output_form"
     )
+    assert fallback.dimension_confidence["output_form"] == 1.0
     allocator = BudgetAllocator()
     policy = default_tier_policy()
     tiers = [

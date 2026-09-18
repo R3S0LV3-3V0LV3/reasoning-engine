@@ -35,7 +35,7 @@ from fre.semantic_runtime import (
 )
 
 VALID: dict[str, JsonValue] = {
-    "task_type": "DECISION",
+    "task_type": {"estimate": "DECISION", "confidence": 0.9, "anchors": [], "rationale": "test"},
     "consequence": {
         "estimate": "LOW",
         "confidence": 0.9,
@@ -64,10 +64,8 @@ VALID: dict[str, JsonValue] = {
         "anchors": [],
         "rationale": "test",
     },
-    "search_space": "BOUNDED",
-    "search_space_confidence": 0.9,
-    "horizon": "SHORT",
-    "horizon_confidence": 0.9,
+    "search_space": {"estimate": "BOUNDED", "confidence": 0.9, "anchors": [], "rationale": "test"},
+    "horizon": {"estimate": "SHORT", "confidence": 0.9, "anchors": [], "rationale": "test"},
 }
 
 

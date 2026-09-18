@@ -200,16 +200,35 @@ class ClassificationDimensionProposal(StrictOutput):
     rationale: str
 
 
+class TaskTypeProposal(StrictOutput):
+    estimate: TaskType
+    confidence: float = Field(ge=0, le=1)
+    anchors: tuple[SourceAnchor, ...] = ()
+    rationale: str
+
+
+class SearchSpaceProposal(StrictOutput):
+    estimate: SearchSpaceClass
+    confidence: float = Field(ge=0, le=1)
+    anchors: tuple[SourceAnchor, ...] = ()
+    rationale: str
+
+
+class HorizonProposal(StrictOutput):
+    estimate: HorizonClass
+    confidence: float = Field(ge=0, le=1)
+    anchors: tuple[SourceAnchor, ...] = ()
+    rationale: str
+
+
 class ClassificationOutput(StrictOutput):
-    task_type: TaskType
+    task_type: TaskTypeProposal
     consequence: ClassificationDimensionProposal
     reversibility: ClassificationDimensionProposal
     ambiguity: ClassificationDimensionProposal
     evidence_scarcity: ClassificationDimensionProposal
-    search_space: SearchSpaceClass
-    search_space_confidence: float = Field(ge=0, le=1)
-    horizon: HorizonClass
-    horizon_confidence: float = Field(ge=0, le=1)
+    search_space: SearchSpaceProposal
+    horizon: HorizonProposal
 
 
 class ProblemItemProposal(StrictOutput):
