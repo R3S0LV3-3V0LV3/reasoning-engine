@@ -155,3 +155,35 @@ class SemanticModelCallRecordV2(SemanticModelCallRecord):
     reported_usage: SemanticCallUsage
     charged_usage: ResourceVector
     charge_basis: SemanticChargeBasis
+
+    @model_validator(mode="after")
+    def consistent_accounting(self) -> "SemanticModelCallRecordV2":
+        if self.usage != self.reported_usage:
+            raise ValueError("reported usage must match the compatibility usage projection")
+        expected_charge = ResourceVector(
+            llm_calls=self.policy_charge.llm_calls,
+            input_tokens=self.policy_charge.input_tokens,
+            output_tokens=self.policy_charge.output_tokens,
+        )
+        if self.charged_usage != expected_charge:
+            raise ValueError("charged usage must match the compatibility policy charge")
+        if self.policy_charge.basis != self.charge_basis.value:
+            raise ValueError("charge basis must match the compatibility policy charge")
+
+        reported_overage = (
+            self.reported_usage.input_tokens is not None
+            and self.reported_usage.input_tokens > self.charged_usage.input_tokens
+        ) or (
+            self.reported_usage.output_tokens is not None
+            and self.reported_usage.output_tokens > self.charged_usage.output_tokens
+        )
+        if self.charge_basis is SemanticChargeBasis.RESERVATION_CAP_ON_PROVIDER_OVERAGE:
+            if (
+                self.accounting_condition
+                is not SemanticAccountingCondition.PROVIDER_USAGE_EXCEEDED_RESERVATION
+                or not reported_overage
+            ):
+                raise ValueError("provider overage charge requires matching reported overage")
+        elif self.accounting_condition is not None:
+            raise ValueError("non-overage charge may not carry an accounting condition")
+        return self

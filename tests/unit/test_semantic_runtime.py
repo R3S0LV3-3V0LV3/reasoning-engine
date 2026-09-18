@@ -12,6 +12,7 @@ from fre.domain.semantic import (
     SemanticAccountingCondition,
     SemanticCallUsage,
     SemanticChargeBasis,
+    SemanticModelCallRecord,
     SemanticModelCallRecordV2,
     StructuredModelRequest,
     StructuredModelResult,
@@ -28,6 +29,7 @@ from fre.runtime.events import (
     BudgetReservationReleased,
     BudgetReservationSettled,
     ModelCallFailedV2,
+    ModelCallRecorded,
 )
 from fre.semantic_runtime import (
     SemanticExecution,
@@ -350,6 +352,55 @@ def test_normal_usage_settlement_preserves_accepted_charge_behavior(
     assert state.budget.committed.input_tokens == expected_input
     assert state.budget.committed.output_tokens == expected_output
     assert state.budget.reservations == ()
+
+
+@pytest.mark.unit
+def test_v1_model_call_event_decode_remains_compatible(engine: FrontierReasoningEngine) -> None:
+    run_id, value = setup(engine)
+    model = CapturingModel([result()])
+    execution = run(
+        SemanticModelRuntime(
+            model, engine, default_prompt_registry(), default_output_schema_registry()
+        ),
+        run_id,
+        value,
+    )
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
+    legacy_record = SemanticModelCallRecord.model_validate(
+        execution.record.model_dump(
+            exclude={"reservation_id", "reported_usage", "charged_usage", "charge_basis"}
+        ),
+        strict=True,
+    )
+    legacy_event = engine.make_event(
+        run_id, ModelCallRecorded(record=legacy_record), module_id="semantic-runtime"
+    )
+
+    decoded = legacy_event.validated_payload()
+    assert isinstance(decoded, ModelCallRecorded)
+    assert decoded.record == legacy_record
+    assert "reservation_id" not in decoded.record.model_dump()
+
+
+@pytest.mark.unit
+def test_v2_model_call_record_rejects_inconsistent_accounting(
+    engine: FrontierReasoningEngine,
+) -> None:
+    run_id, value = setup(engine)
+    model = CapturingModel([result()])
+    execution = run(
+        SemanticModelRuntime(
+            model, engine, default_prompt_registry(), default_output_schema_registry()
+        ),
+        run_id,
+        value,
+    )
+    assert isinstance(execution.record, SemanticModelCallRecordV2)
+    inconsistent = execution.record.model_dump()
+    inconsistent["reported_usage"] = {"input_tokens": 1, "output_tokens": 1}
+
+    with pytest.raises(ValueError, match="reported usage"):
+        SemanticModelCallRecordV2.model_validate(inconsistent, strict=True)
 
 
 @pytest.mark.unit
