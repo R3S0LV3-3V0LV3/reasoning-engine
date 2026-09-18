@@ -131,6 +131,21 @@ class StopDecision(FrozenModel):
         return self
 
 
+class StopDecisionRecord(FrozenModel):
+    """A stop decision bound to the exact authoritative state it evaluated."""
+
+    decision: StopDecision
+    evaluated_state_version: int = Field(ge=1)
+    evaluated_state_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    budget_projection_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def consistent_budget_binding(self) -> "StopDecisionRecord":
+        if self.budget_projection_hash != self.decision.budget_projection_hash:
+            raise ValueError("stop decision record budget binding does not match decision")
+        return self
+
+
 class StopError(ValueError):
     pass
 

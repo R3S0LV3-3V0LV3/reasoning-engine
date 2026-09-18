@@ -262,6 +262,11 @@ def test_overreported_usage_charges_reservation_and_blocks_a_second_call(
     assert any(isinstance(item, BudgetReservationSettled) for item in execution.event_payloads)
     assert any(isinstance(item, ModelCallFailedV2) for item in execution.event_payloads)
     assert not any(isinstance(item, BudgetReservationReleased) for item in execution.event_payloads)
+    failed_wire_event = next(
+        item for item in engine.store.load(run_id) if item.event_type == "ModelCallFailed"
+    )
+    assert failed_wire_event.schema_version == "2.0"
+    assert isinstance(failed_wire_event.validated_payload(), ModelCallFailedV2)
 
     state = engine.inspect(run_id)
     assert state.budget.committed.llm_calls == 1

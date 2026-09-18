@@ -7,7 +7,7 @@ from fre.adapters.artifacts_local import LocalArtifactStore
 from fre.adapters.storage_sqlite import SQLiteStore
 from fre.domain.common import ArtifactDescriptor, FrozenModel, JsonValue, canonical_hash
 from fre.ports.clock import Clock, UUIDFactory
-from fre.runtime.events import RunCreated, StoredEvent, UncommittedEvent
+from fre.runtime.events import RunCreated, StoredEvent, UncommittedEvent, event_wire_identity
 from fre.runtime.reducer import RunReducer, RunState
 
 
@@ -42,12 +42,14 @@ class FrontierReasoningEngine:
         module_version: str = "1.0",
         input_value: object | None = None,
     ) -> UncommittedEvent:
+        event_type, schema_version = event_wire_identity(payload)
         return UncommittedEvent(
             event_id=self.uuids.new(),
             run_id=run_id,
-            event_type=type(payload).__name__,
+            event_type=event_type,
             action_id=self.uuids.new(),
             module_id=module_id,
+            schema_version=schema_version,
             module_version=module_version,
             input_hash=canonical_hash(input_value),
             created_at=self.clock.now(),

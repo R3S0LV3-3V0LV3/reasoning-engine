@@ -12,7 +12,7 @@ from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationArtifact, RepresentationPlan
 from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
-from fre.domain.stop import StopDecision
+from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
@@ -45,6 +45,7 @@ from fre.runtime.events import (
     RunCreated,
     RunStatusChanged,
     StopDecisionRecorded,
+    StopDecisionRecordedV2,
     StoredEvent,
     TaskClassified,
     TerminalContextAssociated,
@@ -74,6 +75,7 @@ class RunState(FrozenModel):
     context_packets: tuple[ContextPacket, ...] = ()
     context_compilations: tuple[ContextCompilationRecord, ...] = ()
     stop_decisions: tuple[StopDecision, ...] = ()
+    stop_decision_records: tuple[StopDecisionRecord, ...] = ()
     terminal_context_packet_hash: str | None = None
     terminal_context_disposition: str | None = None
     model_calls: tuple[SemanticModelCallRecordV2 | SemanticModelCallRecord, ...] = ()
@@ -89,12 +91,17 @@ class RunState(FrozenModel):
     def snapshot_payload(self) -> dict[str, object]:
         """Return the hash payload, retaining Wave 1 shape for untouched streams."""
         payload: dict[str, object] = self.model_dump(mode="json")
+        if not self.stop_decision_records:
+            # V1 snapshots predate state-bound stop records. Keep their sealed
+            # payload and hash unchanged even when they contain v1 decisions.
+            payload.pop("stop_decision_records")
         wave_2_absent = (
             self.ledger == LedgerProjection()
             and self.budget == BudgetProjection()
             and not self.context_packets
             and not self.context_compilations
             and not self.stop_decisions
+            and not self.stop_decision_records
             and self.terminal_context_packet_hash is None
             and self.terminal_context_disposition is None
         )
@@ -143,7 +150,11 @@ class RunState(FrozenModel):
 
 
 class RunReducer:
-    version = "1.0"
+    version = "2.0"
+    compatible_snapshot_versions = frozenset({"1.0", "2.0"})
+
+    def accepts_snapshot_version(self, version: str) -> bool:
+        return version in self.compatible_snapshot_versions
 
     def initial(self, run_id: UUID) -> RunState:
         return RunState(run_id=run_id, version=0)
@@ -282,6 +293,35 @@ class RunReducer:
                     else None,
                 ),
             )
+        elif isinstance(payload, StopDecisionRecordedV2):
+            record = payload.record
+            remaining = BudgetMeter().remaining(state.budget)
+            if record.evaluated_state_version != state.version:
+                raise ValueError("stop decision evaluated state version does not match pre-state")
+            if record.evaluated_state_hash != state.state_hash:
+                raise ValueError("stop decision evaluated state hash does not match pre-state")
+            if record.budget_projection_hash != remaining.projection_hash:
+                raise ValueError("stop decision budget binding does not match pre-state")
+            # Defence-in-depth, not a decisive guarantee: state.version strictly
+            # increases by exactly one per applied event (see the contiguous-
+            # sequence check above), and the two checks just above already force
+            # record.evaluated_state_version == state.version for THIS apply. No
+            # earlier record in state.stop_decision_records can therefore ever
+            # carry the same evaluated_state_version, so this duplicate-binding
+            # branch is unreachable via the normal record_decision -> apply path
+            # today. It is kept in case a future replay/retry path resubmits an
+            # identical (version, hash, decision) triple through some other
+            # route; do not treat its presence as evidence that duplicate
+            # submission is exercised or tested.
+            if any(
+                existing.evaluated_state_version == record.evaluated_state_version
+                and existing.evaluated_state_hash == record.evaluated_state_hash
+                and existing.decision == record.decision
+                for existing in state.stop_decision_records
+            ):
+                raise ValueError("stop decision evaluation binding is already recorded")
+            changes["stop_decisions"] = (*state.stop_decisions, record.decision)
+            changes["stop_decision_records"] = (*state.stop_decision_records, record)
         elif isinstance(payload, StopDecisionRecorded):
             changes["stop_decisions"] = (*state.stop_decisions, payload.decision)
         elif isinstance(payload, TerminalContextAssociated):
