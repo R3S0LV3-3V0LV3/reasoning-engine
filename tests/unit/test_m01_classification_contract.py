@@ -1,10 +1,12 @@
 """Decisive coverage for the M01 complete-classification/provenance contract (F05).
 
-Every material classification dimension that influences budget or routing
-must carry: a validated value, a confidence/uncertainty treatment, a
-rationale, and resolvable support (or an explicit deterministic-policy
-basis). These tests pin that invariant across all 8 axes, the
-preliminary/final signature handoff into M02, and the M09 provenance batch.
+Every one of the 8 classification axes must carry a validated value, a
+confidence/uncertainty treatment, a rationale, and resolvable support (or an
+explicit deterministic-policy basis) -- regardless of whether that axis
+currently feeds a budget/routing decision (see the C05 remediation note on
+`ClassificationDimensionResult` for exactly which axes do today). These
+tests pin that provenance invariant across all 8 axes, the preliminary/final
+signature handoff into M02, and the M09 provenance batch.
 """
 
 from datetime import UTC, datetime
@@ -208,6 +210,146 @@ def test_low_horizon_confidence_escalates_to_conservative_default() -> None:
 
 
 @pytest.mark.unit
+def test_ambiguity_floor_overrides_a_confident_low_self_report() -> None:
+    """C05 remediation (finding #1): ambiguity must not be an unconditional
+    no-op floor. Two or more distinct external systems in play (here: network
+    access plus external writes) deterministically floor ambiguity at MEDIUM,
+    regardless of how confidently a proposal reports LOW."""
+    confident_low = ClassificationDimensionProposal(
+        estimate=Ordinal4.LOW,
+        confidence=0.99,
+        conservative_upper=Ordinal4.LOW,
+        anchors=(anchor(),),
+        rationale="modeled",
+    )
+    signature, record = TaskClassifier().classify(
+        envelope(
+            execution_permissions=PermissionSet(allow_network=True, allow_external_writes=True)
+        ),
+        full_proposal(ambiguity=confident_low),
+    )
+    ambiguity = record.dimensions["ambiguity"]
+    assert ambiguity.estimated == Ordinal4.LOW
+    assert ambiguity.effective == Ordinal4.MEDIUM
+    assert ambiguity.override_basis == "permission_floor"
+    assert signature.ambiguity is Ordinal4.MEDIUM
+
+
+@pytest.mark.unit
+def test_evidence_scarcity_floor_overrides_a_confident_low_self_report() -> None:
+    """C05 remediation (finding #1): evidence_scarcity must not be an
+    unconditional no-op floor. A task with no attachments, no explicit
+    constraints, and no permission to fetch evidence externally cannot
+    possibly ground a LOW-scarcity claim -- that must be floored to MEDIUM
+    regardless of self-reported confidence."""
+    # No explicit_constraints in this envelope, so the default `/explicit_
+    # constraints/0` anchor cannot resolve; anchor into `user_metadata`
+    # instead (relevant to every axis, and harmless here since "context" is
+    # not one of the reserved explicit-ordinal keys).
+    context_anchor = anchor(selector="/user_metadata/context")
+    confident_low = ClassificationDimensionProposal(
+        estimate=Ordinal4.LOW,
+        confidence=0.99,
+        conservative_upper=Ordinal4.LOW,
+        anchors=(context_anchor,),
+        rationale="modeled",
+    )
+    signature, record = TaskClassifier().classify(
+        envelope(
+            explicit_constraints=(),
+            user_metadata={"context": "note"},
+            execution_permissions=PermissionSet(),
+        ),
+        full_proposal(
+            consequence=ordinal_dimension(Ordinal4.LOW, Ordinal4.MEDIUM, anchors=(context_anchor,)),
+            reversibility=ordinal_dimension(
+                Ordinal4.MEDIUM, Ordinal4.LOW, anchors=(context_anchor,)
+            ),
+            ambiguity=ordinal_dimension(Ordinal4.LOW, Ordinal4.MEDIUM, anchors=(context_anchor,)),
+            evidence_scarcity=confident_low,
+            search_space=SearchSpaceProposal(
+                estimate=SearchSpaceClass.BOUNDED,
+                confidence=0.9,
+                anchors=(context_anchor,),
+                rationale="modeled",
+            ),
+            horizon=HorizonProposal(
+                estimate=HorizonClass.SHORT,
+                confidence=0.9,
+                anchors=(context_anchor,),
+                rationale="modeled",
+            ),
+            task_type=TaskTypeProposal(
+                estimate=TaskType.ANALYSIS,
+                confidence=0.9,
+                anchors=(context_anchor,),
+                rationale="modeled",
+            ),
+        ),
+    )
+    scarcity = record.dimensions["evidence_scarcity"]
+    assert scarcity.estimated == Ordinal4.LOW
+    assert scarcity.effective == Ordinal4.MEDIUM
+    assert scarcity.override_basis == "permission_floor"
+    assert signature.evidence_scarcity is Ordinal4.MEDIUM
+
+
+@pytest.mark.unit
+def test_ambiguity_and_evidence_scarcity_floors_are_no_ops_when_signals_are_absent() -> None:
+    """Sanity check: the new floors only engage on their deterministic
+    trigger, not unconditionally -- the default envelope (single permission,
+    explicit constraints present) stays at LOW."""
+    signature, _record = TaskClassifier().classify(envelope(), full_proposal())
+    assert signature.ambiguity is Ordinal4.LOW
+    assert signature.evidence_scarcity is Ordinal4.LOW
+
+
+@pytest.mark.unit
+def test_irrelevant_anchor_is_rejected_for_unconnected_axis() -> None:
+    """C05 remediation (finding #7): an anchor whose path is entirely
+    unrelated to the axis it is claimed to support must be rejected, not
+    merely checked for existence. `/requested_output` (the task's output
+    contract) cannot plausibly substantiate a `consequence` claim."""
+    from fre.modules.source_anchors import IrrelevantSourceAnchor
+
+    unrelated_anchor = SourceAnchor(
+        source_kind=SourceKind.TASK_FIELD,
+        source_ref=ObjectRef(object_type="TaskEnvelope", object_id=str(TASK_ID)),
+        selector="/requested_output",
+    )
+    bad = ordinal_dimension(Ordinal4.LOW, Ordinal4.MEDIUM, anchors=(unrelated_anchor,))
+    with pytest.raises(IrrelevantSourceAnchor):
+        TaskClassifier().classify(envelope(), full_proposal(consequence=bad))
+
+
+@pytest.mark.unit
+def test_horizon_low_confidence_fallback_is_independent_of_no_proposal_fallback() -> None:
+    """C05 remediation (finding #8): `low_confidence_horizon_fallback` must be
+    settable independently of `fallback_horizon` (the "no proposal at all"
+    target), the way `search_space` already keeps its two fallbacks apart."""
+    from fre.modules.m01_classifier import ClassificationPolicy
+
+    policy = ClassificationPolicy(
+        fallback_horizon=HorizonClass.LONG,
+        low_confidence_horizon_fallback=HorizonClass.SHORT,
+    )
+    # No proposal at all -> uses fallback_horizon.
+    no_proposal_signature, _ = TaskClassifier(policy).classify(envelope(), None)
+    assert no_proposal_signature.horizon is HorizonClass.LONG
+
+    # Low-confidence proposal -> uses the independent low-confidence target,
+    # which now diverges from fallback_horizon.
+    uncertain_horizon = HorizonProposal(
+        estimate=HorizonClass.IMMEDIATE, confidence=0.1, anchors=(anchor(),), rationale="unsure"
+    )
+    low_confidence_signature, record = TaskClassifier(policy).classify(
+        envelope(), full_proposal(horizon=uncertain_horizon)
+    )
+    assert low_confidence_signature.horizon is HorizonClass.SHORT
+    assert record.dimensions["horizon"].effective == HorizonClass.SHORT
+
+
+@pytest.mark.unit
 def test_floor_overrides_are_exhaustively_audited() -> None:
     """Every dimension whose effective value diverges from its estimate must be audited."""
     signature, record = TaskClassifier().classify(
@@ -316,9 +458,17 @@ def test_canonical_events_batch_is_atomic_and_distinguishes_preliminary_from_fin
     kinds = [type(payload).__name__ for payload in payloads]
     assert kinds[0] == "TaskPreliminarilyClassified"
     assert kinds[1] == "BudgetAllocated"
-    assert kinds[2] == "TaskClassified"
     assert kinds[-1] == "BudgetRevised"
     assert any(kind == "LedgerNodeAdded" for kind in kinds)
+    # C05 remediation (finding #2/#3): M09 provenance for every MODEL-basis
+    # axis must land *before* `TaskClassified`, which must itself land before
+    # `BudgetRevised` -- this ordering is what lets `RunReducer.apply` enforce
+    # both admission checks as simple backward looks at already-applied state.
+    classified_index = kinds.index("TaskClassified")
+    assert all(kind != "LedgerNodeAdded" for kind in kinds[classified_index + 1 :]), (
+        "all provenance must precede TaskClassified"
+    )
+    assert classified_index < len(kinds) - 1, "TaskClassified must precede BudgetRevised"
 
     preliminary_payload = next(p for p in payloads if isinstance(p, TaskPreliminarilyClassified))
     final_payload = next(p for p in payloads if isinstance(p, TaskClassified))

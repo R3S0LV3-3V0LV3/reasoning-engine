@@ -95,10 +95,17 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         (engine.make_event(handle.run_id, allocated, module_id="M02"),),
     )
 
+    # C05 remediation (finding #7): a TASK_TEXT anchor into the task's own
+    # narrative is plausible support for every classification axis below
+    # (unlike `/requested_output`, which is only ever relevant to
+    # `output_form` -- a deterministic, non-model-proposed axis -- and is now
+    # rejected as irrelevant for any of these material dimensions).
     fixture_anchor: JsonValue = {
-        "source_kind": "TASK_FIELD",
+        "source_kind": "TASK_TEXT",
         "source_ref": {"object_type": "TaskEnvelope", "object_id": str(task.task_id)},
-        "selector": "/requested_output",
+        "selector": "/text",
+        "char_start": 0,
+        "char_end": len(task.text),
     }
     valid: dict[str, JsonValue] = {
         "task_type": {
@@ -193,7 +200,15 @@ def test_combined_wave3_gate_three_path_replay_and_zero_model_calls(tmp_path: Pa
         proposal,
         model_call_key=execution.record.idempotency_key if execution.record else None,
     )
-    payloads = (TaskClassified(signature=signature, record=classification_record),)
+    # C05 remediation (finding #2): `RunReducer.apply` now requires every
+    # MODEL-basis dimension in a `TaskClassified` to have a matching M09
+    # provenance node already applied before it -- so this hand-assembled
+    # batch must include that provenance too, exactly as
+    # `TaskClassifier.canonical_events` does, and in the same order.
+    provenance = TaskClassifier().provenance_events(
+        classification_record, created_at=clock.now(), uuids=uuid_factory
+    )
+    payloads = (*provenance, TaskClassified(signature=signature, record=classification_record))
     state = engine.inspect(handle.run_id)
     events = tuple(
         engine.make_event(handle.run_id, payload, module_id="semantic-runtime")

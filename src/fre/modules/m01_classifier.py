@@ -24,7 +24,7 @@ from fre.domain.task import (
 )
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import make_node
-from fre.modules.source_anchors import validate_source_anchor
+from fre.modules.source_anchors import validate_anchor_relevance, validate_source_anchor
 from fre.ports.clock import UUIDFactory
 from fre.prompts.schemas import (
     ClassificationOutput,
@@ -87,6 +87,14 @@ class ClassificationPolicy(FrozenModel):
     fallback_ordinal: Ordinal4 = Ordinal4.CRITICAL
     fallback_search_space: SearchSpaceClass = SearchSpaceClass.OPEN
     fallback_horizon: HorizonClass = HorizonClass.LONG
+    # C05 remediation (finding #8): independent low-confidence escalation
+    # target for `horizon`, decoupled from `fallback_horizon` (used only when
+    # there is no proposal at all). Mirrors how `search_space` already keeps
+    # its two fallbacks independent: a hardcoded `SearchSpaceClass.OPEN` for
+    # low-confidence escalation vs. `policy.fallback_search_space` for "no
+    # proposal". Defaults to the same value as `fallback_horizon` so existing
+    # callers/tests that never diverge the two see unchanged behavior.
+    low_confidence_horizon_fallback: HorizonClass = HorizonClass.LONG
 
     @property
     def policy_hash(self) -> str:
@@ -110,6 +118,44 @@ def _floor_irreversibility(envelope: TaskEnvelope) -> Ordinal4:
     if permissions.allow_external_writes:
         return Ordinal4.HIGH
     if permissions.allow_network:
+        return Ordinal4.MEDIUM
+    return Ordinal4.LOW
+
+
+def _floor_evidence_scarcity(envelope: TaskEnvelope) -> Ordinal4:
+    """Deterministic floor for `evidence_scarcity` (C05 remediation, finding #1).
+
+    A task that supplies no resolvable context inputs at all -- no
+    attachments, no explicit constraints -- and is not even permitted to
+    fetch evidence externally (`allow_network=False`) cannot possibly ground
+    its classification in given or fetchable evidence, regardless of how
+    confidently a model proposal reports low scarcity. This mirrors
+    `_floor_consequence`/`_floor_irreversibility`: a sound, envelope-derived
+    signal that a self-reported low value must never fall below.
+    """
+    has_context_inputs = bool(envelope.attachments) or bool(envelope.explicit_constraints)
+    if not has_context_inputs and not envelope.execution_permissions.allow_network:
+        return Ordinal4.MEDIUM
+    return Ordinal4.LOW
+
+
+def _floor_ambiguity(envelope: TaskEnvelope) -> Ordinal4:
+    """Deterministic floor for `ambiguity` (C05 remediation, finding #1).
+
+    Execution permissions that span two or more distinct external systems
+    (arbitrary declared capabilities, network access, and/or external writes,
+    counted independently) put multiple unresolved external interactions in
+    play that the envelope itself does not disambiguate -- a sound,
+    deterministic lower bound on ambiguity that a self-reported low value must
+    never fall below.
+    """
+    permissions = envelope.execution_permissions
+    external_systems = len(permissions.capabilities)
+    if permissions.allow_network:
+        external_systems += 1
+    if permissions.allow_external_writes:
+        external_systems += 1
+    if external_systems >= 2:
         return Ordinal4.MEDIUM
     return Ordinal4.LOW
 
@@ -203,6 +249,8 @@ class TaskClassifier:
         explicit = _explicit_ordinals(envelope)
         floor_consequence = _floor_consequence(envelope)
         floor_irreversibility = _floor_irreversibility(envelope)
+        floor_ambiguity = _floor_ambiguity(envelope)
+        floor_evidence_scarcity = _floor_evidence_scarcity(envelope)
         dimensions: dict[str, ClassificationDimensionResult] = {}
         floor_overrides: list[FloorOverrideRecord] = []
 
@@ -231,6 +279,7 @@ class TaskClassifier:
         ) -> Ordinal4:
             for anchor in proposed_anchors:
                 validate_source_anchor(anchor, envelope, available_artifacts)
+                validate_anchor_relevance(name, anchor)
             is_explicit = name in explicit
             estimate = explicit.get(name, proposed or policy.fallback_ordinal)
             basis = "EXPLICIT" if is_explicit else "MODEL" if proposal else "POLICY_FALLBACK"
@@ -303,6 +352,7 @@ class TaskClassifier:
             anchors = proposal_obj.anchors if proposal_obj else ()
             for anchor in anchors:
                 validate_source_anchor(anchor, envelope, available_artifacts)
+                validate_anchor_relevance(name, anchor)
             estimate = proposal_obj.estimate if proposal_obj else default
             confidence = proposal_obj.confidence if proposal_obj else None
             rationale = proposal_obj.rationale if proposal_obj else None
@@ -397,10 +447,13 @@ class TaskClassifier:
             proposal.ambiguity.confidence if proposal else None,
             proposal.ambiguity.conservative_upper if proposal else None,
             proposal.ambiguity.rationale if proposal else None,
-            proposed_anchors=proposal.ambiguity.anchors if proposal else (),
-            deterministic_anchors=(
+            floor_ambiguity,
+            proposal.ambiguity.anchors if proposal else (),
+            (
                 (_field_anchor(envelope, "/user_metadata/ambiguity"),)
                 if "ambiguity" in explicit
+                else (_field_anchor(envelope, "/execution_permissions"),)
+                if floor_ambiguity != Ordinal4.LOW
                 else ()
             ),
         )
@@ -410,10 +463,13 @@ class TaskClassifier:
             proposal.evidence_scarcity.confidence if proposal else None,
             proposal.evidence_scarcity.conservative_upper if proposal else None,
             proposal.evidence_scarcity.rationale if proposal else None,
-            proposed_anchors=proposal.evidence_scarcity.anchors if proposal else (),
-            deterministic_anchors=(
+            floor_evidence_scarcity,
+            proposal.evidence_scarcity.anchors if proposal else (),
+            (
                 (_field_anchor(envelope, "/user_metadata/evidence_scarcity"),)
                 if "evidence_scarcity" in explicit
+                else (_field_anchor(envelope, "/execution_permissions/allow_network"),)
+                if floor_evidence_scarcity != Ordinal4.LOW
                 else ()
             ),
         )
@@ -438,7 +494,7 @@ class TaskClassifier:
                 "horizon",
                 proposal.horizon if proposal else None,
                 policy.fallback_horizon,
-                escalate_to=policy.fallback_horizon,
+                escalate_to=policy.low_confidence_horizon_fallback,
             ),
         )
         output_form = normalise_output_form(envelope.requested_output.form)
@@ -508,7 +564,7 @@ class TaskClassifier:
         )
         return signature, record
 
-    def _provenance_events(
+    def provenance_events(
         self,
         record: ClassificationRecord,
         *,
@@ -545,18 +601,53 @@ class TaskClassifier:
         uuids: UUIDFactory,
         policy: ClassificationPolicy | None = None,
         model_call_key: str | None = None,
+        current_projection: BudgetProjection | None = None,
     ) -> tuple[EventPayload, ...]:
         """Build one logically atomic classification/provenance/budget event batch.
 
         Order: a deterministic-only preliminary signature seeds a bootstrap
-        M02 budget (`TaskPreliminarilyClassified` + `BudgetAllocated`); the
-        authoritative classification is then persisted separately
-        (`TaskClassified`) together with M09 provenance for every
-        model-derived axis, and the budget is revised to the authoritative
-        tier (`BudgetRevised`). All events are returned as a single tuple, so
-        the caller (mirroring the C04/F09 all-or-nothing batch-append
-        pattern) commits them together or not at all.
+        M02 budget (`TaskPreliminarilyClassified` + `BudgetAllocated`); M09
+        provenance for every model-derived axis is persisted *before* the
+        authoritative classification (`TaskClassified`) that claims those
+        axes; the budget is then revised to the authoritative tier
+        (`BudgetRevised`). All events are returned as a single tuple, so the
+        caller (mirroring the C04/F09 all-or-nothing batch-append pattern)
+        commits them together or not at all.
+
+        C05 remediation (finding #2/#3): provenance is deliberately ordered
+        *before* `TaskClassified`, and `TaskClassified` before `BudgetRevised`,
+        so `RunReducer.apply` can enforce -- as a simple backward look at
+        already-applied state, exactly like its `ModelCallRecordedV2`
+        reservation check -- that every MODEL-basis dimension in
+        `TaskClassified` has a matching M09 node already applied, and that
+        `BudgetRevised` never lands without an applied `TaskClassified` behind
+        it. Reordering this tuple is not cosmetic: it is load-bearing for
+        those reducer-level admission checks.
+
+        C05 remediation (finding #9): this method is designed for exactly one
+        calling context -- a task's *initial* classification, on a run with no
+        prior budget activity at all. The bootstrap-vs-final atomicity precheck
+        below (the `allocator.revise(...)` call) is only accurate for that
+        context, because it is computed against a projection freshly
+        synthesized from the bootstrap plan with zero committed/reserved
+        usage -- correct for a genesis run, meaningless for one with real
+        prior activity. `current_projection` makes that precondition explicit
+        and machine-checked rather than merely assumed: pass the run's real,
+        current `BudgetProjection` (e.g. from `engine.inspect(run_id).budget`)
+        when the caller has one, and this method raises immediately if it is
+        not fresh (i.e. already carries an allocated plan), instead of
+        silently proceeding with a precheck that would not reflect reality.
+        Leaving it `None` (the default, for today's only caller -- always a
+        freshly created run) skips this extra guard and keeps prior behavior
+        unchanged. A future orchestrator (C09) driving re-classification of an
+        already-active run must not call this method at all; it would need
+        its own revision path built around the real projection, not this one.
         """
+        if current_projection is not None and current_projection.plan is not None:
+            raise ValueError(
+                "canonical_events requires a fresh run with no prior budget activity; "
+                "the supplied current_projection already carries an allocated plan"
+            )
         policy = policy or self.policy
         allocator = BudgetAllocator()
         bootstrap_signature = self.bootstrap_signature(envelope, policy)
@@ -582,9 +673,9 @@ class TaskClassifier:
                 policy_version=bootstrap_plan.policy_version,
                 policy_hash=bootstrap_hash,
             ),
-            TaskClassified(signature=final_signature, record=record),
         ]
-        events.extend(self._provenance_events(record, created_at=created_at, uuids=uuids))
+        events.extend(self.provenance_events(record, created_at=created_at, uuids=uuids))
+        events.append(TaskClassified(signature=final_signature, record=record))
         events.append(
             BudgetRevised(
                 plan=final_plan, policy_version=final_plan.policy_version, policy_hash=final_hash

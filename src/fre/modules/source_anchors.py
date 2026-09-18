@@ -79,6 +79,69 @@ def _validate_resolved_value(anchor: SourceAnchor, value: Any) -> None:
         raise InvalidSourceAnchor("source excerpt hash mismatch")
 
 
+# C05 remediation (finding #7): a minimal, path-shape-based relevance check.
+# This cannot and does not verify that an anchor's *content* actually
+# substantiates the claimed axis -- that would require judging semantic
+# meaning, which is not mechanically verifiable here. What it does verify is
+# that the anchor's top-level envelope field is even *plausibly* connected to
+# the axis it is claimed to support -- e.g. an anchor into
+# `/requested_output` (the task's output contract) cannot plausibly support a
+# `consequence` or `ambiguity` claim, and is rejected as irrelevant before it
+# is ever accepted as "resolvable support". Axes not listed here (e.g.
+# `output_form`, which is derived deterministically and never carries a
+# proposed anchor) are not subject to this check.
+_AXIS_ALLOWED_ROOTS: dict[str, frozenset[str]] = {
+    "consequence": frozenset({"execution_permissions", "user_metadata", "explicit_constraints"}),
+    "irreversibility": frozenset(
+        {"execution_permissions", "user_metadata", "explicit_constraints"}
+    ),
+    "ambiguity": frozenset({"user_metadata", "explicit_constraints"}),
+    "evidence_scarcity": frozenset(
+        {"user_metadata", "explicit_constraints", "execution_permissions"}
+    ),
+    "task_type": frozenset({"user_metadata", "explicit_constraints", "requested_output"}),
+    "search_space": frozenset({"user_metadata", "explicit_constraints"}),
+    "horizon": frozenset({"user_metadata", "explicit_constraints"}),
+}
+# TASK_TEXT anchors (free-form task narrative) are plausible support for every
+# axis above except output_form, which is derived purely from the structured
+# `requested_output` contract.
+_TEXT_RELEVANT_AXES = frozenset(_AXIS_ALLOWED_ROOTS)
+
+
+class IrrelevantSourceAnchor(InvalidSourceAnchor):
+    """A resolvable anchor's own path is not plausibly connected to its axis."""
+
+
+def validate_anchor_relevance(axis: str, anchor: SourceAnchor) -> None:
+    """Reject an anchor whose top-level envelope path cannot plausibly bear on `axis`.
+
+    Lightweight and path-shape-based only: it does not and cannot judge
+    whether the anchor's actual *content* substantiates the claim, only
+    whether its location is even in the right neighbourhood. An ARTIFACT
+    anchor (an attached document) is treated as potentially relevant to every
+    axis, since attachments are opaque and may contain anything.
+    """
+    allowed = _AXIS_ALLOWED_ROOTS.get(axis)
+    if allowed is None:
+        return
+    if anchor.source_kind is SourceKind.ARTIFACT:
+        return
+    if anchor.source_kind is SourceKind.TASK_TEXT:
+        if axis not in _TEXT_RELEVANT_AXES:
+            raise IrrelevantSourceAnchor(
+                f"{axis}: a task-text anchor is not a plausible source for this axis"
+            )
+        return
+    tokens = _pointer_tokens(anchor.selector)
+    root = tokens[0] if tokens else None
+    if root not in allowed:
+        raise IrrelevantSourceAnchor(
+            f"{axis}: anchor path '{anchor.selector}' is not plausibly connected to this axis "
+            f"(expected one of: {', '.join(sorted(allowed))})"
+        )
+
+
 def validate_source_anchor(
     anchor: SourceAnchor,
     envelope: TaskEnvelope,

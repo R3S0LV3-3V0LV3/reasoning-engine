@@ -299,6 +299,26 @@ class RunReducer:
         elif isinstance(payload, BudgetRevised):
             if payload.policy_version != payload.plan.policy_version:
                 raise ValueError("budget revision policy version does not match realized plan")
+            # C05 remediation (finding #3): `BudgetRevised` is only ever
+            # constructed today as the tail of M01's classification/provenance
+            # batch (`TaskClassifier.canonical_events`), revising the M02
+            # bootstrap budget up to the tier the *authoritative*
+            # classification demands. A `BudgetRevised` with no classification
+            # behind it at all -- neither already persisted nor earlier in
+            # this same batch -- is an orphaned tier revision with nothing to
+            # justify it, and must be rejected here regardless of caller
+            # discipline (mirrors the C04 lesson: enforce in the reducer, not
+            # only in a wrapper). `state.task_signature` is populated by the
+            # `TaskClassified` branch below and, thanks to the sequential
+            # per-event application both `FrontierReasoningEngine.append`'s
+            # preview loop and real replay perform, is already visible here
+            # for any `TaskClassified` earlier in the same batch -- it does
+            # not require a prior, separately-persisted batch.
+            if state.task_signature is None:
+                raise ValueError(
+                    "budget revision requires an authoritative TaskClassified to already be "
+                    "applied (in this batch or prior state); no classification signature found"
+                )
             changes["budget"] = BudgetAllocator().revise(
                 state.budget, payload.plan, payload.policy_hash
             )
@@ -555,6 +575,35 @@ class RunReducer:
         elif isinstance(payload, TaskPreliminarilyClassified):
             changes["preliminary_task_signature"] = payload.signature
         elif isinstance(payload, TaskClassified):
+            # C05 remediation (finding #2): a `TaskClassified` carrying a
+            # MODEL-basis dimension makes an epistemic claim ("a model
+            # proposed this value") that must be backed by real M09
+            # provenance, not merely the record's own self-reported `basis`
+            # field. `TaskClassifier.canonical_events` emits every MODEL
+            # dimension's `LedgerNodeAdded` provenance node *before*
+            # `TaskClassified` in its returned batch precisely so this check
+            # can be a simple, order-dependent backward look at
+            # `state.ledger` -- mirroring the C04 lesson (enforce the
+            # invariant in the reducer itself, not only in a wrapper the
+            # caller might skip) and its own `ModelCallRecordedV2` reservation
+            # check (also a backward look at state built up earlier in the
+            # same sequential application). This closes the exact gap a
+            # forged batch could otherwise exploit: shipping a
+            # `TaskClassified` with `basis="MODEL"` dimensions and never
+            # including (or omitting from) the batch a single matching
+            # provenance node.
+            for name, result in payload.record.dimensions.items():
+                if result.basis != "MODEL":
+                    continue
+                expected_content = {"axis": name, **result.model_dump(mode="json")}
+                if not any(
+                    node.producing_module == "M01" and node.content == expected_content
+                    for node in state.ledger.nodes
+                ):
+                    raise ValueError(
+                        f"TaskClassified dimension '{name}' claims a MODEL basis but has no "
+                        "matching M09 LedgerNodeAdded provenance node applied before it"
+                    )
             changes["task_signature"] = payload.signature
             changes["classification_record"] = payload.record
         elif isinstance(payload, ClassificationDiagnosticRecorded):

@@ -68,15 +68,29 @@ class TaskSignature(FrozenModel):
 class ClassificationDimensionResult(FrozenModel):
     """Complete per-axis classification provenance.
 
-    Every material classification dimension that influences budget or
-    routing carries: a validated estimate (``estimated``), the value actually
-    used downstream after floors/escalation (``effective``), a
+    Every one of the 8 classification axes (``task_type``, ``consequence``,
+    ``irreversibility``, ``ambiguity``, ``evidence_scarcity``,
+    ``search_space``, ``horizon``, ``output_form``) carries this full
+    provenance record: a validated estimate (``estimated``), the value
+    actually used downstream after floors/escalation (``effective``), a
     confidence/uncertainty treatment (``confidence``), a conservative bound
     (``conservative_upper``), a rationale, resolvable support
     (``source_anchors``) or an explicit deterministic-policy basis
     (``basis``/``policy_version``), and -- when ``effective`` differs from
     ``estimated`` -- the audited reason for that deviation
     (``override_basis``).
+
+    C05 remediation (finding #5): not all 8 axes currently *influence*
+    budget or routing, even though every one of them carries this
+    provenance. `fre.modules.m02_budget.BudgetAllocator.allocate` only reads
+    ``consequence``, ``irreversibility``, ``ambiguity``, ``evidence_scarcity``,
+    and ``search_space`` when computing the reasoning tier. ``task_type``,
+    ``horizon``, and ``output_form`` are recorded with the same full
+    provenance discipline (for audit, future routing, and forward
+    compatibility) but do not yet feed any budget or routing decision. Wiring
+    a real, justified budget/routing effect for ``horizon``/``task_type`` is
+    tracked as future work, not done in this pass, to avoid changing M02's
+    tier semantics as a side effect of a classification-provenance fix.
     """
 
     estimated: str
@@ -125,8 +139,49 @@ class ClassificationRecord(FrozenModel):
                 "every dimension whose effective value differs from its estimate must "
                 "carry a matching, audited FloorOverrideRecord (unaudited floor change)"
             )
+        # C05 remediation (finding #4): axis-name presence alone is not
+        # sufficient -- a `FloorOverrideRecord` for the right axis but with a
+        # fabricated `previous_floor`/`new_floor` pair (not matching the
+        # dimension's own `estimated`/`effective` values) would previously
+        # pass this validator untouched. Every audited record's before/after
+        # values must match the dimension's own recorded values exactly.
+        by_axis = {record.axis: record for record in self.floor_overrides}
+        for name in deviated:
+            dimension = self.dimensions[name]
+            override = by_axis[name]
+            if override.previous_floor != dimension.estimated:
+                raise ValueError(
+                    f"{name}: FloorOverrideRecord.previous_floor ({override.previous_floor}) "
+                    f"does not match the dimension's estimated value ({dimension.estimated})"
+                )
+            if override.new_floor != dimension.effective:
+                raise ValueError(
+                    f"{name}: FloorOverrideRecord.new_floor ({override.new_floor}) does not "
+                    f"match the dimension's effective value ({dimension.effective})"
+                )
         return self
 
 
 class ClassificationBlocked(ValueError):
-    pass
+    """M01's quality-gate failure: a material classification dimension failed
+    a structural integrity check (missing rationale, no resolvable support,
+    an ill-ordered conservative bound, or an anchor irrelevant to its axis).
+
+    C05 remediation (finding #6): this is the specific, documented,
+    catchable exception type `TaskClassifier.classify()`/`canonical_events()`
+    raise for exactly this failure mode. Every internal quality-gate check in
+    `m01_classifier.py` raises this type (never a bare `ValueError` or an
+    unrelated exception), so a caller can reliably catch `ClassificationBlocked`
+    specifically to distinguish "the proposal failed M01's quality gate" from
+    other, unrelated failures, and decide how to recover (e.g. request a
+    repaired proposal, fall back to a deterministic-only classification, or
+    surface a diagnosable error to the run) instead of letting it crash the
+    run as an unhandled exception. See
+    `tests/unit/test_c05_remediation.py::test_classification_blocked_can_be_caught_and_handled_by_a_caller`
+    for a worked example of a caller doing exactly this. A full event-based
+    redesign (emitting an in-band "classification blocked" event the way
+    M03's `ProblemBlockerRecorded` does for its own quality gate) remains
+    future work -- out of scope for this pass, since it would change what a
+    run's persisted event history looks like for every classification
+    failure, not just fix this exception's catchability.
+    """

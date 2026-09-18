@@ -259,8 +259,20 @@ def test_forged_semantic_success_batch_is_pre_reduced_atomically(
     from fre.runtime.events import ModelCallRecordedV2
     from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
 
+    # C05 remediation (finding #10): this fixture must decode as a genuine
+    # SUCCESS against the real, current `ClassificationOutput` schema (nested
+    # `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal` objects, not
+    # flat scalars with sibling `*_confidence` keys) -- otherwise this test
+    # silently stops exercising a genuine SUCCESS decode and instead degrades
+    # to INVALID_STRUCTURED_OUTPUT, which is a different code path than the
+    # one this test's name and docstring claim to cover.
     valid: dict[str, JsonValue] = {
-        "task_type": "DECISION",
+        "task_type": {
+            "estimate": "DECISION",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
         "consequence": {
             "estimate": "LOW",
             "confidence": 0.9,
@@ -289,10 +301,18 @@ def test_forged_semantic_success_batch_is_pre_reduced_atomically(
             "anchors": [],
             "rationale": "test",
         },
-        "search_space": "BOUNDED",
-        "search_space_confidence": 0.9,
-        "horizon": "SHORT",
-        "horizon_confidence": 0.9,
+        "search_space": {
+            "estimate": "BOUNDED",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
+        "horizon": {
+            "estimate": "SHORT",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
     }
 
     class CapturingModel:
@@ -349,6 +369,11 @@ def test_forged_semantic_success_batch_is_pre_reduced_atomically(
         )
     ).record
     assert isinstance(genuine, SemanticModelCallRecordV2)
+    # Pin the fixture to a genuine SUCCESS decode (finding #10): before the
+    # fixture was updated to the nested proposal shape, this record silently
+    # decoded as INVALID_STRUCTURED_OUTPUT instead, which is a different code
+    # path than the one this test claims ("forged semantic *success* batch").
+    assert genuine.status is StructuredModelStatus.SUCCESS
     forged = genuine.model_copy(
         update={
             "call_id": engine.uuids.new(),
