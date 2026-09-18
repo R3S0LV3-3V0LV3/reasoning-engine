@@ -1,5 +1,6 @@
 """Pure reducer protocol and foundational run reducer."""
 
+import hashlib
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 from uuid import UUID
@@ -11,7 +12,12 @@ from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_
 from fre.domain.context import ContextCompilationRecord, ContextPacket
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
-from fre.domain.representation import RepresentationArtifact, RepresentationPlan
+from fre.domain.representation import (
+    RepresentationArtifact,
+    RepresentationArtifactV2,
+    RepresentationPlan,
+    RepresentationPlanV2,
+)
 from fre.domain.semantic import (
     EpistemicOriginLabel,
     SemanticAccountingCondition,
@@ -55,7 +61,9 @@ from fre.runtime.events import (
     ProblemContradictionRecorded,
     ProblemFormalised,
     RepresentationArtifactCompiled,
+    RepresentationArtifactCompiledV2,
     RepresentationPlanSelected,
+    RepresentationPlanSelectedV2,
     RunCreated,
     RunStatusChanged,
     StopDecisionRecorded,
@@ -103,6 +111,11 @@ class RunState(FrozenModel):
     problem_contradictions: tuple[ContradictionDiagnostic, ...] = ()
     representation_plan: RepresentationPlan | None = None
     representation_artifacts: tuple[RepresentationArtifact, ...] = ()
+    # C07/M04 bound v2 selection state. Additive, post-Wave-3-freeze fields:
+    # see `snapshot_payload` below, which omits both whenever they are empty
+    # so every pre-existing sealed snapshot hash is preserved unchanged.
+    representation_plan_v2: RepresentationPlanV2 | None = None
+    representation_artifacts_v2: tuple[RepresentationArtifactV2, ...] = ()
     # Reducer-local bookkeeping for the F09 reservation-settlement duplicate
     # check embedded in `RunReducer.apply` (see the `ModelCallRecordedV2` /
     # `ModelCallFailedV2` branch below and finding #2 in the C04 remediation
@@ -178,6 +191,13 @@ class RunState(FrozenModel):
                 "terminal_context_packet_hash",
                 "terminal_context_disposition",
             ):
+                payload.pop(key)
+        # C07 (M04 bound v2 representation state) did not exist when every
+        # earlier snapshot was sealed. Pop both fields whenever they are
+        # empty, independently of the wave_2/wave_3 flags above, so no
+        # pre-existing run's hash changes merely because this phase shipped.
+        if self.representation_plan_v2 is None and not self.representation_artifacts_v2:
+            for key in ("representation_plan_v2", "representation_artifacts_v2"):
                 payload.pop(key)
         return payload
 
@@ -806,6 +826,147 @@ class RunReducer:
             changes["representation_artifacts"] = (
                 *state.representation_artifacts,
                 payload.artifact,
+            )
+        elif isinstance(payload, RepresentationPlanSelectedV2):
+            # C07 (M04, F10/F11 remediation): a bound v2 plan must bind to the
+            # ProblemSpec and run-state revision that were actually applied
+            # BEFORE this event, not merely to whatever the caller claims.
+            # `RepresentationPlanV2.bind_plan_hash` already proves the plan's
+            # own internal self-consistency (its `plan_hash` seals every other
+            # field) at construction time -- this reducer check is the part
+            # only sequentially-applied state can prove: that the plan's
+            # declared `problem_spec_hash`/`source_snapshot_version` actually
+            # match the ProblemSpec and version this run had reached.
+            plan = payload.plan
+            expected_plan_hash = canonical_hash(plan.model_dump(mode="json", exclude={"plan_hash"}))
+            if plan.plan_hash != expected_plan_hash:
+                raise ValueError(
+                    "representation plan (v2) hash does not match its own canonical preimage"
+                )
+            if (
+                state.problem_spec is None
+                or canonical_hash(state.problem_spec) != plan.problem_spec_hash
+            ):
+                raise ValueError("representation plan (v2) does not bind current ProblemSpec")
+            if plan.source_snapshot_version != state.version:
+                raise ValueError(
+                    "representation plan (v2) source_snapshot_version does not match the "
+                    "run state it was actually selected against"
+                )
+            # Objective 3: semantic adjudication is only ever a legitimate
+            # input to selection when the plan itself claims it ran inside the
+            # declared tie band, AND when it is backed by a real, already-
+            # applied semantic model-call record carrying that exact
+            # identity -- never a bare, self-reported reference.
+            if plan.adjudication_record_ref is not None:
+                if not plan.tie_triggered:
+                    raise ValueError(
+                        "representation plan (v2) references adjudication outside its own "
+                        "declared tie band"
+                    )
+                if not any(
+                    call.idempotency_key == plan.adjudication_record_ref
+                    for call in state.model_calls
+                ):
+                    raise ValueError(
+                        "representation plan (v2) adjudication_record_ref has no matching "
+                        "semantic model-call record applied in this run"
+                    )
+            changes["representation_plan_v2"] = plan
+        elif isinstance(payload, RepresentationArtifactCompiledV2):
+            bound_artifact = payload.artifact
+            # `RepresentationArtifactV2.fallback_attribution_is_consistent`
+            # already makes the F10 exploit shape (fallback content attributed
+            # to the requested, non-executing builder) structurally
+            # unconstructable. What remains for the reducer -- state this type
+            # cannot see on its own -- is: does this artifact actually bind to
+            # a plan and ProblemSpec this run really has, and do its claimed
+            # bytes/hash actually exist and match what it asserts?
+            if (
+                state.problem_spec is None
+                or canonical_hash(state.problem_spec) != bound_artifact.problem_spec_hash
+            ):
+                raise ValueError("representation artifact (v2) does not bind current ProblemSpec")
+            if (
+                state.representation_plan_v2 is None
+                or state.representation_plan_v2.plan_hash != bound_artifact.plan_hash
+            ):
+                raise ValueError(
+                    "representation artifact (v2) does not bind an already-applied bound plan"
+                )
+            # Bound against the SAME declared snapshot revision as its own
+            # plan -- not against `state.version` at artifact-application
+            # time, which has already advanced past the plan's own value the
+            # moment `RepresentationPlanSelectedV2` itself was applied (and
+            # may advance further still if unrelated events land between
+            # plan selection and artifact compilation).
+            if (
+                bound_artifact.source_snapshot_version
+                != state.representation_plan_v2.source_snapshot_version
+            ):
+                raise ValueError(
+                    "representation artifact (v2) source_snapshot_version does not match the "
+                    "bound plan it was actually built against"
+                )
+            if not any(
+                view.kind is bound_artifact.requested_kind
+                for view in state.representation_plan_v2.views
+            ):
+                raise ValueError(
+                    "representation artifact (v2) requests a kind absent from its bound plan"
+                )
+            if bound_artifact.registry_hash != state.representation_plan_v2.registry_hash:
+                raise ValueError(
+                    "representation artifact (v2) registry_hash does not match its bound plan"
+                )
+            if bound_artifact.physical_artifact_ref.sha256 not in state.artifacts:
+                raise ValueError("representation artifact (v2) bytes are not registered")
+            # F10/Objective 4 decisive check: a caller-asserted `content_hash`
+            # is never trusted on its own. The bytes are re-read from the
+            # artifact store by their registered sha256 and rehashed; any
+            # disagreement -- a forged claim, or bytes that no longer exist --
+            # is rejected here, before persistence.
+            if self._artifact_reader is not None:
+                try:
+                    actual_bytes = self._artifact_reader(
+                        bound_artifact.physical_artifact_ref.sha256
+                    )
+                except (KeyError, FileNotFoundError, OSError) as error:
+                    raise ValueError(
+                        "representation artifact (v2) bytes could not be read from the "
+                        "artifact store"
+                    ) from error
+                if actual_bytes is None:
+                    raise ValueError("representation artifact (v2) bytes are missing")
+                recomputed = hashlib.sha256(actual_bytes).hexdigest()
+                if recomputed != bound_artifact.physical_artifact_ref.sha256:
+                    raise ValueError(
+                        "representation artifact (v2) stored bytes do not match their "
+                        "registered sha256"
+                    )
+                if recomputed != bound_artifact.content_hash:
+                    raise ValueError(
+                        "representation artifact (v2) content_hash does not match the "
+                        "artifact's actual stored bytes; the caller's claim is rejected"
+                    )
+                expected_determinism_hash = canonical_hash(
+                    {
+                        "registry_hash": bound_artifact.registry_hash,
+                        "actual_kind": bound_artifact.actual_kind,
+                        "problem_spec_hash": bound_artifact.problem_spec_hash,
+                        "actual_builder_id": bound_artifact.actual_builder_id,
+                        "actual_builder_version": bound_artifact.actual_builder_version,
+                        "content_hash": recomputed,
+                    }
+                )
+                if bound_artifact.determinism_hash != expected_determinism_hash:
+                    raise ValueError(
+                        "representation artifact (v2) determinism_hash does not match its "
+                        "declared inputs and actual content"
+                    )
+            changes["representation_artifacts_v2"] = (
+                *state.representation_artifacts_v2,
+                bound_artifact,
             )
         if (
             isinstance(payload, RunStatusChanged)
