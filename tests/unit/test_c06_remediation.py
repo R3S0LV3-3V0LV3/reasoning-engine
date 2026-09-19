@@ -319,6 +319,56 @@ def test_all_four_support_reference_kinds_resolve_when_valid() -> None:
     assert len(supported.provenance.support) == 4
 
 
+@pytest.mark.unit
+def test_ledger_nodes_are_emitted_in_dependency_order_for_a_three_level_support_chain() -> None:
+    """EU-18 (C06 cleanup): `_topologically_ordered_items` must still emit a
+    target's ledger node strictly before the node of any item -- however
+    many `SupportProblemItemRef` hops away -- that (transitively) cites it,
+    regardless of declaration order in the proposal. Declared here in
+    reverse dependency order (`leaf` first, `root` last) so a naive
+    declaration-order emission would fail this assertion."""
+    proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "leaf",
+                    "kind": "UNKNOWN",
+                    "description": "cites mid",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "derived from mid",
+                    "support": ({"item_id": "mid"},),
+                },
+                {
+                    "id": "mid",
+                    "kind": "UNKNOWN",
+                    "description": "cites root",
+                    "origin": EpistemicOriginLabel.SUPPORTED_INFERENCE,
+                    "basis": "derived from root",
+                    "support": ({"item_id": "root"},),
+                },
+                {
+                    "id": "root",
+                    "kind": "UNKNOWN",
+                    "description": "no support",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                },
+            )
+        }
+    )
+    events = ProblemFormaliser().canonical_events(
+        envelope(),
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 20)),
+    )
+    emitted_order = [
+        node.content["id"]
+        for node in (e.node for e in events if isinstance(e, LedgerNodeAdded))
+        if isinstance(node.content, dict)
+    ]
+    assert emitted_order == ["root", "mid", "leaf"]
+
+
 # ---------------------------------------------------------------------------
 # F07: contradicted-without-relation must be rejected; material vs.
 # non-material items produce blockers only when material.

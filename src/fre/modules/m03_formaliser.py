@@ -5,6 +5,7 @@ from typing import Literal, cast
 from uuid import UUID
 
 from fre.domain.common import ObjectRef
+from fre.domain.graph import depth_first_traverse
 from fre.domain.ledger import (
     EpistemicStatus,
     LedgerEdge,
@@ -87,22 +88,39 @@ def _topologically_ordered_items(
     items: tuple[ProblemItemProposal, ...],
 ) -> tuple[ProblemItemProposal, ...]:
     """Order `items` (already known acyclic) so a `ProblemItemRef` target's
-    node always precedes the node of the item that cites it."""
+    node always precedes the node of the item that cites it.
+
+    C06 remediation (EU-18): reuses the shared `depth_first_traverse`
+    primitive from EU-17 for its post-order visit (post-order append =
+    reverse topo order). This function still runs its own, separate DFS pass
+    over its own filtered edge set (`items` here has already had `RELATION`
+    items excluded by the caller, unlike `_reject_support_cycles`'s edge set)
+    -- merging the two passes into one traversal across both filtered edge
+    sets is out of scope for this cleanup and was explicitly deferred.
+    """
     by_id = {item.id: item for item in items}
-    visited: set[str] = set()
+    edges: dict[str, tuple[str, ...]] = {
+        item.id: tuple(
+            ref.item_id for ref in item.support if isinstance(ref, SupportProblemItemRef)
+        )
+        for item in items
+    }
     ordered: list[ProblemItemProposal] = []
 
-    def visit(item_id: str) -> None:
-        if item_id in visited or item_id not in by_id:
-            return
-        visited.add(item_id)
-        for ref in by_id[item_id].support:
-            if isinstance(ref, SupportProblemItemRef):
-                visit(ref.item_id)
+    def _on_cycle(item_id: str) -> None:
+        # Defensive-only: `_reject_support_cycles` (via `validate_support_graph`)
+        # always runs before this, in `formalise()`, so this should never fire.
+        raise InvalidProblemSpec(
+            f"internal invariant violated: cycle encountered at '{item_id}' while "
+            "topologically ordering items presumed already acyclic"
+        )
+
+    def _on_finish(item_id: str) -> None:
         ordered.append(by_id[item_id])
 
-    for item in items:
-        visit(item.id)
+    depth_first_traverse(
+        edges, order=(item.id for item in items), on_cycle=_on_cycle, on_finish=_on_finish
+    )
     return tuple(ordered)
 
 
