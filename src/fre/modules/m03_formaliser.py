@@ -621,7 +621,17 @@ class ProblemFormaliser:
             objectives=tuple(objectives),
             constraints=tuple(constraints),
             # Legacy free-text mirror of `assumption_items` (C06 / F04: this
-            # was declared but never populated).
+            # was declared but never populated). `assumption_items` is the
+            # source of truth; `assumptions` is derived from it and kept
+            # deliberately in lockstep, never populated independently. This
+            # redundancy is intentional and threads one level further
+            # downstream too: `m12_context.py`'s `_semantic_summary`-style
+            # section mirrors both into the compiled context packet as
+            # `assumptions.statements` (= this field) and
+            # `assumptions.items` (= `assumption_items`), derived fresh from
+            # this same `ProblemSpec` at compile time -- both mirrors are
+            # backward-compatible surface area, not independent state, so
+            # there is no drift risk (C06 cleanup, EU-20).
             assumptions=tuple(item.statement for item in assumptions),
             assumption_items=tuple(assumptions),
             unknowns=tuple(unknowns),

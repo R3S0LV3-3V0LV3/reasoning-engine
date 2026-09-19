@@ -133,6 +133,15 @@ class ProblemSpec(FrozenModel):
     decision_variables: tuple[DecisionVariable, ...] = ()
     objectives: tuple[ObjectiveSpec, ...] = ()
     constraints: tuple[ConstraintSpec, ...] = ()
+    # `assumption_items` (below) is the source of truth for assumptions;
+    # `assumptions` is an intentional, backward-compatible free-text mirror
+    # of `assumption_items[*].statement`, always populated in lockstep by
+    # `m03_formaliser.ProblemFormaliser.formalise` -- never independently.
+    # `m12_context.py`'s compiled context packet threads the same pairing
+    # one level further downstream (`assumptions.statements` /
+    # `assumptions.items`). No field removal or computed-property
+    # conversion is planned: both are persisted/wire-adjacent shapes with a
+    # wide golden-fixture blast radius (C06 cleanup, EU-20).
     assumptions: tuple[str, ...] = ()
     assumption_items: tuple[AssumptionSpec, ...] = ()
     fixed_parameters: tuple[FixedParameter, ...] = ()
