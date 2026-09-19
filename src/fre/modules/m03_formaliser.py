@@ -105,17 +105,29 @@ def _explicit_constraint_represented(statement: str, constraints: list[Constrain
     already represented by at least one HARD-kind constraint already
     admitted into the `ProblemSpec` (W3 final-gate remediation).
 
-    "Represented" is judged purely by normalised text containment in either
-    direction: the explicit statement's normalised text appears verbatim
-    inside a HARD constraint's normalised description, or vice versa. This
-    catches the common cases -- a proposal that restates the constraint
-    verbatim, wraps it in a longer sentence, or lightly trims it -- without
-    requiring exact equality. It intentionally does NOT catch a proposal that
-    paraphrases the constraint into materially different wording; there is no
-    reliable, deterministic way to judge semantic equivalence here, so a
-    paraphrase (or an outright omission) is treated as "not represented" and
-    handled by synthesising the user's own statement verbatim (see
-    `formalise`) -- the safe default given the ambiguity.
+    "Represented" is judged by normalised text containment in exactly ONE
+    direction: the explicit statement's normalised text must appear verbatim
+    inside a HARD constraint's normalised description. This catches the
+    common cases -- a proposal that restates the constraint verbatim, wraps
+    it in a longer sentence, or lightly trims it -- without requiring exact
+    equality. It intentionally does NOT catch a proposal that paraphrases the
+    constraint into materially different wording; there is no reliable,
+    deterministic way to judge semantic equivalence here, so a paraphrase (or
+    an outright omission) is treated as "not represented" and handled by
+    synthesising the user's own statement verbatim (see `formalise`) -- the
+    safe default given the ambiguity.
+
+    The reverse direction (`haystack in needle`, i.e. a proposal's
+    constraint text being merely a SUBSTRING of the envelope's explicit
+    constraint) was deliberately removed (W3 final-gate fix #1): the
+    envelope statement can itself be a multi-clause conjunction (e.g.
+    "cost <= 10 and weight <= 5"), and a proposal that only covers ONE of
+    those clauses ("cost <= 10") would otherwise satisfy `haystack in
+    needle` and be wrongly treated as full coverage of the whole
+    conjunction -- silently losing the other clause with no synthesis and
+    no ledger record. Requiring `needle in haystack` only means the
+    envelope's exact text must appear within the proposal's constraint
+    description, which a genuine partial match cannot satisfy.
     """
     needle = _normalise_constraint_text(statement)
     if not needle:
@@ -124,7 +136,7 @@ def _explicit_constraint_represented(statement: str, constraints: list[Constrain
         if constraint.kind != "HARD":
             continue
         haystack = _normalise_constraint_text(constraint.description)
-        if needle in haystack or haystack in needle:
+        if needle in haystack:
             return True
     return False
 
@@ -208,7 +220,7 @@ def _is_material(item: ProblemItemProposal) -> bool:
 class ProblemFormaliser:
     def _ledger_events(
         self,
-        proposal: ProblemFormalisationOutput,
+        items: tuple[ProblemItemProposal, ...],
         *,
         created_at: datetime,
         uuids: UUIDFactory,
@@ -257,9 +269,9 @@ class ProblemFormaliser:
         # matching `id` string (the empirically-demonstrated exploit this
         # closes; see `_validate_m03_ledger_node_provenance`'s docstring).
         batch_id = str(uuids.new())
-        self._validate_items(proposal.items)
+        self._validate_items(items)
         contested_ids: set[str] = set()
-        for item in proposal.items:
+        for item in items:
             if (
                 item.kind == "RELATION"
                 and item.attributes.get("relation_kind") == "CONTRADICTS"
@@ -270,14 +282,14 @@ class ProblemFormaliser:
         # C06 remediation: persist ledger nodes before events that resolve
         # them, within this one atomic batch. A same-proposal `support`
         # reference (`ProblemItemRef`) may point at an item declared *later*
-        # in `proposal.items` -- `validate_support_graph` only forbids a
+        # in `items` -- `validate_support_graph` only forbids a
         # cycle, never a specific declaration order -- so nodes are emitted
         # in dependency order (a target's node always precedes the node that
         # cites it), not raw proposal order. `_reject_support_cycles`
         # (already run by `validate_support_graph` inside `formalise`, which
         # `canonical_events` always calls first) guarantees this terminates.
         for item in _topologically_ordered_items(
-            tuple(item for item in proposal.items if item.kind != "RELATION")
+            tuple(item for item in items if item.kind != "RELATION")
         ):
             node_id = uuids.new()
             node = make_node(
@@ -294,7 +306,7 @@ class ProblemFormaliser:
             )
             refs[item.id] = node.ref
             events.append(LedgerNodeAdded(node=node))
-        for item in proposal.items:
+        for item in items:
             if item.kind != "RELATION" or item.attributes.get("relation_kind") != "CONTRADICTS":
                 continue
             source = refs.get(str(item.attributes.get("source_id")))
@@ -335,7 +347,7 @@ class ProblemFormaliser:
                         )
                     )
                 )
-        for item in proposal.items:
+        for item in items:
             if item.kind != "ACCEPTANCE_CRITERION":
                 continue
             mode = str(item.attributes.get("verification_mode", "UNAVAILABLE"))
@@ -360,7 +372,7 @@ class ProblemFormaliser:
         # downgraded just because nothing downstream happened to ask about
         # it. A non-material one keeps its ledger node (retained provenance,
         # explicit M09 basis) but never fabricates a blocker.
-        for item in proposal.items:
+        for item in items:
             if item.kind != "UNKNOWN" or item.origin is not EpistemicOriginLabel.UNRESOLVED:
                 continue
             if not _is_material(item):
@@ -401,7 +413,7 @@ class ProblemFormaliser:
         can construct M03 `LedgerNodeAdded`/`LedgerEdgeAdded`/blocker/
         contradiction events from an unvalidated proposal.
         """
-        problem = self.formalise(
+        problem, synthetic_items = self._formalise_with_synthetic_items(
             envelope,
             proposal,
             available_artifacts=available_artifacts,
@@ -410,8 +422,14 @@ class ProblemFormaliser:
         )
         if proposal is None:
             return (ProblemFormalised(problem=problem),)
+        # W3 final-gate fix #2: feed the FINAL admitted item list -- the
+        # proposal's own items plus any explicit constraints `formalise`
+        # synthesised to cover a gap -- through `_ledger_events`, so a
+        # synthesised constraint gets a real M09 `LedgerNodeAdded` (FACT)
+        # node just like every proposal-authored item does, instead of
+        # silently having no ledger presence at all.
         ledger_events, blocker_refs = self._ledger_events(
-            proposal, created_at=created_at, uuids=uuids
+            proposal.items + synthetic_items, created_at=created_at, uuids=uuids
         )
         if blocker_refs:
             problem = problem.model_copy(
@@ -435,6 +453,37 @@ class ProblemFormaliser:
         trusted_verifier_results: dict[str, VerificationStatus] | None = None,
         known_ledger_refs: frozenset[tuple[UUID, int]] = frozenset(),
     ) -> ProblemSpec:
+        problem, _synthetic_items = self._formalise_with_synthetic_items(
+            envelope,
+            proposal,
+            available_artifacts=available_artifacts,
+            trusted_verifier_results=trusted_verifier_results,
+            known_ledger_refs=known_ledger_refs,
+        )
+        return problem
+
+    def _formalise_with_synthetic_items(
+        self,
+        envelope: TaskEnvelope,
+        proposal: ProblemFormalisationOutput | None,
+        *,
+        available_artifacts: frozenset[str] = frozenset(),
+        trusted_verifier_results: dict[str, VerificationStatus] | None = None,
+        known_ledger_refs: frozenset[tuple[UUID, int]] = frozenset(),
+    ) -> tuple[ProblemSpec, tuple[ProblemItemProposal, ...]]:
+        """Build the `ProblemSpec` and also return, as a second value, every
+        `ProblemItemProposal`-shaped item this call synthesised on its own
+        (currently: explicit constraints missing from the model proposal --
+        see the `else` branch below) that was NOT part of `proposal.items`.
+
+        W3 final-gate fix #2: `canonical_events` needs this second value so
+        it can also emit M09 ledger nodes for synthesised constraints -- a
+        gap that otherwise left every synthesised constraint (from PR #27's
+        fix, and now potentially several per gap from fix #1 above) with no
+        ledger node at all, because `_ledger_events` only ever iterated
+        `proposal.items`.
+        """
+        synthetic_items: list[ProblemItemProposal] = []
         items = proposal.items if proposal else ()
         variables: list[DecisionVariable] = []
         fixed: list[FixedParameter] = []
@@ -685,6 +734,14 @@ class ProblemFormaliser:
                     suffix += 1
                     synthetic_id = f"explicit-{index}-gap-{suffix}"
                 ids.add(synthetic_id)
+                synthetic_anchor = SourceAnchor(
+                    source_kind=SourceKind.TASK_FIELD,
+                    source_ref=ObjectRef(
+                        object_type="TaskEnvelope",
+                        object_id=str(envelope.task_id),
+                    ),
+                    selector=f"/explicit_constraints/{index}",
+                )
                 constraints.append(
                     ConstraintSpec(
                         id=synthetic_id,
@@ -697,17 +754,27 @@ class ProblemFormaliser:
                         ),
                         provenance=EpistemicItemProvenance(
                             origin=EpistemicOriginLabel.EXPLICIT_INPUT,
-                            anchors=(
-                                SourceAnchor(
-                                    source_kind=SourceKind.TASK_FIELD,
-                                    source_ref=ObjectRef(
-                                        object_type="TaskEnvelope",
-                                        object_id=str(envelope.task_id),
-                                    ),
-                                    selector=f"/explicit_constraints/{index}",
-                                ),
-                            ),
+                            anchors=(synthetic_anchor,),
                         ),
+                    )
+                )
+                # W3 final-gate fix #2: record this synthesised constraint in
+                # `ProblemItemProposal` shape too, so `canonical_events` can
+                # feed it through `_ledger_events` and give it a real M09
+                # ledger node -- the same treatment every proposal-authored
+                # item already gets.
+                synthetic_items.append(
+                    ProblemItemProposal(
+                        id=synthetic_id,
+                        kind="CONSTRAINT",
+                        description=statement,
+                        origin=EpistemicOriginLabel.EXPLICIT_INPUT,
+                        anchors=(synthetic_anchor,),
+                        attributes={
+                            "constraint_kind": "HARD",
+                            "verification_mode": "UNAVAILABLE",
+                            "verification_status": "UNKNOWN",
+                        },
                     )
                 )
         overlap = {item.id for item in variables} & {item.id for item in fixed}
@@ -737,7 +804,7 @@ class ProblemFormaliser:
             acceptance_criteria=tuple(criteria),
             relations=tuple(relations),
             output_contract=envelope.requested_output,
-        )
+        ), tuple(synthetic_items)
 
     @staticmethod
     def _validate_items(items: tuple[ProblemItemProposal, ...]) -> dict[str, ProblemItemProposal]:

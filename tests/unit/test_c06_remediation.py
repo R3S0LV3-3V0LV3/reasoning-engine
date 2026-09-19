@@ -56,11 +56,11 @@ from fre.runtime.events import (
 from fre.runtime.reducer import RunReducer
 
 
-def envelope() -> TaskEnvelope:
+def envelope(*, explicit_constraints: tuple[str, ...] = ("cost <= 10",)) -> TaskEnvelope:
     return TaskEnvelope(
         task_id=UUID(int=1),
         text="Minimize cost subject to cost <= 10.",
-        explicit_constraints=("cost <= 10",),
+        explicit_constraints=explicit_constraints,
         requested_output=OutputContract(form="TEXT"),
         execution_permissions=PermissionSet(),
     )
@@ -365,8 +365,13 @@ def test_ledger_nodes_are_emitted_in_dependency_order_for_a_three_level_support_
             )
         }
     )
+    # `explicit_constraints=()`: this test is about dependency-order
+    # emission for support-chained items, not explicit-constraint synthesis
+    # (W3 final-gate fix #2 now also emits a ledger node for any synthesised
+    # explicit constraint, which would otherwise appear in `emitted_order`
+    # and break this test's exact-sequence assertion below).
     events = ProblemFormaliser().canonical_events(
-        envelope(),
+        envelope(explicit_constraints=()),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 20)),
