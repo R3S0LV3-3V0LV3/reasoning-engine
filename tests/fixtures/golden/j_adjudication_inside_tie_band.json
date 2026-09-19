@@ -5,10 +5,10 @@
     "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
     "1f43526726be40937b0f0e47682b13fbed6662685d531bbac85025245837eff9",
     "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
-    "41d2a9c06ff0828f0d3ea46e75c82910e4806013e45594ff2dddb9bfffe19ebd",
     "8b920a472fa93585eeceb23e6521b9d3731d913d8c5119b35f06f01873d3183c",
     "aa84ac43856216870601647dce7db4c9e9b922ca9fd7b0155ba38d5563184bfb",
-    "ff9199d769b5fd09be24fe1392ccd5332173c0dffb573f87c71f42997dfacc27"
+    "c674b0b747612d485f25b64e12f7fac8eeb05a1e0e5b78d25edebf633b927639",
+    "d5750d82bd6b5281f8984c4c09aab5fba2586d5fb3ac45f11c9b27e1b8d75ef7"
   ],
   "assumptions": [],
   "blockers": {
@@ -113,12 +113,12 @@
       "sequence": 17
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 18
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 19
     },
@@ -128,22 +128,22 @@
       "sequence": 20
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 21
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 22
     },
     {
-      "event_type": "ProblemFormalised",
-      "module_id": "M03",
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
       "sequence": 23
     },
     {
-      "event_type": "LedgerNodeAdded",
+      "event_type": "ProblemFormalised",
       "module_id": "M03",
       "sequence": 24
     },
@@ -158,66 +158,76 @@
       "sequence": 26
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
       "sequence": 27
     },
     {
-      "event_type": "ArtifactRegistered",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
       "sequence": 28
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 29
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 30
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 31
     },
     {
-      "event_type": "RepresentationPlanSelected",
-      "module_id": "M04",
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
       "sequence": 32
     },
     {
-      "event_type": "ArtifactRegistered",
-      "module_id": "M04",
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
       "sequence": 33
     },
     {
-      "event_type": "RepresentationArtifactCompiled",
+      "event_type": "RepresentationPlanSelected",
       "module_id": "M04",
       "sequence": 34
     },
     {
       "event_type": "ArtifactRegistered",
-      "module_id": "M12",
+      "module_id": "M04",
       "sequence": 35
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 36
     },
     {
       "event_type": "ArtifactRegistered",
       "module_id": "M12",
-      "sequence": 36
+      "sequence": 37
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 38
     },
     {
       "event_type": "ContextCompiled",
       "module_id": "M12",
-      "sequence": 37
+      "sequence": 39
     }
   ],
-  "final_state_hash": "9e82f83591d2806a2d6cc7209ff334c25121459d73802cb20d713f24e1c8cbb9",
+  "final_state_hash": "d87126a31d3b6dcecae863d734289b05c6f29586d5106dd2f70222879876bb8f",
   "fixture": "J",
   "last_packet": {
     "availability": "AVAILABLE",
-    "packet_hash": "ce24b0dd5c20780383a3037dbc55c77efa9890ff3c33c64e8adc2971e533b536",
+    "packet_hash": "83525ab580e2a869917af9497ea380418f92cc2c734bae5762a2b167c69cba7c",
     "profile": "STANDARD"
   },
   "model_calls": 3,
@@ -235,5 +245,5 @@
   "stop_decisions": [],
   "terminal_context_packet_hash": null,
   "unknowns": [],
-  "version": 37
+  "version": 39
 }

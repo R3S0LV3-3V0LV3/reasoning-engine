@@ -1,12 +1,12 @@
 {
   "artifacts": [
+    "06008326f3a9cb6523f50508d5941ba4021c0ca3d5a297500956883d0d00abe0",
     "17eed55d881c0dd5fe0935a98d89dd9e52d62aed941f3fb7d17bd490e5aa3e8f",
     "17eed55d881c0dd5fe0935a98d89dd9e52d62aed941f3fb7d17bd490e5aa3e8f",
     "1a19db2491815bb7b9a2c7f8b8d179ca62a224ad9bb31410052b3622a24924a9",
-    "334712d4a3ca3ec464e70092af28f7896bedb3f13d6a2ee03668e718af2b3858",
+    "1ea24d0bf920ff1ba539522cc2c502085a07d0e34696d8174cf05bb57ffbeea9",
     "eeb85c2675888473ec64b7580aa0c76c6fd6b2bd51828870286ef202ad89dae2",
-    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1",
-    "f21af45a9032783e4f7ee21b0866d4fec4983d8e08c0d00dcdb89f70fa80efa8"
+    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1"
   ],
   "assumptions": [],
   "blockers": {
@@ -91,12 +91,12 @@
       "sequence": 13
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 14
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 15
     },
@@ -106,56 +106,66 @@
       "sequence": 16
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 17
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 18
     },
     {
-      "event_type": "ProblemFormalised",
-      "module_id": "M03",
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
       "sequence": 19
     },
     {
-      "event_type": "RepresentationPlanSelected",
-      "module_id": "M04",
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
       "sequence": 20
     },
     {
-      "event_type": "ArtifactRegistered",
-      "module_id": "M04",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
       "sequence": 21
     },
     {
-      "event_type": "RepresentationArtifactCompiled",
+      "event_type": "RepresentationPlanSelected",
       "module_id": "M04",
       "sequence": 22
     },
     {
       "event_type": "ArtifactRegistered",
-      "module_id": "M12",
+      "module_id": "M04",
       "sequence": 23
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 24
     },
     {
       "event_type": "ArtifactRegistered",
       "module_id": "M12",
-      "sequence": 24
+      "sequence": 25
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 26
     },
     {
       "event_type": "ContextCompiled",
       "module_id": "M12",
-      "sequence": 25
+      "sequence": 27
     }
   ],
-  "final_state_hash": "fbaf3ac480bfb8c74b699fdfa4f35643180b21f2ee17ad7c330aa3b7521b972e",
+  "final_state_hash": "2a69aa0f1cd50db776cd760b886aae5255c312443257c3e99dd3feb14b1ddcaf",
   "fixture": "D",
   "last_packet": {
     "availability": "AVAILABLE",
-    "packet_hash": "ebc7c3daf33c734d1d25b30be3b3803a6eeb570fe08d2eb4a1c4a1bb0ce39c38",
+    "packet_hash": "379b34010b37d7582a6efcf3388e84f9f6596bb63176d98975bc725ce16fcb73",
     "profile": "STANDARD"
   },
   "model_calls": 3,
@@ -172,5 +182,5 @@
   "stop_decisions": [],
   "terminal_context_packet_hash": null,
   "unknowns": [],
-  "version": 25
+  "version": 27
 }

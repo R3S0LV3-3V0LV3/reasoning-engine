@@ -2,13 +2,13 @@
   "artifacts": [
     "1a19db2491815bb7b9a2c7f8b8d179ca62a224ad9bb31410052b3622a24924a9",
     "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
+    "2f2a013f999001b4f71b669aa932f92bb430032bbac96a21d10ba73b60af46ff",
     "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
-    "59b3c07c29fb96be73b863ef4b57a00e2a3534e20ccf472cb5fafbb82930b341",
-    "5f3029d88bd1c105b8cba5812302ad5ca997c5c810b07a16b6d9c6a73ec68eea",
-    "640f7206e313be9e91f93435d285bff1d0f3bb2b1b9a6e0c03d06755acf3e593",
-    "c8818eab8dee283199aafee912ce25b949e4a3d925a2d68265d2f29728e2cd8f",
+    "a13ceac39d5f816fb07e370b7ff49382ec4f311afe9c6eb71729b7a6cc27393f",
+    "ae01cffcdf8aa52cc8bd17479ff70a4ebffd5bda05f0ae5b2e31f81e44ae9305",
     "eeb85c2675888473ec64b7580aa0c76c6fd6b2bd51828870286ef202ad89dae2",
-    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1"
+    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1",
+    "fc41be1f20bf9f3d4ed0a1fc65dac320f06ce70a6724e5f2cb618cd054417752"
   ],
   "assumptions": [],
   "blockers": {
@@ -113,12 +113,12 @@
       "sequence": 17
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 18
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 19
     },
@@ -128,73 +128,73 @@
       "sequence": 20
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 21
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 22
     },
     {
-      "event_type": "ProblemFormalised",
-      "module_id": "M03",
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
       "sequence": 23
     },
     {
-      "event_type": "RepresentationPlanSelected",
-      "module_id": "M04",
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
       "sequence": 24
     },
     {
-      "event_type": "ArtifactRegistered",
-      "module_id": "M04",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
       "sequence": 25
     },
     {
-      "event_type": "RepresentationArtifactCompiled",
+      "event_type": "RepresentationPlanSelected",
       "module_id": "M04",
       "sequence": 26
     },
     {
       "event_type": "ArtifactRegistered",
-      "module_id": "M12",
+      "module_id": "M04",
       "sequence": 27
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 28
     },
     {
       "event_type": "ArtifactRegistered",
       "module_id": "M12",
-      "sequence": 28
+      "sequence": 29
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 30
     },
     {
       "event_type": "ContextCompiled",
       "module_id": "M12",
-      "sequence": 29
-    },
-    {
-      "event_type": "StopDecisionRecorded",
-      "module_id": "M13",
-      "sequence": 30
-    },
-    {
-      "event_type": "StopDecisionRecorded",
-      "module_id": "M13",
       "sequence": 31
     },
     {
-      "event_type": "ContextCompiled",
-      "module_id": "wave2-runtime",
+      "event_type": "StopDecisionRecorded",
+      "module_id": "M13",
       "sequence": 32
     },
     {
-      "event_type": "TerminalContextAssociated",
-      "module_id": "wave2-runtime",
+      "event_type": "StopDecisionRecorded",
+      "module_id": "M13",
       "sequence": 33
     },
     {
-      "event_type": "RunStatusChanged",
-      "module_id": "wave2-runtime",
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
       "sequence": 34
     },
     {
@@ -203,24 +203,34 @@
       "sequence": 35
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "ContextCompiled",
       "module_id": "M12",
       "sequence": 36
     },
     {
       "event_type": "ContextCompiled",
-      "module_id": "M12",
+      "module_id": "wave2-runtime",
       "sequence": 37
+    },
+    {
+      "event_type": "TerminalContextAssociated",
+      "module_id": "wave2-runtime",
+      "sequence": 38
+    },
+    {
+      "event_type": "RunStatusChanged",
+      "module_id": "wave2-runtime",
+      "sequence": 39
     }
   ],
-  "final_state_hash": "b30972128be41f5d2aa5fef1ec831f14d4d18dc324899aa1240b47406316ac6a",
+  "final_state_hash": "f85c06204d59f97b9742338d7e6feb713d570e76005398f86074e20680825414",
   "first_decision_reason_codes": [
     "ACCEPTANCE_COMPLETE"
   ],
   "fixture": "L",
   "last_packet": {
-    "availability": "AVAILABLE",
-    "packet_hash": "916a6b4834b1757dd557772ca66c20e3c2fccbbe6b8bfba04497db3322d056e6",
+    "availability": null,
+    "packet_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
     "profile": "HANDOFF"
   },
   "model_calls": 2,
@@ -251,8 +261,8 @@
       ]
     }
   ],
-  "terminal_context_packet_hash": "15861a9df85f000a254569a7663d0546acf7d3bc59093091d2577518f4292b4a",
-  "terminal_hash": "15861a9df85f000a254569a7663d0546acf7d3bc59093091d2577518f4292b4a",
+  "terminal_context_packet_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
+  "terminal_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
   "unknowns": [],
-  "version": 37
+  "version": 39
 }
