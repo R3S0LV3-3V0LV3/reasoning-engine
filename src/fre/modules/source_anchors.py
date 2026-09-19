@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from fre.domain.common import ArtifactRef, JsonValue, ObjectRef
+from fre.domain.graph import depth_first_traverse
 from fre.domain.semantic import (
     SourceAnchor,
     SourceKind,
@@ -406,19 +407,8 @@ def _reject_support_cycles(items: "Sequence[ProblemItemProposal]") -> None:
         )
         for item in items
     }
-    visiting: set[str] = set()
-    visited: set[str] = set()
 
-    def visit(node_id: str) -> None:
-        if node_id in visiting:
-            raise SelfSupportReference(f"support graph contains a prohibited cycle at '{node_id}'")
-        if node_id in visited or node_id not in edges:
-            return
-        visiting.add(node_id)
-        for target_id in edges[node_id]:
-            visit(target_id)
-        visiting.discard(node_id)
-        visited.add(node_id)
+    def _on_cycle(node_id: str) -> None:
+        raise SelfSupportReference(f"support graph contains a prohibited cycle at '{node_id}'")
 
-    for item_id in edges:
-        visit(item_id)
+    depth_first_traverse(edges, order=edges, on_cycle=_on_cycle)
