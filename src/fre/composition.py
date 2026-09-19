@@ -7,7 +7,7 @@ that actually executes the Wave 3 front end existed only as hand-wired,
 test-only code (`tests/integration/test_wave3_gate.py`), constructing every
 module directly and never going through `compose_wave3`.
 
-The methods added to `Wave3Engine` below are now the one public, authoritative,
+The methods added to `Wave3Engine` below are now the one public, RECOMMENDED,
 replayable path that executes that flow: `classify_task`/`formalise_problem`/
 `select_representation`/`compile_context` are individually resumable (each is
 a no-op once its own persisted state already exists, so a retry after
@@ -24,6 +24,41 @@ revision <- classification, representation plan <- ProblemSpec, context
 packet <- ledger/budget/representation) is independently re-verified by the
 reducer from already-applied state, not merely self-consistent within the
 event this coordinator constructed.
+
+Independent-review remediation (PR #24 finding F): `execute_front_end` is
+RECOMMENDED, not the ONLY callable path, and this module previously overclaimed
+otherwise ("the one public, authoritative... path"). Every individual step
+method on `Wave3Engine` (`classify_task`, `classify_task_semantic`,
+`formalise_problem`, `select_representation`, `compile_context`,
+`evaluate_stop`, `finalize_if_terminal`) remains independently public and
+callable on its own, and so do the underlying `wave3.components.<module>`
+collaborators (`components.classifier`, `components.formaliser`,
+`components.representation_selector`, `components.context_compiler`, ...) --
+`Wave3Components` is a plain `@dataclass`, not a private/sealed object, and
+nothing in this codebase makes its module attributes non-public. Calling a
+module directly (bypassing this coordinator) is a real, supported
+capability (every pre-C09 test in this repo did exactly that), but it loses
+whichever of this coordinator's OWN guards are not independently
+re-enforced by that module's own reducer-level checks. Concretely, as of the
+C09 (F08) remediation in PR #24 (finding D):
+  - The precondition guards on `compile_context`/`evaluate_stop`/
+    `finalize_if_terminal` (requiring M03, or M01+M02+M03, or a matching
+    recorded `StopDecision`, respectively) ARE enforced structurally by the
+    reducer/`BudgetMeter` beneath them too (calling the underlying module
+    directly with genuinely missing prerequisite state still fails loudly,
+    just with a less specific message coming from a deeper layer) -- so
+    bypassing this coordinator does not silently corrupt state on these axes.
+  - What IS lost by bypassing `classify_task`/`formalise_problem`/
+    `select_representation`/`compile_context` specifically is this
+    coordinator's OWN resumability/idempotency discipline: the "already
+    persisted, no-op, no duplicate provider call" checks each of those
+    methods performs by re-inspecting `self.engine.inspect(run_id)` before
+    acting are convention enforced by THIS FILE, not by the reducer -- a
+    caller hand-wiring a module directly (as `select_with_adjudication_bound`
+    still does not fully replicate -- see finding H) can re-invoke a real
+    semantic-model call or re-append an event batch that the coordinator
+    path would have skipped. `execute_front_end` is the only path that gets
+    that discipline for free across the whole M01-M04/M12 sequence.
 """
 
 from dataclasses import dataclass
@@ -64,7 +99,6 @@ from fre.prompts.schemas import (
     ClassificationOutput,
     OutputSchemaRegistry,
     ProblemFormalisationOutput,
-    RepresentationAdjudicationOutput,
     default_output_schema_registry,
 )
 from fre.runtime.budget_meter import BudgetMeter
@@ -352,6 +386,21 @@ class Wave3Engine:
         empty/caller-guessed set), so a same-proposal `support` reference
         that legitimately targets an already-persisted node (e.g. on a retry
         after a partial interruption) resolves exactly as it would replay.
+
+        Independent-review remediation (PR #24 finding C): `known_ledger_refs`
+        used to be captured from the `state` fetched BEFORE the `await`
+        above (when `allow_model=True`). `SemanticModelRuntime.execute` can
+        itself append real events (e.g. `BudgetReserved`/`BudgetConsumed`,
+        and in principle any other concurrent ledger mutation applied to this
+        run during that await window) -- so building `known_ledger_refs` from
+        the pre-await `state` risked resolving `support` references against a
+        ledger snapshot that was already stale by the time this method's own
+        batch is appended, exactly the class of bug `select_representation`
+        was already careful to avoid for its own `source_snapshot_version`
+        (see that method's docstring). Mirroring that correct pattern: after
+        the semantic call (if any) completes, `known_ledger_refs` -- like
+        `available_artifacts` -- is rebuilt from a FRESH `self.engine.
+        inspect(run_id)` call, not the snapshot taken before the await.
         """
         state = self.engine.inspect(run_id)
         if state.problem_spec is not None:
@@ -369,8 +418,15 @@ class Wave3Engine:
             )
             if isinstance(execution.proposal, ProblemFormalisationOutput):
                 proposal = execution.proposal
+        # Finding C: always re-inspect AFTER the (possible) await above so
+        # `known_ledger_refs` reflects the run's real, current ledger state,
+        # never a snapshot captured before a concurrent mutation could have
+        # landed during the semantic call.
+        current = self.engine.inspect(run_id)
         available_artifacts = frozenset(item.sha256 for item in envelope.attachments)
-        known_ledger_refs = frozenset((node.node_id, node.revision) for node in state.ledger.nodes)
+        known_ledger_refs = frozenset(
+            (node.node_id, node.revision) for node in current.ledger.nodes
+        )
         events = self.components.formaliser.canonical_events(
             envelope,
             proposal,
@@ -381,7 +437,6 @@ class Wave3Engine:
             known_ledger_refs=known_ledger_refs,
         )
         stored = tuple(self.engine.make_event(run_id, item, module_id="M03") for item in events)
-        current = self.engine.inspect(run_id)
         self.engine.append(run_id, current.version, stored)
         result = self.engine.inspect(run_id).problem_spec
         assert result is not None
@@ -397,17 +452,24 @@ class Wave3Engine:
         through the composed `SemanticModelRuntime` exactly like every other
         Wave 3 model call) is only ever attempted when the deterministic
         selection is genuinely tied within its own declared `tie_band` --
-        never a floating condition outside that one declared policy gate --
-        mirroring `RepresentationSelector.select_with_adjudication_bound`.
-        This method does not call that helper directly because a real
-        semantic call can itself append events (advancing the run's
-        committed version) between the deterministic selection and the final
-        persisted batch; the plan's `source_snapshot_version` is therefore
-        always re-derived against the run's version as it stands immediately
-        before the final append, never a value captured before a possible
-        adjudication call landed -- otherwise the reducer's binding check
-        (`RepresentationPlanSelectedV2`'s `source_snapshot_version != state.version`)
-        would reject every adjudicated plan.
+        never a floating condition outside that one declared policy gate.
+
+        Independent-review remediation (PR #24 finding H): this method used
+        to duplicate `RepresentationSelector.select_with_adjudication_bound`'s
+        entire adjudication sequence inline (~90 lines), specifically because
+        that shared helper had its own stale-`source_snapshot_version` bug --
+        it bound the final plan to the version captured BEFORE `runtime.
+        execute`'s `await`, even though that call can itself append real
+        events (advancing the run's committed version) before the final
+        persisted batch. That helper now re-derives its own deterministic
+        plan from a fresh `runtime.engine.inspect(run_id)` after the semantic
+        call lands (see its own docstring), so this method calls it directly
+        instead of maintaining a second, duplicate implementation of the same
+        fix. `allow_adjudication=False` is expressed by passing `runtime=
+        None` -- `select_with_adjudication_bound` treats a `None` runtime
+        exactly like "adjudication is not possible" and returns the
+        deterministic plan untouched, without ever constructing a semantic
+        call.
         """
         state = self.engine.inspect(run_id)
         if state.representation_plan_v2 is not None:
@@ -422,86 +484,17 @@ class Wave3Engine:
         selector = self.components.representation_selector
         policy = self.components.policy.representation_selection
         registry = default_registry_v2()
-        deterministic = selector.select_bound(
+        outcome = await selector.select_with_adjudication_bound(
             state.problem_spec,
             state.task_signature,
             state.budget.plan,
             state.version,
-            registry,
-            policy,
+            runtime=self.components.semantic_runtime if allow_adjudication else None,
+            run_id=run_id,
+            registry=registry,
+            policy=policy,
         )
-        plan = deterministic
-        candidates = tuple(view for view in deterministic.views if view.builder_available)
-        if (
-            allow_adjudication
-            and policy.model_adjudication_enabled
-            and deterministic.tie_triggered
-            and len(candidates) >= 2
-        ):
-            execution = await self.components.semantic_runtime.execute(
-                run_id=run_id,
-                module_id="M04",
-                module_version="1.0",
-                operation="adjudicate",
-                prompt_id="m04.adjudicate",
-                prompt_version="1.0",
-                canonical_input={
-                    "problem_spec_hash": deterministic.problem_spec_hash,
-                    "candidates": [
-                        {
-                            "kind": view.kind.value,
-                            "compatibility_score": view.compatibility_score,
-                            "score_components": [
-                                item.model_dump(mode="json") for item in view.score_components
-                            ],
-                            "purpose": view.purpose,
-                            "limitations": list(view.limitations),
-                        }
-                        for view in candidates
-                    ],
-                    "problem_summary": {
-                        "objectives": [
-                            item.model_dump(mode="json") for item in state.problem_spec.objectives
-                        ],
-                        "constraints": [
-                            item.model_dump(mode="json") for item in state.problem_spec.constraints
-                        ],
-                        "unknowns": [
-                            item.model_dump(mode="json") for item in state.problem_spec.unknowns
-                        ],
-                        "relations": [
-                            item.model_dump(mode="json") for item in state.problem_spec.relations
-                        ],
-                    },
-                    "view_limit": state.budget.plan.search.max_representation_views,
-                },
-            )
-            if execution.record is not None:
-                refreshed = self.engine.inspect(run_id)
-                assert refreshed.problem_spec is not None
-                assert refreshed.task_signature is not None
-                assert refreshed.budget.plan is not None
-                rescoped = selector.select_bound(
-                    refreshed.problem_spec,
-                    refreshed.task_signature,
-                    refreshed.budget.plan,
-                    refreshed.version,
-                    registry,
-                    policy,
-                )
-                proposal = (
-                    execution.proposal
-                    if isinstance(execution.proposal, RepresentationAdjudicationOutput)
-                    else None
-                )
-                outcome = selector.apply_adjudication_v2(
-                    rescoped,
-                    proposal,
-                    allowed_kinds=frozenset(view.kind for view in candidates),
-                    view_limit=state.budget.plan.search.max_representation_views,
-                    adjudication_record_ref=execution.record.idempotency_key,
-                )
-                plan = outcome.plan
+        plan = outcome.plan
         final_state = self.engine.inspect(run_id)
         if plan.source_snapshot_version != final_state.version:
             # Should be unreachable given the re-derivation above; fail loud
@@ -559,9 +552,8 @@ class Wave3Engine:
         current, already-applied M01-M04/M09 state.
 
         Resumable/idempotent: if the run already carries a `ContextCompiledV2`
-        packet whose `wave3_context` refs (`problem_spec_ref`, `ledger_root`,
-        `budget_plan_ref`) already match the run's CURRENT referenced state --
-        at the same `(profile, terminal_disposition)` -- that packet's hash is
+        packet that already reflects the run's CURRENT referenced state -- at
+        the same `(profile, terminal_disposition)` -- that packet's hash is
         returned and nothing new is appended. Comparing `packet.
         snapshot_version == state.version` directly would never match on a
         genuine resume: compiling and persisting a packet itself appends the
@@ -570,8 +562,76 @@ class Wave3Engine:
         pinned to the version immediately BEFORE that batch) the moment it
         first succeeds -- so this compares the real, independently-hashed
         referenced state instead of a version counter that can never recur.
+
+        Independent-review remediation (PR #24 finding B): the match key
+        previously covered only `problem_spec_ref`/`ledger_root`/
+        `budget_plan_ref`. Two real staleness gaps followed from that:
+
+        1. A packet compiled before `select_representation` landed (so its
+           `wave3_context` carries no representation state) was
+           indistinguishable, on those three fields alone, from a packet
+           compiled after -- `select_representation` never touches
+           `problem_spec`/`ledger`/`budget.plan`. `compile_context` would
+           therefore return the STALE, pre-representation packet forever,
+           even after a representation plan was selected in between. Fixed
+           below by comparing `state.representation_plan_v2.
+           source_snapshot_version` (when a v2 plan exists) against the
+           candidate packet's own `snapshot_version`: a packet only reflects
+           a v2 plan that was selected strictly BEFORE that packet was
+           compiled (`plan.source_snapshot_version < packet.snapshot_version`)
+           -- this is a purely state-derived check, not a new stored/trusted
+           packet field, so it needs no reducer or schema change. (`wave3_
+           context.representation_plan_ref` is NOT used for this: it is only
+           ever populated from the legacy v1 `representation` argument to
+           `compile_semantic`, which this v2-only coordinator path never
+           supplies, so that field is always `None` here and cannot
+           distinguish pre- from post-representation-selection packets.)
+        2. `task_signature` (classification) could change on a run (e.g. a
+           mid-run revision) without moving `problem_spec_ref`/`ledger_root`/
+           `budget_plan_ref` at all. `wave3_context.task_signature_ref` IS
+           populated correctly for the real `state.task_signature` (see
+           `Wave3ContextCompiler.compile_semantic`), so it is now compared
+           directly.
+        3. `budget_plan_ref` only hashed `state.budget.plan`'s STRUCTURE
+           (limits/policy), not how much of it had actually been consumed or
+           reserved -- a packet compiled before a `BudgetReserved`/
+           `BudgetConsumed` event would be wrongly treated as still current
+           after one landed, even though the run's real remaining budget
+           changed. Every packet already carries its own compile-time
+           `budget_remaining` (`BudgetMeter().remaining(state.budget)` at
+           that moment, via `Wave3ContextRuntime.compile_and_persist`), so
+           that full projection is now compared as well, not just the plan
+           shape.
+
+        Independent-review remediation (PR #24 finding J): `budget_policy_
+        hash`/`prompt_version`/`model_identity`/`size_target`/`next_action`
+        are DELIBERATELY still not part of this match key -- verified safe,
+        not merely overlooked:
+          - `budget_policy_hash` is `state.budget.policy_hash`, which
+            `fre.modules.m02_budget.BudgetAllocator.allocate`/`.revise`
+            ALWAYS sets in the same atomic `BudgetAllocated`/`BudgetRevised`
+            event as `state.budget.plan` itself (see those events' shared
+            payload) -- there is no code path in this codebase that changes
+            one without the other. `budget_plan_ref` (already compared
+            above) can therefore never go stale while `budget_policy_hash`
+            silently changes underneath it.
+          - `prompt_version`/`model_identity`/`size_target`/`next_action` are
+            optional keyword arguments of `Wave3ContextRuntime.
+            compile_and_persist` that THIS method never passes -- every call
+            `compile_context` ever makes leaves all four at their `None`
+            default, unconditionally. They cannot vary across two calls made
+            through this method, so they cannot cause a false match here.
+            (A caller invoking `compile_and_persist` directly, bypassing this
+            coordinator, could vary them -- but that is finding F's
+            documented, structurally-unenforced bypass case, not a gap in
+            this method's own dedup key.)
         """
         state = self.engine.inspect(run_id)
+        # Finding D (precondition guard): M03 is the only genuine hard
+        # prerequisite here -- `Wave3ContextRuntime.compile_and_persist`
+        # accepts `task_signature`/`representation_v2` as optional (M01/M04
+        # need not have run; `derive_wave3_availability` reports that
+        # honestly via `Wave3ContextAvailability`, it does not require it).
         if state.problem_spec is None:
             raise ValueError("context compilation requires a formalised ProblemSpec")
         problem_ref = canonical_hash(state.problem_spec)
@@ -579,17 +639,33 @@ class Wave3Engine:
         budget_plan_ref = (
             canonical_hash(state.budget.plan) if state.budget.plan is not None else None
         )
+        budget_remaining = BudgetMeter().remaining(state.budget)
+        task_signature_ref = (
+            canonical_hash(state.task_signature) if state.task_signature is not None else None
+        )
+        representation_plan_v2 = state.representation_plan_v2
         for packet in reversed(state.context_packets):
             wave3 = packet.wave3_context
             if (
-                wave3 is not None
-                and packet.profile == profile
-                and packet.terminal_disposition == terminal_disposition
-                and wave3.problem_spec_ref == problem_ref
-                and wave3.ledger_root == ledger_root
-                and wave3.budget_plan_ref == budget_plan_ref
+                wave3 is None
+                or packet.profile != profile
+                or packet.terminal_disposition != terminal_disposition
+                or wave3.problem_spec_ref != problem_ref
+                or wave3.ledger_root != ledger_root
+                or wave3.budget_plan_ref != budget_plan_ref
+                or packet.budget_remaining != budget_remaining
+                or wave3.task_signature_ref != task_signature_ref
             ):
-                return packet.packet_hash
+                continue
+            if (
+                representation_plan_v2 is not None
+                and representation_plan_v2.source_snapshot_version >= packet.snapshot_version
+            ):
+                # This packet was compiled at or before the version the
+                # current v2 representation plan was selected against, so it
+                # cannot reflect that plan -- stale, keep searching/recompile.
+                continue
+            return packet.packet_hash
         return self.components.context_runtime.compile_and_persist(
             run_id, profile=profile, terminal_disposition=terminal_disposition
         )
@@ -672,8 +748,31 @@ class Wave3Engine:
         even though `evaluated_state_version`/`evaluated_state_hash` (bound
         into the persisted `StopDecisionRecord`, not into `StopDecision`
         itself) differ.
+
+        Independent-review remediation (PR #24 finding D): explicit
+        precondition guards, raising a clear `ValueError` naming the missing
+        prerequisite, rather than silently proceeding on incomplete state (or
+        surfacing only as an unrelated-looking downstream exception).
+        `evaluate_stop` genuinely needs both M01+M02 (a budget must actually
+        be allocated for `BudgetMeter().remaining` to mean anything -- it
+        previously only failed indirectly via `BudgetExceeded` several lines
+        below, with no reference to M13/evaluate_stop in the message) and M03
+        (formalisation must have run for `state.problem_blockers` to be a
+        real, considered judgement rather than merely "empty because M03
+        never ran" -- the two are otherwise indistinguishable and this method
+        would silently treat "not yet formalised" as "no blockers exist").
         """
         state = self.engine.inspect(run_id)
+        if state.budget.plan is None:
+            raise ValueError(
+                "evaluate_stop requires M01/M02 classification and budget allocation to have "
+                "run on this run before a stop decision can be evaluated"
+            )
+        if state.problem_spec is None:
+            raise ValueError(
+                "evaluate_stop requires M03 problem formalisation to have run on this run "
+                "before its blockers can be evaluated"
+            )
         remaining = BudgetMeter().remaining(state.budget)
         material_blockers = tuple(
             blocker for blocker in state.problem_blockers if not blocker.resolvable
@@ -704,9 +803,25 @@ class Wave3Engine:
         return decision
 
     def finalize_if_terminal(self, run_id: UUID, decision: StopDecision) -> str | None:
-        """Finalize (persisting a terminal Wave 2 + Wave 3 context) only when terminal."""
+        """Finalize (persisting a terminal Wave 2 + Wave 3 context) only when terminal.
+
+        Independent-review remediation (PR #24 finding D): `finalize`/
+        `Wave2Runtime.finalize` genuinely require `evaluate_stop` (which
+        itself now guards M01/M02/M03 -- see that method's docstring) to have
+        already been called and its exact `decision` already recorded via
+        `record_decision` on this run; `Wave2Runtime.finalize` does check
+        this, but several lines deep and with a message that does not name
+        `evaluate_stop` as the missing step. That is surfaced here, one call
+        earlier, with a clearer message naming the actual prerequisite.
+        """
         if decision.disposition is StopDisposition.CONTINUE:
             return None
+        state = self.engine.inspect(run_id)
+        if not state.stop_decisions or state.stop_decisions[-1] != decision:
+            raise ValueError(
+                "finalize_if_terminal requires this exact StopDecision to have already been "
+                "recorded via evaluate_stop on this run before it can be finalized"
+            )
         return self.finalize(run_id, decision)
 
 
