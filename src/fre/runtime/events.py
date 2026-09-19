@@ -185,6 +185,23 @@ class TaskPreliminarilyClassified(FrozenModel):
     authoritative classification -- it is always superseded, in the same
     atomic batch, by a `TaskClassified` built from the full (deterministic +
     model) proposal.
+
+    C05 remediation (finding #14, documentation-only): this event, and the
+    `RunState.preliminary_task_signature` field it is reduced into (see
+    `runtime/reducer.py`), are intentionally write-only in production code
+    today: (a) they are persisted purely for audit/forensic traceability of
+    the bootstrap-budget-sizing step -- so a later investigator can see
+    exactly what signature `TaskClassifier.canonical_events` used to size the
+    bootstrap `BudgetAllocated`; (b) the bootstrap budget calculation itself
+    reads the local `bootstrap_signature` variable directly (see
+    `canonical_events`), never this persisted field -- so there is currently
+    no production read path for `preliminary_task_signature`; (c) all 10
+    `tests/fixtures/golden/*.json` streams include a
+    `TaskPreliminarilyClassified` event, so removing this event or field
+    would require regenerating every golden fixture, which is explicitly out
+    of scope for this cleanup pass. If a future consumer is added for this
+    field, update this note to reflect the new read site rather than
+    removing it.
     """
 
     signature: TaskSignature

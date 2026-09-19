@@ -569,3 +569,37 @@ def test_golden_floor_override_case() -> None:
         override.policy_hash == record.policy_hash for override in record.floor_overrides
     )
     assert signature.irreversibility is not None
+
+
+@pytest.mark.unit
+def test_permission_floor_and_low_confidence_escalation_join_in_fixed_order() -> None:
+    """C05 remediation (finding #15): when a permission floor *and* a
+    low-confidence escalation both apply to the same axis, `override_basis`
+    must be the fixed-order, `"+"`-joined string
+    `"permission_floor+low_confidence_escalation"` -- not just each reason
+    present in some order. Two distinct external systems in play
+    (network + external writes) deterministically floors `ambiguity` at
+    MEDIUM; a confident-sounding LOW proposal at low actual confidence must
+    still trip low-confidence escalation on top of that floor."""
+    low_confidence_low_ambiguity = ClassificationDimensionProposal(
+        estimate=Ordinal4.LOW,
+        confidence=0.1,
+        conservative_upper=Ordinal4.MEDIUM,
+        anchors=(anchor(),),
+        rationale="modeled",
+    )
+    signature, record = TaskClassifier().classify(
+        envelope(
+            execution_permissions=PermissionSet(allow_network=True, allow_external_writes=True)
+        ),
+        full_proposal(ambiguity=low_confidence_low_ambiguity),
+    )
+    ambiguity = record.dimensions["ambiguity"]
+    assert ambiguity.estimated == Ordinal4.LOW
+    assert ambiguity.effective == Ordinal4.HIGH
+    assert ambiguity.override_basis == "permission_floor+low_confidence_escalation"
+    assert signature.ambiguity is Ordinal4.HIGH
+    reasons_recorded = {
+        override.reason for override in record.floor_overrides if override.axis == "ambiguity"
+    }
+    assert reasons_recorded == {"permission_floor+low_confidence_escalation"}

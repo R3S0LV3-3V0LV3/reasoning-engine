@@ -403,3 +403,31 @@ def test_default_registry_schemas_satisfy_their_own_limits() -> None:
         assert _schema_nesting_depth(model.model_json_schema()) <= MAX_SCHEMA_NESTING_DEPTH
         assert len(canonical_schema_bytes(model)) <= MAX_SCHEMA_CANONICAL_BYTES
         assert definition.schema_hash == canonical_schema_hash(model)
+
+
+@pytest.mark.unit
+def test_classification_output_schema_shape_matches_pre_eu11_baseline() -> None:
+    """C05 remediation (finding #11): regression pin for the
+    `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal` consolidation
+    into a shared generic `_CategoricalProposal[EstimateT]` base.
+
+    These are the exact `ClassificationOutput` schema hash, nesting depth,
+    and canonical byte size measured against the pre-consolidation flat
+    (copy-pasted) classes, captured as a baseline before the change per the
+    unit's acceptance-test instructions. `canonical_schema_hash` must be
+    byte-for-byte identical -- not merely "close" -- because it is exactly
+    what `OutputSchemaRegistry.register()` persists as `schema_hash` and
+    downstream event payloads (`SemanticModelCallRecordV2.output_schema_hash`)
+    carry forward.
+    """
+    assert (
+        canonical_schema_hash(ClassificationOutput)
+        == "3621d418a2e614559e72b041ef8605a591282bb55756a513e8d1a996a25c4af9"
+    )
+    assert len(canonical_schema_bytes(ClassificationOutput)) == 4215
+    assert _schema_nesting_depth(ClassificationOutput.model_json_schema()) == 17
+    # And, redundantly, against the documented global budgets (belt-and-braces
+    # with the exact-value pins above, which are the real regression guard).
+    depth = _schema_nesting_depth(ClassificationOutput.model_json_schema())
+    assert depth <= MAX_SCHEMA_NESTING_DEPTH
+    assert len(canonical_schema_bytes(ClassificationOutput)) <= MAX_SCHEMA_CANONICAL_BYTES
