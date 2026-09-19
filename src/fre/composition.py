@@ -707,9 +707,7 @@ class Wave3Engine:
         await self.select_representation(run_id, allow_adjudication=allow_adjudication)
         packet_hash = self.compile_context(run_id, profile=context_profile)
         state = self.engine.inspect(run_id)
-        material_blockers = tuple(
-            blocker for blocker in state.problem_blockers if not blocker.resolvable
-        )
+        material_blockers = _material_blockers(state.problem_blockers)
         return Wave3PipelineResult(
             run_id=run_id,
             version=state.version,
@@ -778,12 +776,8 @@ class Wave3Engine:
                 "before its blockers can be evaluated"
             )
         remaining = BudgetMeter().remaining(state.budget)
-        material_blockers = tuple(
-            blocker for blocker in state.problem_blockers if not blocker.resolvable
-        )
-        resolvable_blockers = tuple(
-            blocker for blocker in state.problem_blockers if blocker.resolvable
-        )
+        material_blockers = _material_blockers(state.problem_blockers)
+        resolvable_blockers = _resolvable_blockers(state.problem_blockers)
         blocker_required = bool(state.problem_blockers)
         blocker_resolvable = bool(resolvable_blockers) and not material_blockers
         inputs = StopInputs(
@@ -827,6 +821,21 @@ class Wave3Engine:
                 "recorded via evaluate_stop on this run before it can be finalized"
             )
         return self.finalize(run_id, decision)
+
+
+def _material_blockers(
+    problem_blockers: tuple[ProblemBlocker, ...],
+) -> tuple[ProblemBlocker, ...]:
+    """Blockers that are not resolvable -- shared by `execute_front_end` and
+    `evaluate_stop`, which both need this exact filter (EU-37)."""
+    return tuple(blocker for blocker in problem_blockers if not blocker.resolvable)
+
+
+def _resolvable_blockers(
+    problem_blockers: tuple[ProblemBlocker, ...],
+) -> tuple[ProblemBlocker, ...]:
+    """The inverse of `_material_blockers`, kept alongside it for symmetry."""
+    return tuple(blocker for blocker in problem_blockers if blocker.resolvable)
 
 
 def _require(name: str, actual: str, supported: str) -> None:
