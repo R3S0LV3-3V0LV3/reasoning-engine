@@ -1,0 +1,268 @@
+{
+  "artifacts": [
+    "1a19db2491815bb7b9a2c7f8b8d179ca62a224ad9bb31410052b3622a24924a9",
+    "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
+    "2f2a013f999001b4f71b669aa932f92bb430032bbac96a21d10ba73b60af46ff",
+    "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
+    "a13ceac39d5f816fb07e370b7ff49382ec4f311afe9c6eb71729b7a6cc27393f",
+    "ae01cffcdf8aa52cc8bd17479ff70a4ebffd5bda05f0ae5b2e31f81e44ae9305",
+    "eeb85c2675888473ec64b7580aa0c76c6fd6b2bd51828870286ef202ad89dae2",
+    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1",
+    "fc41be1f20bf9f3d4ed0a1fc65dac320f06ce70a6724e5f2cb618cd054417752"
+  ],
+  "assumptions": [],
+  "blockers": {
+    "all": [],
+    "material": []
+  },
+  "budget_remaining": {
+    "active_concurrent_actions": 0,
+    "iterations": 2
+  },
+  "classification": {
+    "fallback_used": false,
+    "mode": "HYBRID",
+    "present": true
+  },
+  "context_packets": 3,
+  "contradictions": 0,
+  "events": [
+    {
+      "event_type": "RunCreated",
+      "module_id": "runtime",
+      "sequence": 1
+    },
+    {
+      "event_type": "TaskPreliminarilyClassified",
+      "module_id": "M01",
+      "sequence": 2
+    },
+    {
+      "event_type": "BudgetAllocated",
+      "module_id": "M01",
+      "sequence": 3
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 4
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 5
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 6
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 7
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 8
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 9
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 10
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 11
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 12
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 13
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 14
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 15
+    },
+    {
+      "event_type": "TaskClassified",
+      "module_id": "M01",
+      "sequence": 16
+    },
+    {
+      "event_type": "BudgetRevised",
+      "module_id": "M01",
+      "sequence": 17
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
+      "sequence": 18
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 19
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 20
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 21
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 22
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 23
+    },
+    {
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
+      "sequence": 24
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
+      "sequence": 25
+    },
+    {
+      "event_type": "RepresentationPlanSelected",
+      "module_id": "M04",
+      "sequence": 26
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M04",
+      "sequence": 27
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 28
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 29
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 30
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 31
+    },
+    {
+      "event_type": "StopDecisionRecorded",
+      "module_id": "M13",
+      "sequence": 32
+    },
+    {
+      "event_type": "StopDecisionRecorded",
+      "module_id": "M13",
+      "sequence": 33
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 34
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 35
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 36
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "wave2-runtime",
+      "sequence": 37
+    },
+    {
+      "event_type": "TerminalContextAssociated",
+      "module_id": "wave2-runtime",
+      "sequence": 38
+    },
+    {
+      "event_type": "RunStatusChanged",
+      "module_id": "wave2-runtime",
+      "sequence": 39
+    }
+  ],
+  "final_state_hash": "f85c06204d59f97b9742338d7e6feb713d570e76005398f86074e20680825414",
+  "first_decision_reason_codes": [
+    "ACCEPTANCE_COMPLETE"
+  ],
+  "fixture": "L",
+  "last_packet": {
+    "availability": null,
+    "packet_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
+    "profile": "HANDOFF"
+  },
+  "model_calls": 2,
+  "problem_spec_present": true,
+  "representation_plan": {
+    "adjudication_record_ref": null,
+    "fallback_used": false,
+    "tie_triggered": false,
+    "views": [
+      "TEXT_TABLE_FALLBACK"
+    ]
+  },
+  "run_id": "00000000-0000-0000-0000-000000000001",
+  "second_decision_reason_codes": [
+    "ACCEPTANCE_COMPLETE"
+  ],
+  "stop_decisions": [
+    {
+      "disposition": "COMPLETE",
+      "reason_codes": [
+        "ACCEPTANCE_COMPLETE"
+      ]
+    },
+    {
+      "disposition": "COMPLETE",
+      "reason_codes": [
+        "ACCEPTANCE_COMPLETE"
+      ]
+    }
+  ],
+  "terminal_context_packet_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
+  "terminal_hash": "4c5d54611f771c7426cfb3eac2a788f042b6cb7b58f4bb82ab8342c90af5f755",
+  "unknowns": [],
+  "version": 39
+}

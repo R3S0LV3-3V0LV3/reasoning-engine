@@ -1,0 +1,249 @@
+{
+  "artifacts": [
+    "14283a26c7107e2a19b3eb3bc33bebd14b6911f46e3003bcc15251f49511fb02",
+    "167186f450e32d9b063ff0d1338a92685c1a99464df2b06d63f4d531ae361da4",
+    "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
+    "1f43526726be40937b0f0e47682b13fbed6662685d531bbac85025245837eff9",
+    "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
+    "8b920a472fa93585eeceb23e6521b9d3731d913d8c5119b35f06f01873d3183c",
+    "aa84ac43856216870601647dce7db4c9e9b922ca9fd7b0155ba38d5563184bfb",
+    "c674b0b747612d485f25b64e12f7fac8eeb05a1e0e5b78d25edebf633b927639",
+    "d5750d82bd6b5281f8984c4c09aab5fba2586d5fb3ac45f11c9b27e1b8d75ef7"
+  ],
+  "assumptions": [],
+  "blockers": {
+    "all": [],
+    "material": []
+  },
+  "budget_remaining": {
+    "active_concurrent_actions": 0,
+    "iterations": 6
+  },
+  "classification": {
+    "fallback_used": false,
+    "mode": "HYBRID",
+    "present": true
+  },
+  "context_packets": 1,
+  "contradictions": 0,
+  "events": [
+    {
+      "event_type": "RunCreated",
+      "module_id": "runtime",
+      "sequence": 1
+    },
+    {
+      "event_type": "TaskPreliminarilyClassified",
+      "module_id": "M01",
+      "sequence": 2
+    },
+    {
+      "event_type": "BudgetAllocated",
+      "module_id": "M01",
+      "sequence": 3
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 4
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 5
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 6
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 7
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 8
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 9
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 10
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 11
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 12
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 13
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 14
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 15
+    },
+    {
+      "event_type": "TaskClassified",
+      "module_id": "M01",
+      "sequence": 16
+    },
+    {
+      "event_type": "BudgetRevised",
+      "module_id": "M01",
+      "sequence": 17
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
+      "sequence": 18
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 19
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 20
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 21
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 22
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 23
+    },
+    {
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
+      "sequence": 24
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
+      "sequence": 25
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
+      "sequence": 26
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
+      "sequence": 27
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
+      "sequence": 28
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 29
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 30
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 31
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 32
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 33
+    },
+    {
+      "event_type": "RepresentationPlanSelected",
+      "module_id": "M04",
+      "sequence": 34
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M04",
+      "sequence": 35
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 36
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 37
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 38
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 39
+    }
+  ],
+  "final_state_hash": "d87126a31d3b6dcecae863d734289b05c6f29586d5106dd2f70222879876bb8f",
+  "fixture": "J",
+  "last_packet": {
+    "availability": "AVAILABLE",
+    "packet_hash": "83525ab580e2a869917af9497ea380418f92cc2c734bae5762a2b167c69cba7c",
+    "profile": "STANDARD"
+  },
+  "model_calls": 3,
+  "problem_spec_present": true,
+  "representation_plan": {
+    "adjudication_record_ref": "20f835090b848c9f7c3e2a07aaeb5bdc60f12c86a4c076c693f6a0bd03755c1c",
+    "fallback_used": false,
+    "tie_triggered": true,
+    "views": [
+      "PARETO_OBJECTIVE_MATRIX"
+    ]
+  },
+  "run_id": "00000000-0000-0000-0000-000000000001",
+  "selected_candidate_kind": "PARETO_OBJECTIVE_MATRIX",
+  "stop_decisions": [],
+  "terminal_context_packet_hash": null,
+  "unknowns": [],
+  "version": 39
+}

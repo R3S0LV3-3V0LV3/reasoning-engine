@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fre.domain.common import canonical_hash
+from fre.domain.graph import depth_first_traverse
 from fre.domain.ledger import (
     ContradictionResolution,
     ContradictionState,
@@ -173,23 +174,14 @@ class EpistemicLedger:
             if _ref_key(edge.source) not in nodes or _ref_key(edge.target) not in nodes:
                 errors.append("dangling reference")
         adjacency = self._adjacency(projection)
-        visiting: set[LedgerNodeRef] = set()
-        visited: set[LedgerNodeRef] = set()
 
-        def visit(ref: LedgerNodeRef) -> None:
-            if ref in visiting:
-                raise LedgerCycleError("dependency-family cycle")
-            if ref in visited:
-                return
-            visiting.add(ref)
-            for target in adjacency.get(ref, ()):
-                visit(target)
-            visiting.remove(ref)
-            visited.add(ref)
+        def _on_cycle(ref: LedgerNodeRef) -> None:
+            raise LedgerCycleError("dependency-family cycle")
 
         try:
-            for ref in sorted(adjacency, key=_ref_key):
-                visit(ref)
+            depth_first_traverse(
+                adjacency, order=sorted(adjacency, key=_ref_key), on_cycle=_on_cycle
+            )
         except LedgerCycleError:
             errors.append("dependency-family cycle")
         if errors and raise_on_error:
@@ -385,6 +377,17 @@ class EpistemicLedger:
                 "resolver relation does not match resolution record"
             )
         nodes = self._node_map(projection)
+        affected = resolution.affected_refs
+        transitions = tuple(ref for ref, _status in resolution.status_transitions)
+        if len(set(affected)) != len(affected) or len(set(transitions)) != len(transitions):
+            raise InvalidContradictionResolution("resolution references must be unique")
+        if set(affected) != set(transitions):
+            raise InvalidContradictionResolution(
+                "resolution affected references must match status transitions"
+            )
+        for ref in (*affected, *transitions, resolution.resolver_ref):
+            if _ref_key(ref) not in nodes:
+                raise DanglingLedgerReference("resolution references an unknown ledger revision")
         if _ref_key(edge.source) not in nodes or _ref_key(edge.target) not in nodes:
             raise DanglingLedgerReference("resolution edge references an unknown ledger revision")
         result = projection.model_copy(

@@ -1,0 +1,172 @@
+{
+  "accounting_condition": "PROVIDER_USAGE_EXCEEDED_RESERVATION",
+  "artifacts": [
+    "1a19db2491815bb7b9a2c7f8b8d179ca62a224ad9bb31410052b3622a24924a9",
+    "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
+    "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
+    "54048bad035b41b41ad19423a7e63915da84bba69023fe4c76b373190a868a26",
+    "b8738ffe93a92ca734b2963eed5c8611870b18acbe8544b282c3b0eea377bb0b",
+    "eeb85c2675888473ec64b7580aa0c76c6fd6b2bd51828870286ef202ad89dae2",
+    "eef46741adfc3a9f76294d3b78f37a45f113092ac9d44ee77c7a038a88ff09a1"
+  ],
+  "assumptions": [],
+  "blockers": {
+    "all": [],
+    "material": []
+  },
+  "budget_remaining": {
+    "active_concurrent_actions": 0,
+    "iterations": 14
+  },
+  "classification": {
+    "fallback_used": true,
+    "mode": "DETERMINISTIC_FALLBACK",
+    "present": true
+  },
+  "context_packets": 1,
+  "contradictions": 0,
+  "events": [
+    {
+      "event_type": "RunCreated",
+      "module_id": "runtime",
+      "sequence": 1
+    },
+    {
+      "event_type": "TaskPreliminarilyClassified",
+      "module_id": "M01",
+      "sequence": 2
+    },
+    {
+      "event_type": "BudgetAllocated",
+      "module_id": "M01",
+      "sequence": 3
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 4
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 5
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 6
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 7
+    },
+    {
+      "event_type": "ModelCallFailed",
+      "module_id": "semantic-runtime",
+      "sequence": 8
+    },
+    {
+      "event_type": "TaskClassified",
+      "module_id": "M01",
+      "sequence": 9
+    },
+    {
+      "event_type": "BudgetRevised",
+      "module_id": "M01",
+      "sequence": 10
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
+      "sequence": 11
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 12
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 13
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 14
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 15
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 16
+    },
+    {
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
+      "sequence": 17
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
+      "sequence": 18
+    },
+    {
+      "event_type": "RepresentationPlanSelected",
+      "module_id": "M04",
+      "sequence": 19
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M04",
+      "sequence": 20
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 21
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 22
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 23
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 24
+    }
+  ],
+  "final_state_hash": "498efac0ae537df0cf7bd1736e19a85a0fd758c4f1449ad66f6b1a2c6a6bee67",
+  "fixture": "C",
+  "last_packet": {
+    "availability": "AVAILABLE",
+    "packet_hash": "0793b7505a9a7202d27887358686eaa48e0e4d80f5c596ed34be7c258af9ea43",
+    "profile": "STANDARD"
+  },
+  "model_calls": 2,
+  "problem_spec_present": true,
+  "representation_plan": {
+    "adjudication_record_ref": null,
+    "fallback_used": false,
+    "tie_triggered": false,
+    "views": [
+      "TEXT_TABLE_FALLBACK"
+    ]
+  },
+  "run_id": "00000000-0000-0000-0000-000000000001",
+  "stop_decisions": [],
+  "terminal_context_packet_hash": null,
+  "unknowns": [],
+  "version": 24
+}

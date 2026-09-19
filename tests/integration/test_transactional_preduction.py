@@ -17,6 +17,7 @@ from fre.domain.task import (
     Ordinal4,
     OutputForm,
     SearchSpaceClass,
+    TaskEnvelope,
     TaskSignature,
     TaskType,
 )
@@ -232,5 +233,155 @@ def test_terminal_without_context_batch_is_pre_reduced_atomically(
         run.run_id,
         RunStatusChanged(status="BLOCKED", reason="missing context"),
         module_id="runtime",
+    )
+    assert_rejected_atomically(engine, run.run_id, invalid)
+
+
+@pytest.mark.integration
+def test_forged_semantic_success_batch_is_pre_reduced_atomically(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """F09: a `ModelCallRecordedV2` forged without a matching same-batch
+    settlement must leave no committed prefix -- exercised as the final event
+    of an otherwise-valid batch, mirroring the ledger/budget/terminal cases
+    above."""
+    import asyncio
+
+    from fre.domain.common import JsonValue, OutputContract, PermissionSet
+    from fre.domain.semantic import (
+        SemanticModelCallRecordV2,
+        StructuredModelRequest,
+        StructuredModelResult,
+        StructuredModelStatus,
+    )
+    from fre.modules.m01_classifier import TaskClassifier
+    from fre.prompts import default_output_schema_registry, default_prompt_registry
+    from fre.runtime.events import ModelCallRecordedV2
+    from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
+
+    # C05 remediation (finding #10): this fixture must decode as a genuine
+    # SUCCESS against the real, current `ClassificationOutput` schema (nested
+    # `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal` objects, not
+    # flat scalars with sibling `*_confidence` keys) -- otherwise this test
+    # silently stops exercising a genuine SUCCESS decode and instead degrades
+    # to INVALID_STRUCTURED_OUTPUT, which is a different code path than the
+    # one this test's name and docstring claim to cover.
+    valid: dict[str, JsonValue] = {
+        "task_type": {
+            "estimate": "DECISION",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
+        "consequence": {
+            "estimate": "LOW",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [],
+            "rationale": "test",
+        },
+        "reversibility": {
+            "estimate": "LOW",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [],
+            "rationale": "test",
+        },
+        "ambiguity": {
+            "estimate": "LOW",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [],
+            "rationale": "test",
+        },
+        "evidence_scarcity": {
+            "estimate": "LOW",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [],
+            "rationale": "test",
+        },
+        "search_space": {
+            "estimate": "BOUNDED",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
+        "horizon": {
+            "estimate": "SHORT",
+            "confidence": 0.9,
+            "anchors": [],
+            "rationale": "test",
+        },
+    }
+
+    class CapturingModel:
+        def __init__(self) -> None:
+            self.requests: list[StructuredModelRequest] = []
+
+        async def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+            self.requests.append(request)
+            return StructuredModelResult(
+                status=StructuredModelStatus.SUCCESS,
+                adapter_id="test",
+                model_id="test",
+                raw_response=b"",
+                decoded=valid,
+            )
+
+    run = engine.create_run({"violation": "semantic-forgery"})
+    task = TaskEnvelope(
+        task_id=UUID(int=999),
+        text="Choose.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+    signature, _ = TaskClassifier().classify(task, None)
+    plan, policy_hash = BudgetAllocator().allocate(
+        signature, default_tier_policy(), DeploymentLimits()
+    )
+    engine.append(
+        run.run_id,
+        run.version,
+        (
+            engine.make_event(
+                run.run_id,
+                BudgetAllocated(
+                    plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash
+                ),
+                module_id="M02",
+            ),
+        ),
+    )
+    runtime = SemanticModelRuntime(
+        CapturingModel(), engine, default_prompt_registry(), default_output_schema_registry()
+    )
+    genuine = asyncio.run(
+        runtime.execute(
+            run_id=run.run_id,
+            module_id="M01",
+            module_version="1.0",
+            operation="classify",
+            prompt_id="m01.classify",
+            prompt_version="1.0",
+            canonical_input=task.model_dump(mode="json"),
+            policy=SemanticRuntimePolicy(maximum_repair_attempts=0),
+        )
+    ).record
+    assert isinstance(genuine, SemanticModelCallRecordV2)
+    # Pin the fixture to a genuine SUCCESS decode (finding #10): before the
+    # fixture was updated to the nested proposal shape, this record silently
+    # decoded as INVALID_STRUCTURED_OUTPUT instead, which is a different code
+    # path than the one this test claims ("forged semantic *success* batch").
+    assert genuine.status is StructuredModelStatus.SUCCESS
+    forged = genuine.model_copy(
+        update={
+            "call_id": engine.uuids.new(),
+            "idempotency_key": "a" * 64,
+            "reservation_id": "never-reserved",
+        }
+    )
+    invalid = engine.make_event(
+        run.run_id, ModelCallRecordedV2(record=forged), module_id="attacker"
     )
     assert_rejected_atomically(engine, run.run_id, invalid)

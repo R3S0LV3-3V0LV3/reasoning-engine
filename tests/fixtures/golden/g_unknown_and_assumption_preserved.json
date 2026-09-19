@@ -1,0 +1,227 @@
+{
+  "artifacts": [
+    "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
+    "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
+    "580eda4928669f50d856b99512d4d79d1cdb42a867d0b3d04e2ead69dea7463d",
+    "81c76d6e5cfd8e93105e91bdaa150a95380d76abb2bc121c67e8963767e5de9d",
+    "a4190622a05d54be4e54a47380a19a2ed44d3d50ca40a6dd965cec733e839820",
+    "ae482d7e109c3934617bebcfe915f9f07f29a2f10408e2b8062dcd3a289834dc",
+    "cbe07bafd1f9d3279735cc29324d2e6c41bce61c000b8a98c274676205bcd21e"
+  ],
+  "assumptions": [
+    "assumption-1"
+  ],
+  "blockers": {
+    "all": [
+      "unknown:unknown-1"
+    ],
+    "material": []
+  },
+  "budget_remaining": {
+    "active_concurrent_actions": 0,
+    "iterations": 2
+  },
+  "classification": {
+    "fallback_used": false,
+    "mode": "HYBRID",
+    "present": true
+  },
+  "context_packets": 1,
+  "contradictions": 0,
+  "events": [
+    {
+      "event_type": "RunCreated",
+      "module_id": "runtime",
+      "sequence": 1
+    },
+    {
+      "event_type": "TaskPreliminarilyClassified",
+      "module_id": "M01",
+      "sequence": 2
+    },
+    {
+      "event_type": "BudgetAllocated",
+      "module_id": "M01",
+      "sequence": 3
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 4
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 5
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 6
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 7
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 8
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 9
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 10
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 11
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 12
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 13
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 14
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M01",
+      "sequence": 15
+    },
+    {
+      "event_type": "TaskClassified",
+      "module_id": "M01",
+      "sequence": 16
+    },
+    {
+      "event_type": "BudgetRevised",
+      "module_id": "M01",
+      "sequence": 17
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
+      "sequence": 18
+    },
+    {
+      "event_type": "BudgetReserved",
+      "module_id": "semantic-runtime",
+      "sequence": 19
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 20
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "semantic-runtime",
+      "sequence": 21
+    },
+    {
+      "event_type": "BudgetReservationSettled",
+      "module_id": "semantic-runtime",
+      "sequence": 22
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 23
+    },
+    {
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
+      "sequence": 24
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
+      "sequence": 25
+    },
+    {
+      "event_type": "LedgerNodeAdded",
+      "module_id": "M03",
+      "sequence": 26
+    },
+    {
+      "event_type": "ProblemBlockerRecorded",
+      "module_id": "M03",
+      "sequence": 27
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
+      "sequence": 28
+    },
+    {
+      "event_type": "RepresentationPlanSelected",
+      "module_id": "M04",
+      "sequence": 29
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M04",
+      "sequence": 30
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 31
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 32
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 33
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 34
+    }
+  ],
+  "final_state_hash": "e5073e705dfa6136c469b4f09cad54231f5cf2c3c7a031000052c61374dbaf15",
+  "fixture": "G",
+  "last_packet": {
+    "availability": "AVAILABLE",
+    "packet_hash": "375cd82f0a7a55bd38e619a325e1abc6f1c7b5cb8169e6d5dea6003835d15706",
+    "profile": "STANDARD"
+  },
+  "model_calls": 2,
+  "problem_spec_present": true,
+  "representation_plan": {
+    "adjudication_record_ref": null,
+    "fallback_used": false,
+    "tie_triggered": false,
+    "views": [
+      "SCENARIO_TREE"
+    ]
+  },
+  "run_id": "00000000-0000-0000-0000-000000000001",
+  "stop_decisions": [],
+  "terminal_context_packet_hash": null,
+  "unknowns": [
+    "unknown-1"
+  ],
+  "version": 34
+}

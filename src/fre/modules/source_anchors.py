@@ -1,0 +1,414 @@
+"""Deterministic SourceAnchor resolution against permitted module inputs."""
+
+import hashlib
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any
+from uuid import UUID
+
+from fre.domain.common import ArtifactRef, JsonValue, ObjectRef
+from fre.domain.graph import depth_first_traverse
+from fre.domain.semantic import (
+    SourceAnchor,
+    SourceKind,
+    SupportArtifactRef,
+    SupportLedgerNodeRef,
+    SupportProblemItemRef,
+    SupportRef,
+)
+from fre.domain.task import TaskEnvelope
+
+if TYPE_CHECKING:
+    from fre.prompts.schemas import ProblemItemProposal
+
+
+class InvalidSourceAnchor(ValueError):
+    """A claimed source does not resolve to the permitted canonical input."""
+
+
+_TASK_FIELD_ROOTS = frozenset(
+    {"explicit_constraints", "requested_output", "execution_permissions", "user_metadata"}
+)
+
+
+def _pointer_tokens(pointer: str) -> tuple[str, ...]:
+    if pointer == "":
+        return ()
+    if not pointer.startswith("/"):
+        raise InvalidSourceAnchor("selector is not an RFC 6901 JSON pointer")
+    tokens: list[str] = []
+    for raw in pointer[1:].split("/"):
+        token = ""
+        index = 0
+        while index < len(raw):
+            if raw[index] != "~":
+                token += raw[index]
+                index += 1
+                continue
+            if index + 1 >= len(raw) or raw[index + 1] not in {"0", "1"}:
+                raise InvalidSourceAnchor("selector contains malformed RFC 6901 escaping")
+            token += "~" if raw[index + 1] == "0" else "/"
+            index += 2
+        tokens.append(token)
+    return tuple(tokens)
+
+
+def _resolve_pointer(document: Any, pointer: str) -> Any:
+    value = document
+    for token in _pointer_tokens(pointer):
+        if isinstance(value, Mapping):
+            if token not in value:
+                raise InvalidSourceAnchor("selector mapping key does not exist")
+            value = value[token]
+        elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+            if token == "-" or not token.isascii() or not token.isdecimal():
+                raise InvalidSourceAnchor("selector contains a malformed sequence index")
+            if token != "0" and token.startswith("0"):
+                raise InvalidSourceAnchor("selector contains a malformed sequence index")
+            item_index = int(token)
+            if item_index >= len(value):
+                raise InvalidSourceAnchor("selector sequence index is out of bounds")
+            value = value[item_index]
+        else:
+            raise InvalidSourceAnchor("selector traverses beyond a scalar value")
+    return value
+
+
+def _validate_resolved_value(anchor: SourceAnchor, value: Any) -> None:
+    has_span = anchor.char_start is not None and anchor.char_end is not None
+    if not isinstance(value, str):
+        if has_span or anchor.excerpt_hash is not None:
+            raise InvalidSourceAnchor("non-text sources cannot have spans or excerpt hashes")
+        return
+    if not has_span:
+        if anchor.excerpt_hash is not None:
+            raise InvalidSourceAnchor("an excerpt hash requires a text span")
+        return
+    assert anchor.char_start is not None and anchor.char_end is not None
+    if anchor.char_end > len(value):
+        raise InvalidSourceAnchor("source text bounds are invalid")
+    excerpt = value[anchor.char_start : anchor.char_end]
+    if anchor.excerpt_hash and hashlib.sha256(excerpt.encode()).hexdigest() != anchor.excerpt_hash:
+        raise InvalidSourceAnchor("source excerpt hash mismatch")
+
+
+# C05 remediation (finding #7): a minimal, path-shape-based relevance check.
+# This cannot and does not verify that an anchor's *content* actually
+# substantiates the claimed axis -- that would require judging semantic
+# meaning, which is not mechanically verifiable here. What it does verify is
+# that the anchor's top-level envelope field is even *plausibly* connected to
+# the axis it is claimed to support -- e.g. an anchor into
+# `/requested_output` (the task's output contract) cannot plausibly support a
+# `consequence` or `ambiguity` claim, and is rejected as irrelevant before it
+# is ever accepted as "resolvable support". Axes not listed here (e.g.
+# `output_form`, which is derived deterministically and never carries a
+# proposed anchor) are not subject to this check.
+_AXIS_ALLOWED_ROOTS: dict[str, frozenset[str]] = {
+    "consequence": frozenset({"execution_permissions", "user_metadata", "explicit_constraints"}),
+    "irreversibility": frozenset(
+        {"execution_permissions", "user_metadata", "explicit_constraints"}
+    ),
+    "ambiguity": frozenset({"user_metadata", "explicit_constraints"}),
+    "evidence_scarcity": frozenset(
+        {"user_metadata", "explicit_constraints", "execution_permissions"}
+    ),
+    "task_type": frozenset({"user_metadata", "explicit_constraints", "requested_output"}),
+    "search_space": frozenset({"user_metadata", "explicit_constraints"}),
+    "horizon": frozenset({"user_metadata", "explicit_constraints"}),
+}
+# TASK_TEXT anchors (free-form task narrative) are plausible support for every
+# axis above except output_form, which is derived purely from the structured
+# `requested_output` contract.
+_TEXT_RELEVANT_AXES = frozenset(_AXIS_ALLOWED_ROOTS)
+
+
+class IrrelevantSourceAnchor(InvalidSourceAnchor):
+    """A resolvable anchor's own path is not plausibly connected to its axis."""
+
+
+def validate_anchor_relevance(axis: str, anchor: SourceAnchor) -> None:
+    """Reject an anchor whose top-level envelope path cannot plausibly bear on `axis`.
+
+    Lightweight and path-shape-based only: it does not and cannot judge
+    whether the anchor's actual *content* substantiates the claim, only
+    whether its location is even in the right neighbourhood. An ARTIFACT
+    anchor (an attached document) is treated as potentially relevant to every
+    axis, since attachments are opaque and may contain anything.
+    """
+    allowed = _AXIS_ALLOWED_ROOTS.get(axis)
+    if allowed is None:
+        return
+    if anchor.source_kind is SourceKind.ARTIFACT:
+        return
+    if anchor.source_kind is SourceKind.TASK_TEXT:
+        if axis not in _TEXT_RELEVANT_AXES:
+            raise IrrelevantSourceAnchor(
+                f"{axis}: a task-text anchor is not a plausible source for this axis"
+            )
+        return
+    tokens = _pointer_tokens(anchor.selector)
+    root = tokens[0] if tokens else None
+    if root not in allowed:
+        raise IrrelevantSourceAnchor(
+            f"{axis}: anchor path '{anchor.selector}' is not plausibly connected to this axis "
+            f"(expected one of: {', '.join(sorted(allowed))})"
+        )
+
+
+def validate_source_anchor(
+    anchor: SourceAnchor,
+    envelope: TaskEnvelope,
+    available_artifacts: frozenset[str] = frozenset(),
+) -> None:
+    """Resolve and validate an anchor against an envelope's canonical JSON data."""
+    if anchor.source_kind is SourceKind.ARTIFACT:
+        if (
+            not isinstance(anchor.source_ref, ArtifactRef)
+            or anchor.source_ref.sha256 not in available_artifacts
+        ):
+            raise InvalidSourceAnchor("source artifact is not available")
+        if anchor.selector or anchor.char_start is not None or anchor.excerpt_hash is not None:
+            raise InvalidSourceAnchor("opaque artifacts cannot have selectors, spans, or excerpts")
+        return
+
+    if not isinstance(anchor.source_ref, ObjectRef):
+        raise InvalidSourceAnchor("task source requires an ObjectRef")
+    if (
+        anchor.source_ref.object_type != "TaskEnvelope"
+        or anchor.source_ref.object_id != str(envelope.task_id)
+        or anchor.source_ref.revision is not None
+    ):
+        raise InvalidSourceAnchor("anchor does not reference this TaskEnvelope")
+
+    tokens = _pointer_tokens(anchor.selector)
+    if anchor.source_kind is SourceKind.TASK_TEXT:
+        if tokens != ("text",) or anchor.char_start is None:
+            raise InvalidSourceAnchor("task text requires /text and a span")
+    elif not tokens or tokens[0] not in _TASK_FIELD_ROOTS:
+        raise InvalidSourceAnchor("structured source selector is not permitted")
+
+    value = _resolve_pointer(envelope.model_dump(mode="json"), anchor.selector)
+    _validate_resolved_value(anchor, value)
+
+
+# C06 remediation (F03, F06): resolve every `SupportRef` a proposal item
+# claims *before* that item (or anything derived from it -- a ProblemSpec
+# entry, a ledger node) is admitted. This is the fix for the F03 headline
+# case -- a non-empty but wholly fictitious support identifier -- and for the
+# F06 bypass, where the removed `ProblemFormaliser.ledger_events` public
+# entry point never validated anchors or support at all.
+#
+# `ProblemItemRef`s form a directed graph over the *same* proposal (source
+# item -> the item it cites as support). `validate_support_graph` builds the
+# complete proposal-item index up front (objective #2: "build the complete
+# proposal-item index before validation runs") and resolves every item's
+# `support` tuple against it in one pass, so a forward reference, a
+# same-proposal cycle, or a reference to a RELATION pseudo-item (never a
+# valid evidentiary target) is caught deterministically regardless of
+# declaration order.
+class UnresolvedSupportReference(InvalidSourceAnchor):
+    """A `SupportRef` does not resolve to any admissible target."""
+
+
+class SelfSupportReference(InvalidSourceAnchor):
+    """An item claims itself, directly or transitively, as its own support."""
+
+
+class UnauthorizedArtifactReference(InvalidSourceAnchor):
+    """A `SupportRef` names an artifact that was never registered/authorized."""
+
+
+class DanglingLedgerSupportReference(InvalidSourceAnchor):
+    """A `SupportRef` names a ledger revision absent from the known prior ledger."""
+
+
+class IncompatibleSupportReferenceKind(InvalidSourceAnchor):
+    """A `SupportRef` targets an item whose kind cannot serve as evidence."""
+
+
+def validate_support_graph(
+    items: "Sequence[ProblemItemProposal]",
+    *,
+    envelope: TaskEnvelope,
+    available_artifacts: frozenset[str] = frozenset(),
+    known_ledger_refs: frozenset[tuple[UUID, int]] = frozenset(),
+) -> None:
+    """Resolve every `support` reference across `items` before admission.
+
+    Rejects (see the C06 validation strategy): a missing or malformed target,
+    self-support (direct or transitive, i.e. a same-proposal support cycle),
+    an unauthorized artifact, an unknown prior-ledger revision, and a
+    same-proposal reference to a `RELATION` pseudo-item (relations describe
+    edges between items, never evidence in their own right).
+    """
+    index = {item.id: item for item in items}
+    for item in items:
+        for ref in item.support:
+            _validate_single_support_ref(
+                ref,
+                origin_item=item,
+                index=index,
+                envelope=envelope,
+                available_artifacts=available_artifacts,
+                known_ledger_refs=known_ledger_refs,
+            )
+    _reject_support_cycles(items)
+
+
+def _validate_single_support_ref(
+    ref: SupportRef,
+    *,
+    origin_item: "ProblemItemProposal",
+    index: "Mapping[str, ProblemItemProposal]",
+    envelope: TaskEnvelope,
+    available_artifacts: frozenset[str],
+    known_ledger_refs: frozenset[tuple[UUID, int]],
+) -> None:
+    if isinstance(ref, SourceAnchor):
+        validate_source_anchor(ref, envelope, available_artifacts)
+        return
+    if isinstance(ref, SupportProblemItemRef):
+        if ref.item_id == origin_item.id:
+            raise SelfSupportReference(
+                f"item '{origin_item.id}' cannot cite itself as its own support"
+            )
+        target = index.get(ref.item_id)
+        if target is None:
+            raise UnresolvedSupportReference(
+                f"item '{origin_item.id}' cites unknown support item '{ref.item_id}'"
+            )
+        if target.kind == "RELATION":
+            raise IncompatibleSupportReferenceKind(
+                f"item '{origin_item.id}' cites a RELATION item as evidentiary support; "
+                "relations describe edges between items, not evidence"
+            )
+        return
+    if isinstance(ref, SupportArtifactRef):
+        _check_artifact_support_ref(ref, available_artifacts, origin_item.id)
+        return
+    if isinstance(ref, SupportLedgerNodeRef):
+        _check_ledger_support_ref(ref, known_ledger_refs, origin_item.id)
+        return
+    raise UnresolvedSupportReference(f"item '{origin_item.id}' carries an unrecognised SupportRef")
+
+
+def _check_artifact_support_ref(
+    ref: "SupportArtifactRef", available_artifacts: frozenset[str], context: str
+) -> None:
+    """Shared envelope-independent `SupportArtifactRef` check (finding G):
+    used by both `_validate_single_support_ref` (formalise-time, full
+    proposal context) and `resolve_support_ref_at_reduction` (reducer-time,
+    no envelope/index in scope) so the two never independently drift."""
+    if ref.sha256 not in available_artifacts:
+        raise UnauthorizedArtifactReference(
+            f"'{context}' cites an artifact that is not registered in this run"
+        )
+
+
+def _check_ledger_support_ref(
+    ref: "SupportLedgerNodeRef",
+    known_ledger_refs: frozenset[tuple[UUID, int]],
+    context: str,
+) -> None:
+    """Shared envelope-independent `SupportLedgerNodeRef` check (finding G);
+    see `_check_artifact_support_ref` docstring."""
+    if (ref.node_id, ref.revision) not in known_ledger_refs:
+        raise DanglingLedgerSupportReference(
+            f"'{context}' cites a ledger revision absent from the known prior ledger"
+        )
+
+
+def validate_anchor_artifact_registration(
+    anchor: SourceAnchor, available_artifacts: frozenset[str]
+) -> None:
+    """Reducer-safe, envelope-independent re-check of an `ARTIFACT`-kind
+    anchor (C06 remediation, findings B/E/G): the only part of anchor
+    resolution that does not require the originating `TaskEnvelope`.
+    `TASK_FIELD`/`TASK_TEXT`-kind anchors cannot be re-resolved without the
+    envelope -- that remains `formalise()`-only, exactly like a
+    `SourceAnchor`-kind support reference (see `_validate_single_support_ref`
+    below) -- but their *structural* shape (a non-empty, correctly ordered
+    span; a well-formed excerpt hash) is already guaranteed the moment the
+    anchor is parsed back into the typed `SourceAnchor` model, via its own
+    `valid_range` validator and field constraints, so there is nothing left
+    to check for those two kinds beyond successful typed parsing.
+    """
+    if anchor.source_kind is not SourceKind.ARTIFACT:
+        return
+    if not isinstance(anchor.source_ref, ArtifactRef) or anchor.source_ref.sha256 not in (
+        available_artifacts
+    ):
+        raise UnauthorizedArtifactReference(
+            "anchor cites an artifact that is not registered in this run"
+        )
+    if anchor.selector or anchor.char_start is not None or anchor.excerpt_hash is not None:
+        raise InvalidSourceAnchor("opaque artifacts cannot have selectors, spans, or excerpts")
+
+
+def resolve_support_ref_at_reduction(
+    ref: SupportRef,
+    *,
+    own_id: str | None,
+    known_m03_content_by_id: Mapping[str, Mapping[str, "JsonValue"]],
+    known_ledger_revisions: frozenset[tuple[UUID, int]],
+    available_artifacts: frozenset[str],
+) -> None:
+    """Reducer-safe re-resolution of one `SupportRef`, sharing exactly the
+    envelope-independent resolution logic `_validate_single_support_ref` uses
+    (C06 remediation, finding G): both call sites resolve
+    `SourceAnchorRef`/`SupportArtifactRef`/`SupportLedgerNodeRef` identically,
+    and `SupportProblemItemRef` the same way modulo what each call site has
+    available to resolve it against -- `formalise()` has the complete,
+    same-proposal item index; the reducer, at `LedgerNodeAdded`-application
+    time, has only the ledger nodes already applied, so
+    `known_m03_content_by_id` here must already be pre-scoped by the caller
+    to the *same batch/proposal* as the citing node (finding A) -- resolving
+    against arbitrary prior-history M03 ids under a matching `id` string,
+    across unrelated proposals, is exactly the exploit this closes.
+
+    Extends the RELATION-kind incompatibility check to the reducer for the
+    first time (finding C): a `SupportProblemItemRef` naming a `RELATION`
+    pseudo-item is rejected here too, not only in `formalise()`. This is a
+    structural (kind-based) relevance safeguard only -- it cannot and does
+    not verify that a resolved target's *content* actually substantiates the
+    citing claim; full semantic relevance is not mechanically verifiable and
+    remains a residual, documented limitation.
+    """
+    if isinstance(ref, SourceAnchor):
+        validate_anchor_artifact_registration(ref, available_artifacts)
+        return
+    if isinstance(ref, SupportProblemItemRef):
+        if own_id is not None and ref.item_id == own_id:
+            raise SelfSupportReference(f"item '{own_id}' cannot cite itself as its own support")
+        target_content = known_m03_content_by_id.get(ref.item_id)
+        if target_content is None:
+            raise UnresolvedSupportReference(
+                f"M03 ledger node cites a same-proposal item '{ref.item_id}' that has not been "
+                "admitted to the ledger yet"
+            )
+        if target_content.get("kind") == "RELATION":
+            raise IncompatibleSupportReferenceKind(
+                f"M03 ledger node cites a RELATION item '{ref.item_id}' as evidentiary support; "
+                "relations describe edges between items, not evidence"
+            )
+        return
+    if isinstance(ref, SupportArtifactRef):
+        _check_artifact_support_ref(ref, available_artifacts, "M03 ledger node")
+        return
+    if isinstance(ref, SupportLedgerNodeRef):
+        _check_ledger_support_ref(ref, known_ledger_revisions, "M03 ledger node")
+        return
+    raise UnresolvedSupportReference("M03 ledger node carries an unrecognised support reference")
+
+
+def _reject_support_cycles(items: "Sequence[ProblemItemProposal]") -> None:
+    edges: dict[str, tuple[str, ...]] = {
+        item.id: tuple(
+            ref.item_id for ref in item.support if isinstance(ref, SupportProblemItemRef)
+        )
+        for item in items
+    }
+
+    def _on_cycle(node_id: str) -> None:
+        raise SelfSupportReference(f"support graph contains a prohibited cycle at '{node_id}'")
+
+    depth_first_traverse(edges, order=edges, on_cycle=_on_cycle)

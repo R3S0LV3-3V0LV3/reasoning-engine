@@ -187,7 +187,7 @@ class SQLiteStore:
         ).fetchone()
         if row is None:
             raise KeyError(f"no snapshot for run: {run_id}")
-        if row["reducer_version"] != reducer.version:
+        if not reducer.accepts_snapshot_version(str(row["reducer_version"])):
             raise SnapshotIntegrityError("snapshot reducer version mismatch")
         raw_state = json.loads(row["state_json"])
         if canonical_hash(raw_state) != row["state_hash"]:
@@ -209,7 +209,7 @@ class SQLiteStore:
         ).fetchone()
         if row is None:
             raise KeyError(f"no snapshot for run: {run_id}")
-        if row["reducer_version"] != reducer.version:
+        if not reducer.accepts_snapshot_version(str(row["reducer_version"])):
             raise SnapshotIntegrityError("snapshot reducer version mismatch")
         raw_state = json.loads(row["state_json"])
         if canonical_hash(raw_state) != row["state_hash"]:
