@@ -473,6 +473,64 @@ def test_recover_outstanding_reservations_only_releases_never_touches_model_call
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("second_event_is_failed", [False, True])
+def test_duplicate_idempotency_key_is_rejected_for_recorded_and_failed_alike(
+    engine: FrontierReasoningEngine, second_event_is_failed: bool
+) -> None:
+    """EU-05 (C04 cleanup, item #5): the idempotency-key uniqueness check now
+    lives in the shared `_validate_model_call_common` helper called by
+    `RunReducer.apply`'s single `ModelCall*` branch. Prove it is genuinely
+    exercised for BOTH a second `ModelCallRecordedV2` and a second
+    `ModelCallFailedV2` that reuse an already-committed idempotency_key --
+    not just one of the two event types."""
+    run_id, value = _setup(engine)
+    genuine = _genuine_record(engine, run_id, value)
+    before = engine.inspect(run_id)
+
+    reservation = BudgetReservation(
+        reservation_id="r-duplicate-idempotency-key",
+        action_id="a-duplicate-idempotency-key",
+        resources=genuine.charged_usage,
+    )
+    duplicate = genuine.model_copy(
+        update=(
+            {
+                "call_id": engine.uuids.new(),
+                "reservation_id": reservation.reservation_id,
+                "status": StructuredModelStatus.UNAVAILABLE,
+                "accounting_condition": None,
+            }
+            if second_event_is_failed
+            else {
+                "call_id": engine.uuids.new(),
+                "reservation_id": reservation.reservation_id,
+            }
+        )
+        # `idempotency_key` deliberately left unset -- it is `genuine`'s own,
+        # already committed by `_genuine_record` above.
+    )
+    duplicate_event = (
+        ModelCallFailedV2(record=duplicate, reason="duplicate idempotency key")
+        if second_event_is_failed
+        else ModelCallRecordedV2(record=duplicate)
+    )
+    batch = (
+        engine.make_event(run_id, BudgetReserved(reservation=reservation), module_id="attacker"),
+        engine.make_event(
+            run_id,
+            BudgetReservationSettled(
+                reservation_id=reservation.reservation_id, actual_usage=genuine.charged_usage
+            ),
+            module_id="attacker",
+        ),
+        engine.make_event(run_id, duplicate_event, module_id="attacker"),
+    )
+    with pytest.raises(ValueError, match="semantic model-call identity already recorded"):
+        engine.append(run_id, before.version, batch)
+    assert engine.inspect(run_id) == before
+
+
+@pytest.mark.unit
 def test_many_settlements_for_one_reservation_are_matched_in_fifo_order(
     engine: FrontierReasoningEngine,
 ) -> None:

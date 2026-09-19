@@ -347,6 +347,36 @@ def _validate_m03_ledger_node_provenance(
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
+def _validate_model_call_common(
+    state: RunState,
+    payload: ModelCallRecorded | ModelCallFailed | ModelCallRecordedV2 | ModelCallFailedV2,
+) -> None:
+    """Shared validation shape (EU-05, C04 cleanup, item #5) for the checks
+    genuinely identical across all four `ModelCall*` event types -- V1/V2,
+    Recorded/Failed alike -- called once before each branch's own
+    type-specific checks in `RunReducer.apply`.
+
+    Only checks proven byte-identical across every payload type are here:
+    idempotency-key uniqueness, the "a successful call must carry both
+    artifacts" rule (itself conditioned on the payload being one of the two
+    *Recorded* variants, not merged into a false, type-blind shape), and
+    artifact registration. The V2-only reservation/settlement matching
+    (shared by `ModelCallRecordedV2`/`ModelCallFailedV2` alone, not the V1
+    types) and each type's own status/accounting-condition rules remain
+    branch-local in `apply` -- they are not "shared-looking" duplication,
+    they are genuinely different per type.
+    """
+    if any(item.idempotency_key == payload.record.idempotency_key for item in state.model_calls):
+        raise ValueError("semantic model-call identity already recorded")
+    if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
+        payload.record.raw_artifact is None or payload.record.proposal_artifact is None
+    ):
+        raise ValueError("successful semantic model call requires raw and proposal artifacts")
+    for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
+        if artifact is not None and artifact.sha256 not in state.artifacts:
+            raise ValueError("semantic model-call artifact is not registered")
+
+
 class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
@@ -908,19 +938,7 @@ class RunReducer:
         elif isinstance(
             payload, (ModelCallRecorded, ModelCallFailed, ModelCallRecordedV2, ModelCallFailedV2)
         ):
-            if any(
-                item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
-            ):
-                raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
-                payload.record.raw_artifact is None or payload.record.proposal_artifact is None
-            ):
-                raise ValueError(
-                    "successful semantic model call requires raw and proposal artifacts"
-                )
-            for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
-                if artifact is not None and artifact.sha256 not in state.artifacts:
-                    raise ValueError("semantic model-call artifact is not registered")
+            _validate_model_call_common(state, payload)
             # V1 events (`ModelCallRecorded`/`ModelCallFailed`, plain
             # `SemanticModelCallRecord`) predate reservation-linked accounting and
             # carry no `reservation_id` -- they remain decode-only and are not
