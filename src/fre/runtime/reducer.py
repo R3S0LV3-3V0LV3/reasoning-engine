@@ -1,6 +1,7 @@
 """Pure reducer protocol and foundational run reducer."""
 
 import hashlib
+from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 from uuid import UUID
@@ -344,6 +345,36 @@ def _validate_m03_ledger_node_provenance(
             validate_anchor_artifact_registration(anchor, available_artifacts)
     if content.get("origin") == EpistemicOriginLabel.EXPLICIT_INPUT.value and not parsed_anchors:
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
+
+
+def _validate_model_call_common(
+    state: RunState,
+    payload: ModelCallRecorded | ModelCallFailed | ModelCallRecordedV2 | ModelCallFailedV2,
+) -> None:
+    """Shared validation shape (EU-05, C04 cleanup, item #5) for the checks
+    genuinely identical across all four `ModelCall*` event types -- V1/V2,
+    Recorded/Failed alike -- called once before each branch's own
+    type-specific checks in `RunReducer.apply`.
+
+    Only checks proven byte-identical across every payload type are here:
+    idempotency-key uniqueness, the "a successful call must carry both
+    artifacts" rule (itself conditioned on the payload being one of the two
+    *Recorded* variants, not merged into a false, type-blind shape), and
+    artifact registration. The V2-only reservation/settlement matching
+    (shared by `ModelCallRecordedV2`/`ModelCallFailedV2` alone, not the V1
+    types) and each type's own status/accounting-condition rules remain
+    branch-local in `apply` -- they are not "shared-looking" duplication,
+    they are genuinely different per type.
+    """
+    if any(item.idempotency_key == payload.record.idempotency_key for item in state.model_calls):
+        raise ValueError("semantic model-call identity already recorded")
+    if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
+        payload.record.raw_artifact is None or payload.record.proposal_artifact is None
+    ):
+        raise ValueError("successful semantic model call requires raw and proposal artifacts")
+    for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
+        if artifact is not None and artifact.sha256 not in state.artifacts:
+            raise ValueError("semantic model-call artifact is not registered")
 
 
 class RunReducer:
@@ -907,19 +938,7 @@ class RunReducer:
         elif isinstance(
             payload, (ModelCallRecorded, ModelCallFailed, ModelCallRecordedV2, ModelCallFailedV2)
         ):
-            if any(
-                item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
-            ):
-                raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
-                payload.record.raw_artifact is None or payload.record.proposal_artifact is None
-            ):
-                raise ValueError(
-                    "successful semantic model call requires raw and proposal artifacts"
-                )
-            for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
-                if artifact is not None and artifact.sha256 not in state.artifacts:
-                    raise ValueError("semantic model-call artifact is not registered")
+            _validate_model_call_common(state, payload)
             # V1 events (`ModelCallRecorded`/`ModelCallFailed`, plain
             # `SemanticModelCallRecord`) predate reservation-linked accounting and
             # carry no `reservation_id` -- they remain decode-only and are not
@@ -1603,13 +1622,20 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
     """
     # Pass 1: collect every settlement/release in the batch by reservation_id,
     # in encounter order, regardless of where the corresponding record sits.
-    pending: dict[str, list[tuple[str, ResourceVector | None]]] = {}
+    # EU-03 (C04 cleanup, item #3): a `deque` (not `list`) so pass 2's FIFO
+    # consumption below is O(1) per record via `popleft()` instead of O(n)
+    # via `list.pop(0)` (which shifts every remaining element down). FIFO
+    # ordering semantics are identical to a list's for this append/pop-front
+    # usage; only the complexity of draining the queue changes.
+    pending: dict[str, deque[tuple[str, ResourceVector | None]]] = {}
     for event in events:
         payload = event.validated_payload()
         if isinstance(payload, BudgetReservationSettled):
-            pending.setdefault(payload.reservation_id, []).append(("SETTLED", payload.actual_usage))
+            pending.setdefault(payload.reservation_id, deque()).append(
+                ("SETTLED", payload.actual_usage)
+            )
         elif isinstance(payload, BudgetReservationReleased):
-            pending.setdefault(payload.reservation_id, []).append(("RELEASED", None))
+            pending.setdefault(payload.reservation_id, deque()).append(("RELEASED", None))
     # Pass 2: validate every record against the complete map built above, so a
     # settlement positioned after its record in the tuple is still found.
     for event in events:
@@ -1620,7 +1646,7 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
                 raise ValueError(
                     "semantic model-call reservation settlement evidence is missing from this batch"
                 )
-            kind, actual_usage = queue.pop(0)
+            kind, actual_usage = queue.popleft()
             if kind != "SETTLED":
                 raise ValueError(
                     "semantic model-call must be paired with a reservation settlement "
