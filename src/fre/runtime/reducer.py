@@ -355,6 +355,23 @@ def _validate_m03_ledger_node_provenance(
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
+def _find_model_call_by_idempotency_key(
+    state: "RunState", key: str
+) -> "SemanticModelCallRecordV2 | SemanticModelCallRecord | None":
+    """Return the first entry in ``state.model_calls`` whose
+    ``idempotency_key`` matches ``key``, or ``None`` if there is no match.
+
+    Shared by both the duplicate-identity admission guard (which only needs
+    presence/absence) and the adjudication-reference resolution (which needs
+    the matching record itself), so the two independent linear scans over
+    ``state.model_calls`` stay in sync.
+    """
+    for call in state.model_calls:
+        if call.idempotency_key == key:
+            return call
+    return None
+
+
 def _validate_model_call_common(
     state: RunState,
     payload: ModelCallRecorded | ModelCallFailed | ModelCallRecordedV2 | ModelCallFailedV2,
@@ -373,8 +390,12 @@ def _validate_model_call_common(
     types) and each type's own status/accounting-condition rules remain
     branch-local in `apply` -- they are not "shared-looking" duplication,
     they are genuinely different per type.
+
+    Idempotency-key uniqueness is checked via `_find_model_call_by_idempotency_key`
+    (C07 remediation) rather than an inline scan, so this admission guard and the
+    adjudication-reference resolution elsewhere in this module stay in sync.
     """
-    if any(item.idempotency_key == payload.record.idempotency_key for item in state.model_calls):
+    if _find_model_call_by_idempotency_key(state, payload.record.idempotency_key) is not None:
         raise ValueError("semantic model-call identity already recorded")
     if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
         payload.record.raw_artifact is None or payload.record.proposal_artifact is None
@@ -1350,13 +1371,8 @@ class RunReducer:
                         "representation plan (v2) references adjudication outside its own "
                         "declared tie band"
                     )
-                matching_call = next(
-                    (
-                        call
-                        for call in state.model_calls
-                        if call.idempotency_key == plan.adjudication_record_ref
-                    ),
-                    None,
+                matching_call = _find_model_call_by_idempotency_key(
+                    state, plan.adjudication_record_ref
                 )
                 if matching_call is None:
                     raise ValueError(
@@ -1484,6 +1500,28 @@ class RunReducer:
             # artifact store by their registered sha256 and rehashed; any
             # disagreement -- a forged claim, or bytes that no longer exist --
             # is rejected here, before persistence.
+            #
+            # EU-25 (informational, not a bug): this is 1 of 3 intentional
+            # hash computations in the write -> apply pipeline for a bound v2
+            # representation artifact: (1) `RepresentationSelector.build_bound`
+            # computes `content_hash` from the content it is about to write,
+            # (2) the artifact store computes its own hash-on-write (the
+            # `stored_ref.sha256` check in `build_bound`), and (3) this is the
+            # third, independent recompute-and-compare, done here from bytes
+            # re-read back out of the store. Each is defense against a
+            # different actor being wrong or malicious -- the caller
+            # (`build_bound`'s own check), the store (its hash-on-write), and
+            # a forged/mismatched claim reaching this reducer directly. That
+            # triple computation is deliberate, load-bearing, fail-closed
+            # security, not redundant work to be trimmed: removing any one of
+            # the three reopens the forged-content-hash exploit this check
+            # closes (see `test_reject_forged_content_hash_trusting_computed_
+            # bytes_instead` and `test_finding_i_fails_closed_without_
+            # artifact_reader_unless_trust_flag_set`). For very large
+            # artifacts this is a real, measurable perf cost; if that ever
+            # becomes a problem in practice, the fix is streaming/incremental
+            # hashing (the same hash, computed more cheaply), never removing
+            # one of the three hash steps.
             #
             # Finding I: without an `artifact_reader`, this verification
             # cannot run at all -- the pre-remediation code silently skipped

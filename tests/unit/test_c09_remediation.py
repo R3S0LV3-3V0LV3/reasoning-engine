@@ -177,6 +177,57 @@ def test_coordinator_execute_front_end_succeeds_through_tie_fallback_coincidence
 
 
 # ---------------------------------------------------------------------------
+# EU-28 (Wave 3 post-freeze cleanup, C07 item #28): `RunReducer.apply`'s
+# `RepresentationPlanSelectedV2` branch only independently re-verifies a
+# bound v2 plan's `input_hash` when `state.task_signature`/
+# `state.budget.plan` are BOTH already populated (see the "Finding G"
+# comment on that branch) -- a real, documented, and (per this pass)
+# deliberately NOT reducer-fixed verification gap. The practical exposure is
+# closed one layer up: `select_representation` (below) is the only place in
+# `composition.py` that ever constructs and appends a
+# `RepresentationPlanSelectedV2` event, and it hard-guards on both fields
+# being present before it will do so. This test pins that guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_select_representation_rejects_run_missing_classification_or_budget(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Composition-level half of EU-28's pin: `select_representation` must
+    always reject -- before ever calling into selection or appending a
+    `RepresentationPlanSelectedV2` event -- a run whose `task_signature`
+    and/or `budget.plan` are absent, regardless of whether a `ProblemSpec`
+    has already been formalised. This is the guard that makes the reducer's
+    own `input_hash` verification gap (see `reducer.py`'s
+    `RepresentationPlanSelectedV2` branch, "Finding G") unreachable through
+    the real orchestrator; see the companion reducer-level pin test in
+    `tests/unit/test_c07_remediation.py` for the other half."""
+    import asyncio
+
+    from fre.runtime.events import ProblemFormalised
+
+    wave3 = compose_wave3(engine, UnusedModel(), Wave3Config())
+    handle = wave3.create_run()
+    problem = ProblemSpec(output_contract=OutputContract(form="TEXT"))
+    state = engine.inspect(handle.run_id)
+    engine.append(
+        handle.run_id,
+        state.version,
+        (engine.make_event(handle.run_id, ProblemFormalised(problem=problem), module_id="M03"),),
+    )
+    state = engine.inspect(handle.run_id)
+    assert state.problem_spec is not None
+    assert state.task_signature is None
+    assert state.budget.plan is None
+
+    with pytest.raises(
+        ValueError, match="authoritative classification and an allocated budget"
+    ):
+        asyncio.run(wave3.select_representation(handle.run_id, allow_adjudication=False))
+
+
+# ---------------------------------------------------------------------------
 # Finding D: `compile_context`/`evaluate_stop`/`finalize_if_terminal` must
 # raise a clear `ValueError` naming the missing prerequisite when called out
 # of sequence, rather than silently proceeding on incomplete state (or

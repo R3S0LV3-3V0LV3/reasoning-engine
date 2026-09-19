@@ -59,6 +59,28 @@ __all__ = [
 _SCORE_WEIGHTS = SCORE_WEIGHTS
 
 
+def _triage_actual_kind(
+    view: RepresentationView, problem: ProblemSpec
+) -> tuple[bool, RepresentationKind, JsonValue]:
+    """The fallback-selection triage block, byte-identical between `build()`
+    (v1) and `build_bound()` (v2): decide whether the requested
+    representation kind's builder is supported and available, resolve
+    `actual` (substituting the typed text-table fallback kind when it is
+    not), and build `content` for `actual`. Returns `(available, actual,
+    content)`.
+
+    Deliberately narrow in scope (EU-27): `_resolve_actual_builder` (v1) and
+    `_resolve_actual_builder_bound` (v2), which each caller runs immediately
+    after this triage using its own `registry`, are intentionally forked per
+    finding J and are out of scope for this helper.
+    """
+    supported = view.kind in _BUILDERS
+    available = view.builder_available and supported
+    actual = view.kind if available else RepresentationKind.TEXT_TABLE_FALLBACK
+    content = _BUILDERS[actual](problem)
+    return available, actual, content
+
+
 class RepresentationSelector:
     def __init__(
         self,
@@ -342,10 +364,7 @@ class RepresentationSelector:
         registry: tuple[RepresentationDefinition, ...] | None = None,
     ) -> RepresentationArtifact:
         registry = registry or self.registry
-        supported = view.kind in _BUILDERS
-        available = view.builder_available and supported
-        actual = view.kind if available else RepresentationKind.TEXT_TABLE_FALLBACK
-        content = _BUILDERS[actual](problem)
+        available, actual, content = _triage_actual_kind(view, problem)
         problem_hash = canonical_hash(problem)
         # F10 fix: when `available` is False, `content` above was produced by
         # the FALLBACK builder (`_BUILDERS[TEXT_TABLE_FALLBACK]`), never by
@@ -752,11 +771,17 @@ class RepresentationSelector:
         forged artifact hash" invariant).
         """
         registry = registry or default_registry_v2()
-        supported = view.kind in _BUILDERS
-        available = view.builder_available and supported
-        actual = view.kind if available else RepresentationKind.TEXT_TABLE_FALLBACK
-        content = _BUILDERS[actual](problem)
+        available, actual, content = _triage_actual_kind(view, problem)
         content_bytes = canonical_json(content)
+        # EU-25 (informational, not a bug): this is the first of 3 intentional
+        # hash computations in the write -> apply pipeline for a bound v2
+        # representation artifact -- see `RunReducer.apply`'s
+        # `RepresentationArtifactRegisteredV2` branch ("F10/Objective 4
+        # decisive check") for the other two (the artifact store's
+        # hash-on-write, and the reducer's own independent recompute-and-
+        # compare from bytes re-read out of the store). The three together
+        # are deliberate, load-bearing defense against a forged-content-hash
+        # attack; removing any one of them reopens that exploit.
         content_hash = canonical_hash(content)
         stored_ref = artifact_writer(content_bytes)
         if stored_ref.sha256 != content_hash:
