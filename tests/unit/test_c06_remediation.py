@@ -5,7 +5,9 @@ Each test below maps directly onto one bullet in the C06 validation strategy
 in FRE_WAVE3_C01_C10_EXECUTION_COMPLETION_AND_VALIDATION_REGISTER.md.
 """
 
+import asyncio
 import hashlib
+import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -13,14 +15,18 @@ import pytest
 from pydantic import ValidationError
 
 from fre.adapters.testing import FakeUUIDFactory
+from fre.composition import compose_wave3
 from fre.domain.common import ArtifactRef as ArtifactDataRef
-from fre.domain.common import ObjectRef, OutputContract, PermissionSet
+from fre.domain.common import JsonValue, ObjectRef, OutputContract, PermissionSet
 from fre.domain.ledger import EpistemicStatus, LedgerNodeType
 from fre.domain.semantic import (
     EpistemicItemProvenance,
     EpistemicOriginLabel,
+    SemanticCallUsage,
     SourceAnchor,
     SourceKind,
+    StructuredModelResult,
+    StructuredModelStatus,
     SupportArtifactRef,
     SupportLedgerNodeRef,
     SupportProblemItemRef,
@@ -371,6 +377,171 @@ def test_ledger_nodes_are_emitted_in_dependency_order_for_a_three_level_support_
         if isinstance(node.content, dict)
     ]
     assert emitted_order == ["root", "mid", "leaf"]
+
+
+# ---------------------------------------------------------------------------
+# EU-23 (C06 cleanup, re-scoped item #23): `SupportLedgerNodeRef` resolution
+# through the REAL `composition.py` coordinator -- not a hand-built
+# `known_ledger_refs` (which is all `test_all_four_support_reference_kinds_
+# resolve_when_valid` above exercises).
+# ---------------------------------------------------------------------------
+
+
+class _QueueModel:
+    """A structured-model port whose responses are drained one call at a
+    time (deliberately duplicated here, not imported, from
+    `tests/integration/test_wave3_gate.py`'s identically-named helper --
+    see `tests/golden/_common.py`'s docstring for why a cross-test-module
+    import is avoided in this repository: with no `tests/__init__.py`,
+    mypy resolves the same file under two different module identities
+    depending on how it is collected/imported, and refuses to type-check
+    the result)."""
+
+    def __init__(self, responses: list[StructuredModelResult]) -> None:
+        self.responses = iter(responses)
+
+    async def generate(self, request: object) -> StructuredModelResult:
+        return next(self.responses)
+
+
+def _classification_response() -> StructuredModelResult:
+    anchor: JsonValue = {
+        "source_kind": "TASK_TEXT",
+        "source_ref": {"object_type": "TaskEnvelope", "object_id": str(UUID(int=900))},
+        "selector": "/text",
+        "char_start": 0,
+        "char_end": len("Choose a safe option."),
+    }
+    valid: dict[str, JsonValue] = {
+        "task_type": {
+            "estimate": "DECISION",
+            "confidence": 0.9,
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "consequence": {
+            "estimate": "LOW",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "reversibility": {
+            "estimate": "HIGH",
+            "confidence": 0.9,
+            "conservative_upper": "HIGH",
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "ambiguity": {
+            "estimate": "MEDIUM",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "evidence_scarcity": {
+            "estimate": "MEDIUM",
+            "confidence": 0.9,
+            "conservative_upper": "MEDIUM",
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "search_space": {
+            "estimate": "BOUNDED",
+            "confidence": 0.9,
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+        "horizon": {
+            "estimate": "SHORT",
+            "confidence": 0.9,
+            "anchors": [anchor],
+            "rationale": "fixture",
+        },
+    }
+    return StructuredModelResult(
+        status=StructuredModelStatus.SUCCESS,
+        adapter_id="fake",
+        model_id="fixture",
+        raw_response=json.dumps(valid).encode(),
+        decoded=valid,
+        usage=SemanticCallUsage(input_tokens=100, output_tokens=50),
+    )
+
+
+def _formalisation_response(items: list[dict[str, JsonValue]]) -> StructuredModelResult:
+    payload: JsonValue = {"items": [dict(item) for item in items]}
+    return StructuredModelResult(
+        status=StructuredModelStatus.SUCCESS,
+        adapter_id="fake",
+        model_id="fixture",
+        raw_response=json.dumps(payload).encode(),
+        decoded=payload,
+        usage=SemanticCallUsage(input_tokens=100, output_tokens=50),
+    )
+
+
+@pytest.mark.unit
+def test_support_ledger_node_ref_resolves_through_the_real_coordinator(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """A proposal whose `support` cites a real prior `SupportLedgerNodeRef`
+    must resolve when driven through the actual `composition.py`
+    coordinator: (1) `classify_task_semantic` (M01) is driven through the
+    real coordinator with a MODEL-derived classification, persisting a real
+    M01 ledger node; (2) that node's real `(node_id, revision)` is captured
+    from a fresh `engine.inspect`; (3) a second M03 proposal whose `support`
+    cites that exact `(node_id, revision)` as a `SupportLedgerNodeRef` is
+    driven through `formalise_problem` (also via the real coordinator, which
+    computes `known_ledger_refs` from its own fresh post-await
+    `engine.inspect`, never a hand-built set); (4) the reference must resolve
+    successfully end-to-end, with no `SelfSupportReference`/dangling-ref
+    rejection -- proving the wiring `composition.py`'s docstrings claim is
+    actually exercised end-to-end, not just at the `ProblemFormaliser.
+    formalise()` unit level (as in `test_all_four_support_reference_kinds_
+    resolve_when_valid` above, which hand-builds `known_ledger_refs`)."""
+    model = _QueueModel([_classification_response()])
+    wave3 = compose_wave3(engine, model)
+    handle = wave3.create_run()
+    task = TaskEnvelope(
+        task_id=UUID(int=900),
+        text="Choose a safe option.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+    state = engine.inspect(handle.run_id)
+    prior_node = next(node for node in state.ledger.nodes if node.producing_module == "M01")
+
+    model.responses = iter(
+        [
+            _formalisation_response(
+                [
+                    {
+                        "id": "cites-prior-m01-ledger-node",
+                        "kind": "UNKNOWN",
+                        "description": "supported by a real prior M01 ledger node",
+                        "origin": "SUPPORTED_INFERENCE",
+                        "basis": "cross-checked against the classifier's own model-derived inference",
+                        "support": [
+                            {
+                                "node_id": str(prior_node.node_id),
+                                "revision": prior_node.revision,
+                            }
+                        ],
+                    }
+                ]
+            )
+        ]
+    )
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+    resolved = next(
+        item for item in problem.unknowns if item.id == "cites-prior-m01-ledger-node"
+    )
+    assert resolved.provenance is not None
+    assert len(resolved.provenance.support) == 1
 
 
 # ---------------------------------------------------------------------------
