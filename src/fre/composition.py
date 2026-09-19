@@ -59,6 +59,35 @@ C09 (F08) remediation in PR #24 (finding D):
     semantic-model call or re-append an event batch that the coordinator
     path would have skipped. `execute_front_end` is the only path that gets
     that discipline for free across the whole M01-M04/M12 sequence.
+
+EU-38 (w3-cleanup): `classify_task`, `formalise_problem`,
+`select_representation`, `compile_context`, and `evaluate_stop` share an
+intentional convention -- fetch state, check idempotency/preconditions, do
+the step's work, [append and re-inspect], return -- that any future step
+method should follow. Two of the five are deliberate shape EXCEPTIONS, not
+drift to be "fixed" into template conformance: `compile_context` never
+appends directly (it delegates its actual persistence entirely to
+`Wave3ContextRuntime.compile_and_persist`), and `evaluate_stop` never
+appends at all (`Wave2Runtime.record_decision`, called separately, does).
+A template-method abstraction forcing all five into one shape was
+considered and rejected -- it would obscure these two methods' genuinely
+different mutation patterns for a marginal readability gain. Revisit only
+if a future sixth step method naturally fits a fully-identical
+fetch/precondition/append/return skeleton with an existing one.
+
+EU-41 (w3-cleanup): this module's docstring above already accurately
+documents `execute_front_end` as RECOMMENDED-not-exclusive and
+`Wave3Components`/`Wave3Engine.components` as intentionally plain/public,
+not sealed (finding F). True structural enforcement of "the coordinator is
+the only path" was considered and explicitly deferred, not attempted here:
+it would require (a) renaming `Wave3Components` fields to leading-
+underscore with read-only `@property` accessors, and/or (b) making
+`Wave3Engine.components` non-public behind a narrower facade exposing only
+the coordinator's own step methods -- both are breaking API changes for any
+current direct-component-access caller (including this repo's own
+pre-C09 tests), out of scope for a cleanup pass. A future hardening pass
+should treat this as its own scoped unit with an explicit compatibility
+budget, not bundle it into an unrelated change.
 """
 
 from dataclasses import dataclass
@@ -70,7 +99,7 @@ from fre.domain.common import ArtifactRef, FrozenModel, canonical_hash
 from fre.domain.context import CompilerProfile
 from fre.domain.problem import ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationPlanV2
-from fre.domain.representation_registry import default_registry_v2
+from fre.domain.representation_registry import RepresentationDefinition, default_registry_v2
 from fre.domain.stop import (
     AcceptanceStatus,
     CostEstimateInterval,
@@ -102,6 +131,7 @@ from fre.prompts.schemas import (
     default_output_schema_registry,
 )
 from fre.runtime.budget_meter import BudgetMeter
+from fre.runtime.reducer import RunState
 from fre.runtime.events import (
     ArtifactRegistered,
     BudgetAllocated,
@@ -250,6 +280,12 @@ class Wave3Engine:
         persisted first, then the semantic call made, then the final
         classification (which mirrors the second half of `canonical_events`'
         logic exactly, via `_finalize_classification`) persisted last.
+
+        EU-36 (w3-cleanup) cross-reference: see `TaskClassifier.
+        canonical_events`'s own docstring (finding #9) for the mirror image
+        of this note -- it documents why it is designed for exactly one
+        calling context (a run's initial classification with no prior budget
+        activity) and must never be called by this orchestrator.
         """
         state = self.engine.inspect(run_id)
         if state.task_signature is not None:
@@ -481,9 +517,32 @@ class Wave3Engine:
                 "representation selection requires an authoritative classification and an "
                 "allocated budget"
             )
+        registry = default_registry_v2()
+        plan, final_state = await self._select_and_verify_plan(
+            run_id, state, allow_adjudication=allow_adjudication, registry=registry
+        )
+        return self._build_and_persist_artifacts(run_id, plan, final_state, registry=registry)
+
+    async def _select_and_verify_plan(
+        self,
+        run_id: UUID,
+        state: RunState,
+        *,
+        allow_adjudication: bool,
+        registry: tuple[RepresentationDefinition, ...],
+    ) -> tuple[RepresentationPlanV2, RunState]:
+        """Steps 2-3 of `select_representation`: deterministic+adjudication
+        selection, then binding-drift verification against a fresh state.
+
+        Mirrors `_bootstrap_budget`'s role in `classify_task`'s own
+        decomposition -- everything up to (but not including) building and
+        persisting the resulting artifacts.
+        """
+        assert state.problem_spec is not None
+        assert state.task_signature is not None
+        assert state.budget.plan is not None
         selector = self.components.representation_selector
         policy = self.components.policy.representation_selection
-        registry = default_registry_v2()
         outcome = await selector.select_with_adjudication_bound(
             state.problem_spec,
             state.task_signature,
@@ -503,6 +562,23 @@ class Wave3Engine:
             raise ValueError(
                 "representation plan source_snapshot_version drifted before persistence"
             )
+        return plan, final_state
+
+    def _build_and_persist_artifacts(
+        self,
+        run_id: UUID,
+        plan: RepresentationPlanV2,
+        final_state: RunState,
+        *,
+        registry: tuple[RepresentationDefinition, ...],
+    ) -> RepresentationPlanV2:
+        """Steps 4-6 of `select_representation`: build the plan's artifacts,
+        construct and append the event batch, and read back the result.
+
+        Mirrors `_finalize_classification`'s role in `classify_task`'s own
+        decomposition.
+        """
+        selector = self.components.representation_selector
         stored_bytes: list[tuple[ArtifactRef, int]] = []
 
         def writer(content_bytes: bytes) -> ArtifactRef:
@@ -632,6 +708,22 @@ class Wave3Engine:
         # accepts `task_signature`/`representation_v2` as optional (M01/M04
         # need not have run; `derive_wave3_availability` reports that
         # honestly via `Wave3ContextAvailability`, it does not require it).
+        #
+        # EU-40 (w3-cleanup): investigated removing this guard as a duplicate
+        # of `Wave3ContextRuntime.compile_and_persist`'s own identical
+        # `problem_spec is None` check. That removal is NOT safe: this method
+        # does genuine work between its own guard and the delegate call --
+        # notably `BudgetMeter().remaining(state.budget)` below, which raises
+        # its own (less specific, differently-worded) error when
+        # `state.budget.plan` is `None`, as it always is on a fresh run that
+        # has not even reached M01/M02 yet. Removing this guard would
+        # therefore surface a confusing "budget has not been allocated"
+        # failure instead of this method's own clear, correctly-named
+        # precondition message for a run that simply never formalised a
+        # `ProblemSpec` -- so both guards are kept; this one stays the
+        # earliest, most specific diagnostic for its own precondition, and
+        # `compile_and_persist`'s copy remains the single source of truth for
+        # any caller that reaches it directly, bypassing this coordinator.
         if state.problem_spec is None:
             raise ValueError("context compilation requires a formalised ProblemSpec")
         problem_ref = canonical_hash(state.problem_spec)
@@ -644,6 +736,20 @@ class Wave3Engine:
             canonical_hash(state.task_signature) if state.task_signature is not None else None
         )
         representation_plan_v2 = state.representation_plan_v2
+        # EU-35 (w3-cleanup): this scan is reverse-ordered specifically to
+        # short-circuit on the common "already compiled recently" case (the
+        # most-recent-match, if any, is the first candidate examined). The
+        # worst-case O(n) miss-path is bounded by the number of context
+        # packets compiled on this run, which is typically small -- accepted
+        # as a measured-acceptable cost, not a real bottleneck, pending
+        # evidence otherwise. If `state.context_packets` is ever observed
+        # growing large enough for this to matter, the fix is a derived index
+        # keyed on the match tuple below (a dict overwrite naturally gives
+        # "most recent per key"), populated either via a new `RunState` field
+        # (an event-sourced schema change) or a per-call local index built
+        # from this same tuple (which would not reduce asymptotic cost, only
+        # clarify the code) -- scope that as its own unit if/when evidence
+        # justifies it.
         for packet in reversed(state.context_packets):
             wave3 = packet.wave3_context
             if (
@@ -695,6 +801,53 @@ class Wave3Engine:
         product already present, including a context packet compiled at the
         run's current version) replays this entire method with zero provider
         invocations.
+
+        EU-34 (w3-cleanup), downgraded to DOCUMENT-ONLY: one call to this
+        method issues `self.engine.inspect(run_id)` at least once per step
+        (15 sites across `composition.py`, plus 5 in `semantic_runtime.py`
+        and 1 in `m04_representation.py`), most of which are each step's own
+        leading precondition/idempotency check against a state the
+        immediately-prior step arguably already fetched. Threading an
+        optional `state: RunState | None = None` parameter through
+        `classify_task`/`formalise_problem`/`select_representation`/
+        `compile_context`/`evaluate_stop` to let this method skip that
+        redundant leading inspect was investigated and deliberately NOT
+        implemented, for two compounding reasons found during that
+        investigation:
+
+        1. This method never actually holds a fresh `RunState` between
+           steps today -- each step returns only its own typed product
+           (`TaskSignature`, `ProblemSpec`, ...), not the state it was
+           derived from. Threading a passed-in state would first require
+           adding an extra `self.engine.inspect(run_id)` call HERE, after
+           every step, purely to capture what the next step could reuse --
+           which does not reduce this method's own aggregate inspect count
+           at all; it only shifts which method pays for each inspect while
+           adding a new state-passing surface across five method signatures.
+        2. Worse, that newly-added inspect (taken by `execute_front_end`
+           immediately after one step returns) would be reused by the NEXT
+           step's leading precondition check instead of that step's own
+           fresh inspect -- reopening exactly the class of staleness bug
+           `formalise_problem`'s and `select_representation`'s docstrings
+           each independently document and fix (findings C and H): a
+           concurrent writer on the same `run_id` can append real events in
+           the gap between "state captured" and "state acted on," and every
+           leading precondition/idempotency inspect exists specifically to
+           observe that. There is no gap in this method's step sequence that
+           is provably free of that risk without re-deriving the concurrent-
+           double-bootstrap/double-append race-safety analysis this
+           coordinator already relies on -- risking exactly the invariant
+           this unit was told not to regress, for a Tier-4 efficiency
+           finding, not a correctness bug.
+
+        The replay volume this documents is an accepted, known cost of the
+        resumability-by-design architecture described in the module
+        docstring above: every step's own fresh inspect is what makes
+        interruption-and-resume, and concurrent retries, safe. `FrontierReasoningEngine.snapshot()`/`.replay_from_snapshot()` exist as a
+        separate, larger architectural option (optimizing replay-from-genesis
+        cost, not this "many inspects within one coordinator call" pattern)
+        for a future pass, if this volume is ever measured as a real
+        bottleneck in production rather than assessed from source alone.
         """
         await self.classify_task_semantic(
             run_id,
@@ -707,9 +860,7 @@ class Wave3Engine:
         await self.select_representation(run_id, allow_adjudication=allow_adjudication)
         packet_hash = self.compile_context(run_id, profile=context_profile)
         state = self.engine.inspect(run_id)
-        material_blockers = tuple(
-            blocker for blocker in state.problem_blockers if not blocker.resolvable
-        )
+        material_blockers = _material_blockers(state.problem_blockers)
         return Wave3PipelineResult(
             run_id=run_id,
             version=state.version,
@@ -778,12 +929,8 @@ class Wave3Engine:
                 "before its blockers can be evaluated"
             )
         remaining = BudgetMeter().remaining(state.budget)
-        material_blockers = tuple(
-            blocker for blocker in state.problem_blockers if not blocker.resolvable
-        )
-        resolvable_blockers = tuple(
-            blocker for blocker in state.problem_blockers if blocker.resolvable
-        )
+        material_blockers = _material_blockers(state.problem_blockers)
+        resolvable_blockers = _resolvable_blockers(state.problem_blockers)
         blocker_required = bool(state.problem_blockers)
         blocker_resolvable = bool(resolvable_blockers) and not material_blockers
         inputs = StopInputs(
@@ -827,6 +974,21 @@ class Wave3Engine:
                 "recorded via evaluate_stop on this run before it can be finalized"
             )
         return self.finalize(run_id, decision)
+
+
+def _material_blockers(
+    problem_blockers: tuple[ProblemBlocker, ...],
+) -> tuple[ProblemBlocker, ...]:
+    """Blockers that are not resolvable -- shared by `execute_front_end` and
+    `evaluate_stop`, which both need this exact filter (EU-37)."""
+    return tuple(blocker for blocker in problem_blockers if not blocker.resolvable)
+
+
+def _resolvable_blockers(
+    problem_blockers: tuple[ProblemBlocker, ...],
+) -> tuple[ProblemBlocker, ...]:
+    """The inverse of `_material_blockers`, kept alongside it for symmetry."""
+    return tuple(blocker for blocker in problem_blockers if blocker.resolvable)
 
 
 def _require(name: str, actual: str, supported: str) -> None:
