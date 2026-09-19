@@ -5,6 +5,7 @@ from typing import Literal, cast
 from uuid import UUID
 
 from fre.domain.common import ObjectRef
+from fre.domain.graph import depth_first_traverse
 from fre.domain.ledger import (
     EpistemicStatus,
     LedgerEdge,
@@ -83,37 +84,64 @@ class InvalidProblemSpec(ValueError):
     pass
 
 
+def _coerce_optional_float(value: object) -> float | None:
+    """Coerce a self-reported attribute value to `float`, or `None` if it is
+    not a genuine numeric signal.
+
+    C06 remediation (EU-19): shared by `_is_material`'s `numeric_relevance`
+    and both `UNKNOWN`/`ASSUMPTION` branches' `decision_relevance` below --
+    previously duplicated verbatim 3x. `bool` is deliberately excluded even
+    though it is an `int` subclass in Python: a proposal's stray `True`/
+    `False` for a field meant to carry a relevance score must never be
+    silently coerced into `1.0`/`0.0`.
+    """
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
 def _topologically_ordered_items(
     items: tuple[ProblemItemProposal, ...],
 ) -> tuple[ProblemItemProposal, ...]:
     """Order `items` (already known acyclic) so a `ProblemItemRef` target's
-    node always precedes the node of the item that cites it."""
+    node always precedes the node of the item that cites it.
+
+    C06 remediation (EU-18): reuses the shared `depth_first_traverse`
+    primitive from EU-17 for its post-order visit (post-order append =
+    reverse topo order). This function still runs its own, separate DFS pass
+    over its own filtered edge set (`items` here has already had `RELATION`
+    items excluded by the caller, unlike `_reject_support_cycles`'s edge set)
+    -- merging the two passes into one traversal across both filtered edge
+    sets is out of scope for this cleanup and was explicitly deferred.
+    """
     by_id = {item.id: item for item in items}
-    visited: set[str] = set()
+    edges: dict[str, tuple[str, ...]] = {
+        item.id: tuple(
+            ref.item_id for ref in item.support if isinstance(ref, SupportProblemItemRef)
+        )
+        for item in items
+    }
     ordered: list[ProblemItemProposal] = []
 
-    def visit(item_id: str) -> None:
-        if item_id in visited or item_id not in by_id:
-            return
-        visited.add(item_id)
-        for ref in by_id[item_id].support:
-            if isinstance(ref, SupportProblemItemRef):
-                visit(ref.item_id)
+    def _on_cycle(item_id: str) -> None:
+        # Defensive-only: `_reject_support_cycles` (via `validate_support_graph`)
+        # always runs before this, in `formalise()`, so this should never fire.
+        raise InvalidProblemSpec(
+            f"internal invariant violated: cycle encountered at '{item_id}' while "
+            "topologically ordering items presumed already acyclic"
+        )
+
+    def _on_finish(item_id: str) -> None:
         ordered.append(by_id[item_id])
 
-    for item in items:
-        visit(item.id)
+    depth_first_traverse(
+        edges, order=(item.id for item in items), on_cycle=_on_cycle, on_finish=_on_finish
+    )
     return tuple(ordered)
 
 
 def _is_material(item: ProblemItemProposal) -> bool:
     material = item.attributes.get("material")
     relevance = item.attributes.get("decision_relevance")
-    numeric_relevance = (
-        float(relevance)
-        if isinstance(relevance, int | float) and not isinstance(relevance, bool)
-        else None
-    )
+    numeric_relevance = _coerce_optional_float(relevance)
     claims_low_materiality = (material is False) or (
         numeric_relevance is not None
         and numeric_relevance < MATERIALITY_DECISION_RELEVANCE_THRESHOLD
@@ -494,12 +522,7 @@ class ProblemFormaliser:
                         domain=attrs.get("domain"),
                         rationale=rationale if isinstance(rationale, str) else None,
                         impact=attrs.get("impact"),
-                        decision_relevance=(
-                            float(decision_relevance)
-                            if isinstance(decision_relevance, int | float)
-                            and not isinstance(decision_relevance, bool)
-                            else None
-                        ),
+                        decision_relevance=_coerce_optional_float(decision_relevance),
                         resolvable=(
                             resolvable
                             if isinstance((resolvable := attrs.get("resolvable")), bool)
@@ -530,12 +553,7 @@ class ProblemFormaliser:
                         id=item.id,
                         statement=item.description,
                         why_needed=item.basis or "required for formalisation",
-                        decision_relevance=(
-                            float(decision_relevance)
-                            if isinstance(decision_relevance, int | float)
-                            and not isinstance(decision_relevance, bool)
-                            else None
-                        ),
+                        decision_relevance=_coerce_optional_float(decision_relevance),
                         scope=scope if isinstance(scope, str) else None,
                         provenance=provenance,
                     )
@@ -603,7 +621,17 @@ class ProblemFormaliser:
             objectives=tuple(objectives),
             constraints=tuple(constraints),
             # Legacy free-text mirror of `assumption_items` (C06 / F04: this
-            # was declared but never populated).
+            # was declared but never populated). `assumption_items` is the
+            # source of truth; `assumptions` is derived from it and kept
+            # deliberately in lockstep, never populated independently. This
+            # redundancy is intentional and threads one level further
+            # downstream too: `m12_context.py`'s `_semantic_summary`-style
+            # section mirrors both into the compiled context packet as
+            # `assumptions.statements` (= this field) and
+            # `assumptions.items` (= `assumption_items`), derived fresh from
+            # this same `ProblemSpec` at compile time -- both mirrors are
+            # backward-compatible surface area, not independent state, so
+            # there is no drift risk (C06 cleanup, EU-20).
             assumptions=tuple(item.statement for item in assumptions),
             assumption_items=tuple(assumptions),
             unknowns=tuple(unknowns),
