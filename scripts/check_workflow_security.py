@@ -46,6 +46,7 @@ ALLOWED_WORKFLOW_COMMANDS = frozenset(
             "tests/integration/test_transactional_preduction.py",
         ),
         ("uv", "run", "--no-sync", "python", "scripts/check_workflow_security.py"),
+        ("uv", "run", "--no-sync", "python", "scripts/verify_requirements_matrix.py"),
         ("uv", "run", "--no-sync", "ruff", "check", "."),
         ("uv", "run", "--no-sync", "ruff", "format", "--check", "."),
         ("uv", "sync", "--locked", "--all-groups", "--no-install-project"),
@@ -94,7 +95,12 @@ REQUIRED_WORKFLOW_DOCUMENT_HASHES = {
     # These are hashes of the parsed YAML documents, not the source text. Comments and
     # formatting may change, but triggers, jobs, steps, controls, and inputs may not be
     # removed, added, or altered without an explicit policy review and hash update.
-    "ci.yml": "e8ff9bb3041e05fc455617d89eb2701073748f2887e94d11ef9ee5bacca657e6",
+    # C10 (defect F14): ci.yml's `unit` job gained one additional step running
+    # `scripts/verify_requirements_matrix.py` (the new matrix referential-integrity
+    # checker) after the existing "Run unit tests" step. This hash was recomputed
+    # deliberately for that one-step addition -- see PR #25 -- and reviewed as part
+    # of that change, not bypassed.
+    "ci.yml": "8788320d56a28f867dbd4b6a7b460b428a2b746bf8b046b652d0836e4959547b",
     "codeql.yml": "ac32728591b1e37d0140c7c29acd80d6793973993f435c48400a3ec9fe984b91",
 }
 

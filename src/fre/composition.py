@@ -681,7 +681,11 @@ class Wave3Engine:
         deployment: DeploymentLimits | None = None,
         context_profile: CompilerProfile = CompilerProfile.STANDARD,
     ) -> Wave3PipelineResult:
-        """The one public, authoritative, replayable Wave 3 front-end path.
+        """The RECOMMENDED, replayable Wave 3 front-end path -- not the ONLY
+        callable path (see the module docstring's C09/PR #24 finding F
+        remediation: every individual step method and the underlying
+        `wave3.components.<module>` collaborators remain independently
+        public and callable on their own).
 
         Sequences M01 -> M02 -> M03 -> M04 -> M12 through the resumable steps
         above. A run that has already completed some prefix of these steps

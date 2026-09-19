@@ -584,18 +584,28 @@ def test_coordinator_contradiction_and_unknown_blocker_propagation(tmp_path: Pat
 def test_coordinator_m03_contradiction_atomicity_stop_wiring_and_blocker_resolution(
     tmp_path: Path,
 ) -> None:
-    """Independent-review remediation (PR #24 finding G.2): restores coverage
-    dropped from the pre-coordinator `test_m03_contradiction_batch_is_atomic_
-    and_replayable`, adapted to drive through the coordinator instead of
-    hand-wiring modules: a real `CONTRADICTS`-relation contradiction
-    (produced via a genuine M03 semantic proposal, not a bare UNKNOWN),
-    `Wave3Engine.evaluate_stop` (the coordinator's own M13 wiring, deriving
-    `blocker_required`/`blocker_resolvable`/`epistemic_trigger_refs` from the
-    run's real `problem_blockers`) recomputing a CONTINUE decision against
-    that real blocker, and a subsequent blocker-resolution M03 batch (built
-    through the SAME composed `wave3.components.formaliser` the coordinator
-    itself uses, not a disconnected `ProblemFormaliser()`) that genuinely
-    clears `problem_blockers`/`problem_contradictions`."""
+    """Independent-review remediation (PR #24 finding G.2, and PR #25 finding
+    G): restores coverage dropped from the pre-coordinator
+    `test_m03_contradiction_batch_is_atomic_and_replayable`, adapted to drive
+    through the coordinator instead of hand-wiring modules: a real
+    `CONTRADICTS`-relation contradiction (produced via a genuine M03 semantic
+    proposal, not a bare UNKNOWN), `Wave3Engine.evaluate_stop` (the
+    coordinator's own M13 wiring, deriving `blocker_required`/
+    `blocker_resolvable`/`epistemic_trigger_refs` from the run's real
+    `problem_blockers`) recomputing a CONTINUE decision against that real
+    blocker, and a subsequent blocker-resolution M03 batch (built through the
+    SAME composed `wave3.components.formaliser` the coordinator itself uses,
+    not a disconnected `ProblemFormaliser()`) that genuinely clears
+    `problem_blockers`/`problem_contradictions`.
+
+    Two distinct atomicity claims are exercised: (1) single-event admission
+    validation -- a lone, self-inconsistent event (a blocker citing a ledger
+    node that was never actually admitted) is rejected on its own; and (2)
+    genuine multi-event batch atomicity -- a batch whose leading events are
+    the same real, individually-valid resolution events, followed by that
+    same self-inconsistent trailing event, is rejected in its entirety, with
+    none of the leading (individually valid) events left persisted. (1) alone
+    does not establish (2); both are asserted below."""
     from fre.domain.problem import ProblemBlocker as _ProblemBlocker
     from fre.domain.semantic import EpistemicOriginLabel
     from fre.prompts.schemas import ProblemFormalisationOutput
@@ -688,6 +698,31 @@ def test_coordinator_m03_contradiction_atomicity_stop_wiring_and_blocker_resolut
         available_artifacts=frozenset(),
         known_ledger_refs=known_ledger_refs,
     )
+
+    # Genuine multi-event batch atomicity (finding G remediation): a batch
+    # whose LEADING events are the same real, individually-valid resolution
+    # events computed above, followed by a TRAILING self-inconsistent event
+    # (the same forged ledger-ref blocker used above), must be rejected in
+    # its entirety. This is the case the single-event check above does not
+    # cover: it proves the reducer does not partially apply a batch just
+    # because its earlier events would, on their own, have been admitted.
+    poisoned_batch = (
+        *(
+            engine.make_event(handle.run_id, payload, module_id="M03")
+            for payload in resolved_events
+        ),
+        engine.make_event(
+            handle.run_id, ProblemBlockerRecorded(blocker=bad_blocker), module_id="M03"
+        ),
+    )
+    assert len(poisoned_batch) >= 2, "the batch must contain more than one event to prove atomicity"
+    with pytest.raises(ValueError):
+        engine.append(handle.run_id, current.version, poisoned_batch)
+    after_poisoned = engine.inspect(handle.run_id)
+    assert after_poisoned.version == current.version
+    assert after_poisoned.problem_blockers == current.problem_blockers
+    assert after_poisoned.problem_contradictions == current.problem_contradictions
+
     stored = tuple(
         engine.make_event(handle.run_id, payload, module_id="M03") for payload in resolved_events
     )

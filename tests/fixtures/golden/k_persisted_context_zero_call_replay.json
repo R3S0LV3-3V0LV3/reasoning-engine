@@ -1,0 +1,108 @@
+{
+  "artifacts": [
+    "1a19db2491815bb7b9a2c7f8b8d179ca62a224ad9bb31410052b3622a24924a9",
+    "9ff26dd3c18ff8ac310a4c73a576210a73b5efa116946198437de6502ddde4f0",
+    "d88d87449c1e18e4c2dae161c53a55c281969c7e686265e549ee8a8c8c96328e"
+  ],
+  "assumptions": [],
+  "blockers": {
+    "all": [],
+    "material": []
+  },
+  "budget_remaining": {
+    "active_concurrent_actions": 0,
+    "iterations": 14
+  },
+  "classification": {
+    "fallback_used": true,
+    "mode": "DETERMINISTIC_FALLBACK",
+    "present": true
+  },
+  "context_packets": 1,
+  "contradictions": 0,
+  "events": [
+    {
+      "event_type": "RunCreated",
+      "module_id": "runtime",
+      "sequence": 1
+    },
+    {
+      "event_type": "TaskPreliminarilyClassified",
+      "module_id": "M01",
+      "sequence": 2
+    },
+    {
+      "event_type": "BudgetAllocated",
+      "module_id": "M01",
+      "sequence": 3
+    },
+    {
+      "event_type": "TaskClassified",
+      "module_id": "M01",
+      "sequence": 4
+    },
+    {
+      "event_type": "BudgetRevised",
+      "module_id": "M01",
+      "sequence": 5
+    },
+    {
+      "event_type": "ProblemFormalised",
+      "module_id": "M03",
+      "sequence": 6
+    },
+    {
+      "event_type": "RepresentationPlanSelected",
+      "module_id": "M04",
+      "sequence": 7
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M04",
+      "sequence": 8
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 9
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 10
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 11
+    },
+    {
+      "event_type": "ContextCompiled",
+      "module_id": "M12",
+      "sequence": 12
+    }
+  ],
+  "final_state_hash": "4dcb09990b14b38a681ae45ac8ee1296b78d27f0e1f3e5bb420f1e836f3ff306",
+  "fixture": "K",
+  "last_packet": {
+    "availability": "AVAILABLE",
+    "packet_hash": "7f3d47e39ee957811b9952e59f258c007ddde14c1a6129f15f166b3a69ee7b35",
+    "profile": "STANDARD"
+  },
+  "model_calls": 0,
+  "problem_spec_present": true,
+  "replay_state_hash": "4dcb09990b14b38a681ae45ac8ee1296b78d27f0e1f3e5bb420f1e836f3ff306",
+  "representation_plan": {
+    "adjudication_record_ref": null,
+    "fallback_used": false,
+    "tie_triggered": false,
+    "views": [
+      "TEXT_TABLE_FALLBACK"
+    ]
+  },
+  "run_id": "00000000-0000-0000-0000-000000000001",
+  "stop_decisions": [],
+  "terminal_context_packet_hash": null,
+  "unknowns": [],
+  "version": 12
+}
