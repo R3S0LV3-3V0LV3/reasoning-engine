@@ -250,6 +250,12 @@ class SemanticModelRuntime:
         # replayed, or constructed by a caller who bypassed the registry lookup
         # above, and against the registry's own integrity check having since
         # started failing (`OutputSchemaRegistry.get` re-validates on every call).
+        # This is a genuine freshness requirement, not belt-and-suspenders
+        # duplication (EU-01, C04 cleanup, item #1) -- it is intentionally kept
+        # as a second call rather than reusing the `schema` captured above.
+        # `OutputSchemaRegistry.get()`'s own hash recomputation is now
+        # memoized per model class, so this re-check is cheap even though it
+        # runs on every invocation.
         current_definition, _ = self.schemas.get(
             request.output_schema_id, request.output_schema_version
         )

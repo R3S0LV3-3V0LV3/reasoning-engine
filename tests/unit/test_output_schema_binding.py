@@ -221,6 +221,53 @@ def test_registry_get_detects_a_post_registration_hash_mismatch() -> None:
 
 
 @pytest.mark.unit
+def test_canonical_schema_hash_is_memoized_per_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EU-01 (C04 cleanup, item #1): `canonical_schema_hash` must not recompute
+    the hash from scratch for the same model on every `register()`/`get()`
+    call -- it is memoized per model class, so the underlying hash function
+    runs at most once per model."""
+    import fre.prompts.schemas as schemas_module
+
+    class Model(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        value: int
+
+    call_count = 0
+    real_sha256 = schemas_module.hashlib.sha256
+
+    def spy_sha256(data: bytes):  # type: ignore[no-untyped-def]
+        nonlocal call_count
+        call_count += 1
+        return real_sha256(data)
+
+    monkeypatch.setattr(schemas_module.hashlib, "sha256", spy_sha256)
+
+    registry_a = OutputSchemaRegistry()
+    registry_b = OutputSchemaRegistry()
+    registry_a.register("memo.schema.a", "1.0", Model, "M99", "op")
+    assert call_count == 1
+
+    # A second `register()` for the *same model class* (via a different
+    # registry/schema id, to avoid the conflicting-registration guard) must
+    # reuse the cached hash rather than recomputing it.
+    registry_b.register("memo.schema.b", "1.0", Model, "M99", "op")
+    assert call_count == 1
+
+    hash_a = registry_a.get("memo.schema.a", "1.0")[0].schema_hash
+    hash_b = registry_b.get("memo.schema.b", "1.0")[0].schema_hash
+    assert hash_a == hash_b
+    assert call_count == 1
+
+    # Repeated `get()` calls (the registry's own integrity re-check) also
+    # reuse the cached value rather than recomputing.
+    registry_a.get("memo.schema.a", "1.0")
+    registry_a.get("memo.schema.a", "1.0")
+    assert call_count == 1
+
+
+@pytest.mark.unit
 def test_registration_rejects_a_schema_exceeding_the_nesting_depth_limit() -> None:
     from pydantic import create_model
 

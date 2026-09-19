@@ -1,6 +1,7 @@
 """Strict structured-output schemas and deterministic registry."""
 
 import hashlib
+from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,8 +52,23 @@ def canonical_schema_bytes(model: type[BaseModel]) -> bytes:
     return canonical_json(model.model_json_schema())
 
 
+@lru_cache(maxsize=None)
 def canonical_schema_hash(model: type[BaseModel]) -> str:
-    """Hash of `canonical_schema_bytes` (== `canonical_hash(model.model_json_schema())`)."""
+    """Hash of `canonical_schema_bytes` (== `canonical_hash(model.model_json_schema())`).
+
+    Memoized per model class (EU-01, C04 cleanup, item #1): a registered
+    output-schema model's JSON-Schema shape is fixed once the class is
+    defined, so re-deriving `model_json_schema()` and re-hashing it on every
+    `OutputSchemaRegistry.get()` call was pure, deterministic, wasted work.
+    Caching by `model` (a `type` object, hashable and stable for the
+    lifetime of the process) makes repeated lookups O(1) after the first
+    call without changing the returned value -- this is a pure caching
+    change, not a hash-algorithm change; output is byte-identical to the
+    uncached computation for every input. `OutputSchemaRegistry.get()` still
+    performs its integrity comparison (`canonical_schema_hash(model) !=
+    definition.schema_hash`) on every call -- only the underlying
+    computation is now cheap, not the check itself.
+    """
     return hashlib.sha256(canonical_schema_bytes(model)).hexdigest()
 
 
