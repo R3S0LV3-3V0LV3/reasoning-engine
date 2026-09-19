@@ -1471,6 +1471,28 @@ class RunReducer:
             # disagreement -- a forged claim, or bytes that no longer exist --
             # is rejected here, before persistence.
             #
+            # EU-25 (informational, not a bug): this is 1 of 3 intentional
+            # hash computations in the write -> apply pipeline for a bound v2
+            # representation artifact: (1) `RepresentationSelector.build_bound`
+            # computes `content_hash` from the content it is about to write,
+            # (2) the artifact store computes its own hash-on-write (the
+            # `stored_ref.sha256` check in `build_bound`), and (3) this is the
+            # third, independent recompute-and-compare, done here from bytes
+            # re-read back out of the store. Each is defense against a
+            # different actor being wrong or malicious -- the caller
+            # (`build_bound`'s own check), the store (its hash-on-write), and
+            # a forged/mismatched claim reaching this reducer directly. That
+            # triple computation is deliberate, load-bearing, fail-closed
+            # security, not redundant work to be trimmed: removing any one of
+            # the three reopens the forged-content-hash exploit this check
+            # closes (see `test_reject_forged_content_hash_trusting_computed_
+            # bytes_instead` and `test_finding_i_fails_closed_without_
+            # artifact_reader_unless_trust_flag_set`). For very large
+            # artifacts this is a real, measurable perf cost; if that ever
+            # becomes a problem in practice, the fix is streaming/incremental
+            # hashing (the same hash, computed more cheaply), never removing
+            # one of the three hash steps.
+            #
             # Finding I: without an `artifact_reader`, this verification
             # cannot run at all -- the pre-remediation code silently skipped
             # it in that case, accepting any caller-asserted content_hash/

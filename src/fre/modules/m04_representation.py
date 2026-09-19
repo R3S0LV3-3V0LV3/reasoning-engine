@@ -757,6 +757,15 @@ class RepresentationSelector:
         actual = view.kind if available else RepresentationKind.TEXT_TABLE_FALLBACK
         content = _BUILDERS[actual](problem)
         content_bytes = canonical_json(content)
+        # EU-25 (informational, not a bug): this is the first of 3 intentional
+        # hash computations in the write -> apply pipeline for a bound v2
+        # representation artifact -- see `RunReducer.apply`'s
+        # `RepresentationArtifactRegisteredV2` branch ("F10/Objective 4
+        # decisive check") for the other two (the artifact store's
+        # hash-on-write, and the reducer's own independent recompute-and-
+        # compare from bytes re-read out of the store). The three together
+        # are deliberate, load-bearing defense against a forged-content-hash
+        # attack; removing any one of them reopens that exploit.
         content_hash = canonical_hash(content)
         stored_ref = artifact_writer(content_bytes)
         if stored_ref.sha256 != content_hash:
