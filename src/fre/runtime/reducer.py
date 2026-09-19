@@ -112,6 +112,14 @@ class RunState(FrozenModel):
     terminal_context_disposition: str | None = None
     model_calls: tuple[SemanticModelCallRecordV2 | SemanticModelCallRecord, ...] = ()
     task_signature: TaskSignature | None = None
+    # C05 remediation (finding #14, documentation-only): write-only by
+    # design -- audit/forensic record of the bootstrap-budget-sizing
+    # signature only. Never read back by production code (the bootstrap
+    # budget calculation uses the local `bootstrap_signature` variable in
+    # `TaskClassifier.canonical_events` directly). See
+    # `TaskPreliminarilyClassified`'s docstring (runtime/events.py) for the
+    # full rationale, including why removal is out of scope here (all 10
+    # golden fixtures carry this field).
     preliminary_task_signature: TaskSignature | None = None
     classification_record: ClassificationRecord | None = None
     classification_diagnostics: tuple[str, ...] = ()
