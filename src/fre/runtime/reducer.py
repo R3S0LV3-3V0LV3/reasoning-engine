@@ -1,8 +1,8 @@
 """Pure reducer protocol and foundational run reducer."""
 
 import hashlib
-from collections.abc import Callable, Mapping
-from typing import Protocol, TypeVar
+from collections.abc import Callable, Mapping, Set as AbstractSet
+from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -346,6 +346,76 @@ def _validate_m03_ledger_node_provenance(
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
+def _build_compilation_record(
+    packet: ContextPacket,
+    *,
+    renderer_version: str,
+    json_sha256: str | None,
+    markdown_sha256: str | None,
+) -> ContextCompilationRecord:
+    """Shared `ContextCompilationRecord` construction for both the v1
+    `ContextCompiled` and v2 `ContextCompiledV2` reducer branches (C08
+    remediation, EU-29): the two branches build field-for-field identical
+    records from a `ContextPacket`, differing only in whether the artifact
+    sha256 values are already known non-Optional (v2) or must be derived via
+    an `if ... else None` ternary from an Optional artifact payload (v1).
+    This helper stays payload-shape-agnostic by accepting the already-
+    resolved (possibly-None) sha256 values rather than the raw payload
+    objects -- each call site is responsible for its own ternary/resolution.
+    """
+    return ContextCompilationRecord(
+        packet_hash=packet.packet_hash,
+        profile=packet.profile,
+        compiler_version=packet.compiler_version,
+        compression_policy_version=packet.compression_policy_version,
+        applied_rule_ids=packet.applied_rule_ids,
+        renderer_version=renderer_version,
+        canonical_byte_size=len(canonical_json(packet)),
+        json_artifact_sha256=json_sha256,
+        markdown_artifact_sha256=markdown_sha256,
+    )
+
+
+def _verify_optional_ref(declared: str | None, real: object | None, message: str) -> None:
+    """Shared "declared ref must match a canonical hash of the real,
+    already-applied value" check (C08 remediation, EU-30). Collapses the
+    copy-paste-with-variation `task_signature_ref`/`budget_plan_ref`/
+    `budget_policy_hash`/`representation_plan_ref` checks in the
+    `ContextCompiledV2` reducer branch, all of which share the same shape:
+    a declared ref that, when present, must correspond to a real value that
+    is both present and whose canonical hash matches. `real` is passed
+    pre-hashed (or otherwise directly comparable) by each call site so this
+    helper stays agnostic to what "canonical_hash(real)" means for a given
+    field; see call sites for the exact comparison performed.
+    """
+    if declared is not None and (real is None or declared != real):
+        raise ValueError(message)
+
+
+def _verify_ref_set_matches(
+    declared: AbstractSet[Any],
+    real: AbstractSet[Any],
+    *,
+    dangling_message: str,
+    omission_message: str,
+) -> None:
+    """Shared bidirectional set-difference check (C08 remediation, EU-31):
+    every declared ref must resolve to a real, already-applied entity (no
+    dangling references), and every real, already-applied entity must be
+    declared (no silent omissions understating real run state). Collapses
+    the repeated `blocker_refs`/`representation_artifact_refs` checks in the
+    `ContextCompiledV2` reducer branch. Each call site supplies its own
+    existing error message text verbatim for both directions (the two call
+    sites' wording differs in more than a single substitutable entity name,
+    e.g. article choice and the applied-collection's name), so messages are
+    passed through rather than reconstructed from a shared template.
+    """
+    if declared - real:
+        raise ValueError(dangling_message)
+    if real - declared:
+        raise ValueError(omission_message)
+
+
 class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
@@ -562,18 +632,11 @@ class RunReducer:
             changes["context_packets"] = (*state.context_packets, payload.packet)
             changes["context_compilations"] = (
                 *state.context_compilations,
-                ContextCompilationRecord(
-                    packet_hash=payload.packet.packet_hash,
-                    profile=payload.packet.profile,
-                    compiler_version=payload.packet.compiler_version,
-                    compression_policy_version=payload.packet.compression_policy_version,
-                    applied_rule_ids=payload.packet.applied_rule_ids,
+                _build_compilation_record(
+                    payload.packet,
                     renderer_version=payload.renderer_version,
-                    canonical_byte_size=len(canonical_json(payload.packet)),
-                    json_artifact_sha256=payload.json_artifact.sha256
-                    if payload.json_artifact
-                    else None,
-                    markdown_artifact_sha256=payload.markdown_artifact.sha256
+                    json_sha256=payload.json_artifact.sha256 if payload.json_artifact else None,
+                    markdown_sha256=payload.markdown_artifact.sha256
                     if payload.markdown_artifact
                     else None,
                 ),
@@ -619,50 +682,45 @@ class RunReducer:
                 raise ValueError(
                     "wave3_context problem_spec_ref does not match the run's current ProblemSpec"
                 )
-            if wave3.task_signature_ref is not None and (
-                state.task_signature is None
-                or wave3.task_signature_ref != canonical_hash(state.task_signature)
-            ):
-                raise ValueError(
-                    "wave3_context task_signature_ref does not match the run's current "
-                    "TaskSignature"
-                )
-            if wave3.budget_plan_ref is not None and (
-                state.budget.plan is None
-                or wave3.budget_plan_ref != canonical_hash(state.budget.plan)
-            ):
-                raise ValueError(
-                    "wave3_context budget_plan_ref does not match the run's current BudgetPlan"
-                )
-            if (
-                wave3.budget_policy_hash is not None
-                and wave3.budget_policy_hash != state.budget.policy_hash
-            ):
-                raise ValueError(
-                    "wave3_context budget_policy_hash does not match the run's current budget "
-                    "policy_hash"
-                )
+            _verify_optional_ref(
+                wave3.task_signature_ref,
+                canonical_hash(state.task_signature) if state.task_signature is not None else None,
+                "wave3_context task_signature_ref does not match the run's current "
+                "TaskSignature",
+            )
+            _verify_optional_ref(
+                wave3.budget_plan_ref,
+                canonical_hash(state.budget.plan) if state.budget.plan is not None else None,
+                "wave3_context budget_plan_ref does not match the run's current BudgetPlan",
+            )
+            _verify_optional_ref(
+                wave3.budget_policy_hash,
+                state.budget.policy_hash,
+                "wave3_context budget_policy_hash does not match the run's current budget "
+                "policy_hash",
+            )
             # Every declared blocker ref must resolve to an actually-applied
             # ProblemBlocker -- a ref naming a blocker_id this run never
             # recorded is a dangling reference and is rejected outright (the
             # C04-C07-pattern check the plan calls out explicitly).
             real_blocker_ids = {blocker.blocker_id for blocker in state.problem_blockers}
             declared_blocker_ids = set(wave3.blocker_refs)
-            if declared_blocker_ids - real_blocker_ids:
-                raise ValueError(
+            # Finding C (C08 remediation): completeness is required in both
+            # directions -- every DECLARED entry must be real (no dangling
+            # ref), and every REAL, currently-applied blocker must be
+            # declared (a packet could otherwise silently omit one,
+            # understating what this run actually knows).
+            _verify_ref_set_matches(
+                declared_blocker_ids,
+                real_blocker_ids,
+                dangling_message=(
                     "wave3_context blocker_refs references a blocker_id absent from the run's "
                     "applied problem_blockers"
-                )
-            # Finding C (C08 remediation): the check above only proves every
-            # DECLARED entry is real -- it never proved every REAL entry was
-            # declared. A packet could silently omit a real, currently-applied
-            # blocker from `blocker_refs` (understating what this run actually
-            # knows) and the check above would never notice. Completeness is
-            # required in both directions.
-            if real_blocker_ids - declared_blocker_ids:
-                raise ValueError(
+                ),
+                omission_message=(
                     "wave3_context blocker_refs omits a real problem_blocker applied to this run"
-                )
+                ),
+            )
             # Finding D (C08 remediation): `prompt_version`/`model_identity`
             # are caller-supplied claims about which semantic model call
             # produced/influenced this compilation. Neither field is otherwise
@@ -703,34 +761,36 @@ class RunReducer:
                 raise ValueError(
                     "wave3_context ledger_version is ahead of the run state actually reached"
                 )
-            if wave3.representation_plan_ref is not None and (
-                state.representation_plan is None
-                or wave3.representation_plan_ref != canonical_hash(state.representation_plan)
-            ):
-                raise ValueError(
-                    "wave3_context representation_plan_ref does not match the run's current "
-                    "representation plan"
-                )
+            _verify_optional_ref(
+                wave3.representation_plan_ref,
+                canonical_hash(state.representation_plan)
+                if state.representation_plan is not None
+                else None,
+                "wave3_context representation_plan_ref does not match the run's current "
+                "representation plan",
+            )
             real_artifact_hashes = {
                 canonical_hash(artifact) for artifact in state.representation_artifacts
             }
             declared_artifact_refs = set(wave3.representation_artifact_refs)
-            if declared_artifact_refs - real_artifact_hashes:
-                raise ValueError(
-                    "wave3_context representation_artifact_refs references an artifact absent "
-                    "from the run's applied representation_artifacts"
-                )
             # Finding C (C08 remediation): completeness in the other direction
             # too -- every real, currently-applied v1 `representation_artifacts`
             # entry (the only entries `Wave3SemanticContext.representation_
             # artifact_refs` can ever represent -- it has no v2-specific ref
             # field) must be declared; a packet omitting one is understating
             # real, already-applied state.
-            if real_artifact_hashes - declared_artifact_refs:
-                raise ValueError(
+            _verify_ref_set_matches(
+                declared_artifact_refs,
+                real_artifact_hashes,
+                dangling_message=(
+                    "wave3_context representation_artifact_refs references an artifact absent "
+                    "from the run's applied representation_artifacts"
+                ),
+                omission_message=(
                     "wave3_context representation_artifact_refs omits a real "
                     "representation_artifact applied to this run"
-                )
+                ),
+            )
             # Sibling enumeration (the C06 lesson applied here): every UNKNOWN
             # surfaced into the permitted view must match, field-for-field, an
             # UNKNOWN the current ProblemSpec actually declares -- not only
@@ -840,16 +900,11 @@ class RunReducer:
             changes["context_packets"] = (*state.context_packets, packet)
             changes["context_compilations"] = (
                 *state.context_compilations,
-                ContextCompilationRecord(
-                    packet_hash=packet.packet_hash,
-                    profile=packet.profile,
-                    compiler_version=packet.compiler_version,
-                    compression_policy_version=packet.compression_policy_version,
-                    applied_rule_ids=packet.applied_rule_ids,
+                _build_compilation_record(
+                    packet,
                     renderer_version=payload.renderer_version,
-                    canonical_byte_size=len(canonical_json(packet)),
-                    json_artifact_sha256=payload.json_artifact.sha256,
-                    markdown_artifact_sha256=payload.markdown_artifact.sha256,
+                    json_sha256=payload.json_artifact.sha256,
+                    markdown_sha256=payload.markdown_artifact.sha256,
                 ),
             )
         elif isinstance(payload, StopDecisionRecordedV2):
