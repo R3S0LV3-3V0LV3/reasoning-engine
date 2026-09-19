@@ -200,25 +200,47 @@ class ClassificationDimensionProposal(StrictOutput):
     rationale: str
 
 
-class TaskTypeProposal(StrictOutput):
-    estimate: TaskType
+class _CategoricalProposal[EstimateT](StrictOutput):
+    """Shared shape for `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal`.
+
+    C05 remediation (finding #11): the three categorical proposal classes
+    were byte-identical copy-pasted subclasses of `StrictOutput`, differing
+    only in `estimate`'s type. A plain (non-generic) shared base was tried
+    first and rejected: adding `estimate` only in each subclass reorders
+    Pydantic's generated `required` list (base-class fields first, then the
+    subclass's own new field), which changes `canonical_schema_hash`'s output
+    even though `properties` is unaffected (`canonical_json` sorts object
+    keys, but preserves list/array order, and `required` is a list) -- a
+    regression the plan's hard "byte-identical hash" requirement forbids.
+    This generic base instead declares `estimate` *first*, alongside
+    `confidence`/`anchors`/`rationale`, so each subclass
+    (`class TaskTypeProposal(_CategoricalProposal[TaskType]): pass`) adds no
+    new fields at all -- field declaration order, and therefore the generated
+    `required` list order, is identical to the original flat classes. Each
+    subclass fully binds the type parameter with a normal, non-generic class
+    name, so `model_json_schema()` emits one concrete `$defs` entry titled
+    after the subclass itself (e.g. `"TaskTypeProposal"`), not a
+    generic-instantiation-mangled name. Verified byte-for-byte identical to
+    the pre-change schema by an explicit before/after parity test -- see
+    `tests/unit/test_output_schema_binding.py`.
+    """
+
+    estimate: EstimateT
     confidence: float = Field(ge=0, le=1)
     anchors: tuple[SourceAnchor, ...] = ()
     rationale: str
 
 
-class SearchSpaceProposal(StrictOutput):
-    estimate: SearchSpaceClass
-    confidence: float = Field(ge=0, le=1)
-    anchors: tuple[SourceAnchor, ...] = ()
-    rationale: str
+class TaskTypeProposal(_CategoricalProposal[TaskType]):
+    pass
 
 
-class HorizonProposal(StrictOutput):
-    estimate: HorizonClass
-    confidence: float = Field(ge=0, le=1)
-    anchors: tuple[SourceAnchor, ...] = ()
-    rationale: str
+class SearchSpaceProposal(_CategoricalProposal[SearchSpaceClass]):
+    pass
+
+
+class HorizonProposal(_CategoricalProposal[HorizonClass]):
+    pass
 
 
 class ClassificationOutput(StrictOutput):
