@@ -170,6 +170,30 @@ def _explicit_ordinals(envelope: TaskEnvelope) -> dict[str, Ordinal4]:
     return explicit
 
 
+def _require_model_rationale_and_support(
+    name: str, rationale: str | None, anchors: tuple[SourceAnchor, ...]
+) -> None:
+    """Guard shared by `dimension()`/`categorical_dimension()` (C05 remediation, finding #12).
+
+    A material, MODEL-basis classification dimension must carry both a
+    rationale and at least one resolvable supporting anchor. The two call
+    sites' *gating* condition (when this guard applies at all) genuinely
+    differs -- `dimension()` additionally requires `not is_explicit and
+    proposed is not None`, `categorical_dimension()` requires only
+    `basis == "MODEL"` -- but the guard body itself (these two checks, with
+    this exact error message text) was byte-identical duplication. Each call
+    site still evaluates its own gating condition before calling this helper.
+    """
+    if not rationale or not rationale.strip():
+        raise ClassificationBlocked(
+            f"{name}: material classification dimension is missing a rationale"
+        )
+    if not anchors:
+        raise ClassificationBlocked(
+            f"{name}: material classification dimension has no resolvable support"
+        )
+
+
 def _validate_ordinal_bound(
     axis: str, estimate: Ordinal4, upper: Ordinal4, *, ascending: bool
 ) -> None:
@@ -284,14 +308,7 @@ class TaskClassifier:
             estimate = explicit.get(name, proposed or policy.fallback_ordinal)
             basis = "EXPLICIT" if is_explicit else "MODEL" if proposal else "POLICY_FALLBACK"
             if basis == "MODEL" and not is_explicit and proposed is not None:
-                if not rationale or not rationale.strip():
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension is missing a rationale"
-                    )
-                if not proposed_anchors:
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension has no resolvable support"
-                    )
+                _require_model_rationale_and_support(name, rationale, proposed_anchors)
                 if upper is not None:
                     _validate_ordinal_bound(
                         name,
@@ -358,14 +375,7 @@ class TaskClassifier:
             rationale = proposal_obj.rationale if proposal_obj else None
             basis = "MODEL" if proposal_obj else "POLICY_FALLBACK"
             if basis == "MODEL":
-                if not rationale or not rationale.strip():
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension is missing a rationale"
-                    )
-                if not anchors:
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension has no resolvable support"
-                    )
+                _require_model_rationale_and_support(name, rationale, anchors)
             effective = estimate
             override_basis = None
             if (
