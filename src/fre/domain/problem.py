@@ -86,7 +86,16 @@ class AssumptionSpec(FrozenModel):
     decision_relevance: float | None = None
     # C06 remediation (F04): the scope an assumption is claimed to hold over
     # (e.g. a JSON-pointer-shaped path or a free-text qualifier); previously
-    # dropped entirely.
+    # dropped entirely. Populated from the proposal's `attrs.get("scope")` at
+    # formalisation time (`m03_formaliser.py`'s `ASSUMPTION` branch); it has
+    # no current downstream consumer anywhere in `src/fre/` (confirmed by
+    # C06 cleanup, EU-22 -- unlike `UnknownSpec.rationale`/`.impact`, which
+    # are now genuinely read per C08 remediation). It is intentionally
+    # write-only/forward-compatible, not dead code: a future M04/M12/M09
+    # consumer could use it to scope an assumption's applicability, and
+    # removing it now would be premature given `AssumptionSpec` is a
+    # persisted/wire type. If a real consumer is ever defined, wiring it up
+    # is a feature unit, not a cleanup item.
     scope: str | None = None
     provenance: EpistemicItemProvenance
 
