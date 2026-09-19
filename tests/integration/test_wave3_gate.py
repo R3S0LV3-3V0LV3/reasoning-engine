@@ -19,6 +19,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -41,7 +42,9 @@ from fre.domain.semantic import (
 from fre.domain.stop import AcceptanceStatus, StopDisposition
 from fre.domain.task import TaskEnvelope
 from fre.engine import FrontierReasoningEngine
+from fre.prompts.schemas import ClassificationOutput
 from fre.runtime.events import RepresentationArtifactCompiledV2
+from fre.semantic_runtime import SemanticExecution
 
 
 class QueueModel:
@@ -288,7 +291,19 @@ def test_coordinator_zero_call_fallback_is_first_class(tmp_path: Path) -> None:
 def test_coordinator_m04_tie_band_adjudication(tmp_path: Path) -> None:
     """A wide `representation_tie_band` forces a genuine tie; a real M04
     adjudication semantic call resolves it, and the persisted plan carries a
-    verified `adjudication_record_ref` bound to that real call."""
+    verified `adjudication_record_ref` bound to that real call.
+
+    This is also the decisive fail-before/pass-after test for PR #24 finding
+    H: `select_representation` now delegates to `RepresentationSelector.
+    select_with_adjudication_bound` instead of duplicating its logic inline,
+    and that shared helper used to bind its final plan to the
+    `source_snapshot_version` captured BEFORE the real adjudication call's
+    `await` -- stale the moment that call's own budget-reservation/
+    settlement events advanced the run's version. With that bug present,
+    this exact test fails with "representation plan source_snapshot_version
+    drifted before persistence" (verified by temporarily reverting the fix);
+    with the fix (re-deriving the plan from a fresh `runtime.engine.
+    inspect(run_id)` after the call lands), it passes."""
     engine = make_engine(tmp_path)
     config = Wave3Config(representation_tie_band=1.0, model_adjudication_enabled=True)
     anchor: JsonValue = {
@@ -302,14 +317,19 @@ def test_coordinator_m04_tie_band_adjudication(tmp_path: Path) -> None:
     # scores TYPED_CONSTRAINT_SET -- both REAL, non-fallback kinds, so the
     # forced tie (via `representation_tie_band=1.0`) is between two genuine
     # candidates. Deliberately avoids a tie that includes
-    # TEXT_TABLE_FALLBACK: `RepresentationSelector.select_bound` can
+    # TEXT_TABLE_FALLBACK here so this test can isolate the coordinator's own
+    # adjudication wiring: `RepresentationSelector.select_bound` can
     # legitimately set `fallback_used=True` while `tie_triggered=True`
-    # (TEXT_TABLE_FALLBACK selected as the second, tied candidate), but
-    # `RunReducer.apply`'s independent tie recomputation currently treats
-    # `fallback_used=True` as always implying "no real tie" -- a latent,
-    # pre-existing C07 gap this integration surfaced (see the PR body),
-    # out of scope for this coordinator phase to fix. This test exercises the
-    # coordinator's own adjudication wiring without tripping that gap.
+    # (TEXT_TABLE_FALLBACK selected as the second, tied candidate) -- this
+    # WAS a latent, independently-reviewed gap in `RunReducer.apply`'s tie
+    # recomputation (PR #24 finding A: it wrongly assumed
+    # `fallback_used=True` always implies "no real tie" and rejected such an
+    # otherwise legitimate plan). That coupling has since been removed (see
+    # `fre.runtime.reducer`'s `RepresentationPlanSelectedV2` branch) and is
+    # covered by its own decisive tests in `tests/unit/test_c09_remediation.
+    # py` (including a coordinator-level `execute_front_end` exercise of
+    # exactly this coincidence) -- this test is unaffected either way and is
+    # left focused on the adjudication wiring alone.
     tie_items: list[dict[str, JsonValue]] = [
         {
             "id": f"obj-{i}",
@@ -459,6 +479,71 @@ def test_coordinator_schema_invalid_path_falls_back_after_exhausted_repair(
 
 
 @pytest.mark.integration
+def test_coordinator_schema_repair_success_path_reuses_identical_repaired_proposal(
+    tmp_path: Path,
+) -> None:
+    """Independent-review remediation (PR #24 finding G.1): restores test
+    coverage the `test_wave3_gate.py` rewrite dropped for the SUCCESSFUL
+    schema-repair-then-use path (as opposed to the exhausted-repair fallback
+    path already covered above): an invalid structured response followed by
+    a valid repair response must be repaired, consumed for real into
+    classification (not silently discarded in favour of the deterministic
+    fallback), and a subsequent identical request must reuse that exact
+    repaired proposal -- not merely report `reused=True`."""
+    engine = make_engine(tmp_path)
+    model = QueueModel([invalid_response(), classification_response()])
+    wave3 = compose_wave3(engine, model, Wave3Config())
+    handle = wave3.create_run()
+    task = TaskEnvelope(
+        task_id=UUID(int=900),
+        text="Choose a safe option.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(allow_network=True, allow_external_writes=True),
+    )
+
+    signature = asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+    assert signature is not None
+    assert len(model.calls) == 2
+    state = engine.inspect(handle.run_id)
+    assert state.classification_record is not None
+    # The repaired proposal was genuinely consumed: classification is HYBRID
+    # (a real proposal was used), never the deterministic fallback.
+    assert state.classification_record.mode == "HYBRID"
+    assert state.classification_record.fallback_used is False
+    repaired_calls = [
+        call
+        for call in state.model_calls
+        if call.module_id == "M01" and call.repair_parent_key is not None
+    ]
+    assert len(repaired_calls) == 1
+    assert repaired_calls[0].status == StructuredModelStatus.SUCCESS
+
+    # A subsequent, identical request (same canonical input/identity) must
+    # resolve to the exact SAME repaired proposal via `_reuse` -- not just a
+    # `reused=True` flag with a possibly-different value.
+    async def repeat_request() -> SemanticExecution:
+        return await wave3.components.semantic_runtime.execute(
+            run_id=handle.run_id,
+            module_id="M01",
+            module_version="1.0",
+            operation="classify",
+            prompt_id="m01.classify",
+            prompt_version="1.0",
+            canonical_input=task.model_dump(mode="json"),
+        )
+
+    second = asyncio.run(repeat_request())
+    assert second.reused is True
+    assert second.repaired is True
+    assert second.proposal is not None
+    assert repaired_calls[0].proposal_artifact is not None
+    expected_bytes = engine.artifacts.get(repaired_calls[0].proposal_artifact.sha256)
+    expected_proposal = ClassificationOutput.model_validate_json(expected_bytes)
+    assert second.proposal == expected_proposal
+    assert len(model.calls) == 2  # no additional provider invocation
+
+
+@pytest.mark.integration
 def test_coordinator_contradiction_and_unknown_blocker_propagation(tmp_path: Path) -> None:
     """A material UNRESOLVED UNKNOWN becomes a real M09 blocker; the
     coordinator's result reports it, and M12 availability is independently
@@ -493,6 +578,125 @@ def test_coordinator_contradiction_and_unknown_blocker_propagation(tmp_path: Pat
     packet = state.context_packets[-1]
     assert packet.wave3_context is not None
     assert packet.wave3_context.availability is Wave3ContextAvailability.PARTIAL_BLOCKED
+
+
+@pytest.mark.integration
+def test_coordinator_m03_contradiction_atomicity_stop_wiring_and_blocker_resolution(
+    tmp_path: Path,
+) -> None:
+    """Independent-review remediation (PR #24 finding G.2): restores coverage
+    dropped from the pre-coordinator `test_m03_contradiction_batch_is_atomic_
+    and_replayable`, adapted to drive through the coordinator instead of
+    hand-wiring modules: a real `CONTRADICTS`-relation contradiction
+    (produced via a genuine M03 semantic proposal, not a bare UNKNOWN),
+    `Wave3Engine.evaluate_stop` (the coordinator's own M13 wiring, deriving
+    `blocker_required`/`blocker_resolvable`/`epistemic_trigger_refs` from the
+    run's real `problem_blockers`) recomputing a CONTINUE decision against
+    that real blocker, and a subsequent blocker-resolution M03 batch (built
+    through the SAME composed `wave3.components.formaliser` the coordinator
+    itself uses, not a disconnected `ProblemFormaliser()`) that genuinely
+    clears `problem_blockers`/`problem_contradictions`."""
+    from fre.domain.problem import ProblemBlocker as _ProblemBlocker
+    from fre.domain.semantic import EpistemicOriginLabel
+    from fre.prompts.schemas import ProblemFormalisationOutput
+
+    engine = make_engine(tmp_path)
+    contradiction_items: list[dict[str, JsonValue]] = [
+        {"id": "left", "kind": "UNKNOWN", "description": "A", "origin": "CONTRADICTED"},
+        {"id": "right", "kind": "UNKNOWN", "description": "B", "origin": "CONTRADICTED"},
+        {
+            "id": "conflict",
+            "kind": "RELATION",
+            "description": "A conflicts with B",
+            "origin": "CONTRADICTED",
+            "attributes": {
+                "source_id": "left",
+                "target_id": "right",
+                "relation_kind": "CONTRADICTS",
+            },
+        },
+    ]
+    model = QueueModel([classification_response(), formalisation_response(contradiction_items)])
+    wave3 = compose_wave3(engine, model, Wave3Config())
+    handle = wave3.create_run()
+    task = make_task()
+
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+    assert problem is not None
+
+    # Atomicity: the batch that admitted the contradiction/blocker is a
+    # single already-applied append; a hand-forged, self-inconsistent
+    # variant of one of its own events (a blocker citing a ledger node that
+    # was never actually admitted) is independently rejected by the reducer,
+    # proving the real admitted batch was not merely accepted by convention.
+    state = engine.inspect(handle.run_id)
+    assert len(state.problem_contradictions) == 1
+    assert len(state.problem_blockers) == 1
+    blocker = state.problem_blockers[0]
+    assert blocker.ledger_ref in {node.ref for node in state.ledger.nodes}
+    bad_blocker = blocker.model_copy(
+        update={"ledger_ref": blocker.ledger_ref.model_copy(update={"node_id": UUID(int=999_999)})}
+    )
+    from fre.runtime.events import ProblemBlockerRecorded
+
+    with pytest.raises(ValueError):
+        engine.append(
+            handle.run_id,
+            state.version,
+            (
+                engine.make_event(
+                    handle.run_id, ProblemBlockerRecorded(blocker=bad_blocker), module_id="M03"
+                ),
+            ),
+        )
+    assert engine.inspect(handle.run_id).version == state.version
+
+    # M13 wiring: `evaluate_stop` (the coordinator's OWN method, not a
+    # hand-wired `StopController()`) derives its inputs from this run's real
+    # `problem_blockers` and recomputes a CONTINUE decision bound to the
+    # real blocker's ledger ref.
+    decision = wave3.evaluate_stop(handle.run_id, acceptance=AcceptanceStatus.PENDING)
+    assert decision.disposition is StopDisposition.CONTINUE
+    assert decision.ledger_trigger_refs == (blocker.ledger_ref,)
+
+    # Blocker resolution: a second M03 batch (built through the SAME
+    # composed `wave3.components.formaliser`, using the run's current,
+    # already-applied ledger state -- exactly the discipline
+    # `formalise_problem` itself follows) genuinely clears the blocker and
+    # contradiction, not merely appends unrelated events alongside them.
+    resolved_proposal = ProblemFormalisationOutput.model_validate(
+        {
+            "items": (
+                {
+                    "id": "reviewed",
+                    "kind": "ACCEPTANCE_CRITERION",
+                    "description": "resolution is deterministically reviewed",
+                    "origin": EpistemicOriginLabel.UNRESOLVED,
+                    "attributes": {"verification_mode": "DETERMINISTIC", "required": True},
+                },
+            )
+        }
+    )
+    current = engine.inspect(handle.run_id)
+    known_ledger_refs = frozenset((node.node_id, node.revision) for node in current.ledger.nodes)
+    resolved_events = wave3.components.formaliser.canonical_events(
+        task,
+        resolved_proposal,
+        created_at=engine.clock.now(),
+        uuids=engine.uuids,
+        available_artifacts=frozenset(),
+        known_ledger_refs=known_ledger_refs,
+    )
+    stored = tuple(
+        engine.make_event(handle.run_id, payload, module_id="M03") for payload in resolved_events
+    )
+    engine.append(handle.run_id, current.version, stored)
+
+    resolved_state = engine.inspect(handle.run_id)
+    assert resolved_state.problem_blockers == ()
+    assert resolved_state.problem_contradictions == ()
+    assert isinstance(blocker, _ProblemBlocker)  # sanity: blocker was a real typed value
 
 
 @pytest.mark.integration
@@ -584,6 +788,306 @@ def test_coordinator_m13_decision_recomputed_equal_after_unrelated_state(tmp_pat
 
     assert first.disposition == second.disposition == StopDisposition.COMPLETE
     assert first.reason_codes == second.reason_codes
+
+
+@pytest.mark.integration
+def test_compile_context_recompiles_after_representation_selection_lands(
+    tmp_path: Path,
+) -> None:
+    """Independent-review remediation (PR #24 finding B): `compile_context`
+    called BEFORE `select_representation`, then again AFTER, must produce a
+    NEW packet reflecting the representation plan -- not silently reuse the
+    stale, pre-representation packet. Before the fix, the dedup match key
+    only compared `problem_spec_ref`/`ledger_root`/`budget_plan_ref`, none of
+    which `select_representation` touches, so the second call wrongly
+    returned the first (representation-less) packet's hash unchanged."""
+    engine = make_engine(tmp_path)
+    model = QueueModel([classification_response(), formalisation_response([])])
+    wave3 = compose_wave3(engine, model, Wave3Config())
+    handle = wave3.create_run()
+    task = make_task()
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+    asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+
+    first_packet_hash = wave3.compile_context(handle.run_id)
+    state_before = engine.inspect(handle.run_id)
+    first_packet = state_before.context_packets[-1]
+    assert first_packet.packet_hash == first_packet_hash
+    # Sanity: no representation plan yet, so this packet cannot reflect one.
+    assert state_before.representation_plan_v2 is None
+
+    asyncio.run(wave3.select_representation(handle.run_id))
+
+    second_packet_hash = wave3.compile_context(handle.run_id)
+    assert second_packet_hash != first_packet_hash, (
+        "compile_context must not reuse a packet compiled before representation selection landed"
+    )
+    state_after = engine.inspect(handle.run_id)
+    second_packet = state_after.context_packets[-1]
+    assert second_packet.packet_hash == second_packet_hash
+    assert state_after.representation_plan_v2 is not None
+
+    # Idempotency is still intact: a THIRD call with nothing new must reuse
+    # the second (now current) packet, not compile a fourth.
+    third_packet_hash = wave3.compile_context(handle.run_id)
+    assert third_packet_hash == second_packet_hash
+    packets_after_third = engine.inspect(handle.run_id).context_packets
+    assert len(packets_after_third) == len(state_after.context_packets)
+
+
+@pytest.mark.integration
+def test_formalise_problem_uses_fresh_ledger_state_after_the_semantic_await(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Independent-review remediation (PR #24 finding C): `known_ledger_refs`
+    must be rebuilt from a FRESH `self.engine.inspect(run_id)` call taken
+    AFTER the M03 semantic call's `await` completes, never from the `state`
+    captured before it -- a concurrent ledger mutation landing during that
+    await window must be visible. Simulated here by having the fake model
+    provider itself append a `LedgerNodeAdded` event to the SAME run as a
+    side effect of answering the request (modelling some other concurrent
+    writer), then asserting the coordinator's own call into
+    `ProblemFormaliser.canonical_events` receives `known_ledger_refs`
+    including that concurrently-added node -- which is only possible if it
+    was read after, not before, the await."""
+    from datetime import UTC
+    from datetime import datetime as _datetime
+
+    from fre.domain.ledger import EpistemicStatus, LedgerNodeType
+    from fre.modules.m03_formaliser import ProblemFormaliser
+    from fre.modules.m09_ledger import make_node
+    from fre.runtime.events import LedgerNodeAdded
+
+    engine = make_engine(tmp_path)
+    concurrent_node_id = UUID(int=555_555)
+
+    class LedgerMutatingModel:
+        """Answers exactly like `QueueModel`, but appends a real
+        `LedgerNodeAdded` event to the run as a side effect of the FIRST
+        call it answers -- simulating a concurrent writer mutating the
+        ledger while the (real) semantic call this test drives is in
+        flight, before this test's own code regains control."""
+
+        def __init__(self, responses: list[StructuredModelResult]) -> None:
+            self.responses = iter(responses)
+            self.calls: list[str] = []
+            self._mutated = False
+
+        async def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+            self.calls.append(request.idempotency_key)
+            # Gate the mutation to the M03 formalisation request specifically
+            # (identified by its bound output schema) -- classification (M01)
+            # is called first, and it must NOT trigger this, or the "concurrent"
+            # mutation would land before `formalise_problem` even starts,
+            # proving nothing about its post-await re-inspection.
+            if not self._mutated and request.output_schema_id == "m03.problem-formalisation-output":
+                self._mutated = True
+                node = make_node(
+                    node_id=concurrent_node_id,
+                    revision=1,
+                    node_type=LedgerNodeType.FACT,
+                    content={"fact": "concurrently observed"},
+                    status=EpistemicStatus.SUPPORTED,
+                    created_at=_datetime(2026, 1, 1, tzinfo=UTC),
+                    action_id=UUID(int=777_777),
+                    module_id="CONCURRENT_WRITER",
+                )
+                mutation_state = engine.inspect(handle.run_id)
+                engine.append(
+                    handle.run_id,
+                    mutation_state.version,
+                    (
+                        engine.make_event(
+                            handle.run_id,
+                            LedgerNodeAdded(node=node),
+                            module_id="CONCURRENT_WRITER",
+                        ),
+                    ),
+                )
+            return next(self.responses)
+
+    model = LedgerMutatingModel([classification_response(), formalisation_response([])])
+    wave3 = compose_wave3(engine, model, Wave3Config())
+    handle = wave3.create_run()
+    task = make_task()
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+
+    captured_refs: dict[str, frozenset[tuple[UUID, int]] | None] = {"known_ledger_refs": None}
+    original_canonical_events = ProblemFormaliser.canonical_events
+
+    def spying_canonical_events(
+        self: ProblemFormaliser, *args: object, **kwargs: object
+    ) -> tuple[object, ...]:
+        captured_refs["known_ledger_refs"] = cast(
+            "frozenset[tuple[UUID, int]] | None", kwargs.get("known_ledger_refs")
+        )
+        return original_canonical_events(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ProblemFormaliser, "canonical_events", spying_canonical_events)
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+
+    assert problem is not None
+    known_refs = captured_refs["known_ledger_refs"]
+    assert known_refs is not None
+    assert (concurrent_node_id, 1) in known_refs, (
+        "known_ledger_refs must reflect the ledger node the provider concurrently "
+        "added during the semantic call's await window, not a pre-await snapshot"
+    )
+
+
+@pytest.mark.integration
+def test_select_representation_resume_after_crash_never_repeats_the_adjudication_call(
+    tmp_path: Path,
+) -> None:
+    """Independent-review remediation (PR #24 finding E): if a real M04
+    adjudication semantic call succeeds and its budget settlement lands, but
+    the process then crashes before the final `RepresentationPlanSelectedV2`
+    append, resuming `select_representation` on a fresh coordinator instance
+    over the same store must NOT re-issue a duplicate real adjudication
+    call -- `SemanticModelRuntime.execute`'s own identity-keyed `_reuse`
+    mechanism (the same one `classify_task`'s bootstrap/finalize split
+    relies on being safe to resume across) must serve the already-settled
+    call. Simulated by driving the semantic call directly to the point where
+    its own events have landed, then handing the coordinator a fresh engine
+    instance (module a fresh process re-attachment) to complete the pending
+    `select_representation`."""
+    interrupted_engine = make_engine(tmp_path)
+    config = Wave3Config(representation_tie_band=1.0, model_adjudication_enabled=True)
+    anchor: JsonValue = {
+        "source_kind": "TASK_TEXT",
+        "source_ref": {"object_type": "TaskEnvelope", "object_id": str(UUID(int=900))},
+        "selector": "/text",
+        "char_start": 0,
+        "char_end": len("Choose a safe option."),
+    }
+    tie_items: list[dict[str, JsonValue]] = [
+        {
+            "id": f"obj-{i}",
+            "kind": "OBJECTIVE",
+            "description": f"objective {i}",
+            "origin": "EXPLICIT_INPUT",
+            "anchors": [anchor],
+            "attributes": {"direction": "MIN"},
+        }
+        for i in range(2)
+    ]
+    tie_items.append(
+        {
+            "id": "constraint-1",
+            "kind": "CONSTRAINT",
+            "description": "must stay within budget",
+            "origin": "EXPLICIT_INPUT",
+            "anchors": [anchor],
+            "attributes": {"constraint_kind": "HARD"},
+        }
+    )
+    model = QueueModel([classification_response(), formalisation_response(tie_items)])
+    wave3 = compose_wave3(interrupted_engine, model, config)
+    handle = wave3.create_run()
+    task = TaskEnvelope(
+        task_id=UUID(int=900),
+        text="Choose a safe option.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(allow_external_writes=True),
+    )
+
+    signature = asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=True))
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+    state = interrupted_engine.inspect(handle.run_id)
+    assert state.budget.plan is not None
+
+    from fre.domain.representation_registry import default_registry_v2
+
+    deterministic = wave3.components.representation_selector.select_bound(
+        problem,
+        signature,
+        state.budget.plan,
+        state.version,
+        default_registry_v2(),
+        wave3.components.policy.representation_selection,
+    )
+    candidates = tuple(view for view in deterministic.views if view.builder_available)
+    assert deterministic.tie_triggered
+    assert len(candidates) >= 2
+
+    model.responses = iter(
+        [
+            StructuredModelResult(
+                status=StructuredModelStatus.SUCCESS,
+                adapter_id="fake",
+                model_id="fixture",
+                raw_response=json.dumps(
+                    {"selected_kinds": [candidates[0].kind.value], "explanation": "fixture"}
+                ).encode(),
+                decoded={"selected_kinds": [candidates[0].kind.value], "explanation": "fixture"},
+                usage=SemanticCallUsage(input_tokens=50, output_tokens=20),
+            )
+        ]
+    )
+
+    # Drive the adjudication semantic call directly to completion (its own
+    # BudgetReserved/settlement/ModelCallRecordedV2 events land for real),
+    # WITHOUT ever letting `select_representation` append its own final
+    # `RepresentationPlanSelectedV2` batch -- simulating a crash exactly
+    # between those two points.
+    execution = asyncio.run(
+        wave3.components.semantic_runtime.execute(
+            run_id=handle.run_id,
+            module_id="M04",
+            module_version="1.0",
+            operation="adjudicate",
+            prompt_id="m04.adjudicate",
+            prompt_version="1.0",
+            canonical_input={
+                "problem_spec_hash": deterministic.problem_spec_hash,
+                "candidates": [
+                    {
+                        "kind": view.kind.value,
+                        "compatibility_score": view.compatibility_score,
+                        "score_components": [
+                            item.model_dump(mode="json") for item in view.score_components
+                        ],
+                        "purpose": view.purpose,
+                        "limitations": list(view.limitations),
+                    }
+                    for view in candidates
+                ],
+                "problem_summary": {
+                    "objectives": [item.model_dump(mode="json") for item in problem.objectives],
+                    "constraints": [item.model_dump(mode="json") for item in problem.constraints],
+                    "unknowns": [item.model_dump(mode="json") for item in problem.unknowns],
+                    "relations": [item.model_dump(mode="json") for item in problem.relations],
+                },
+                "view_limit": state.budget.plan.search.max_representation_views,
+            },
+        )
+    )
+    assert execution.record is not None
+    assert execution.reused is False
+    calls_after_simulated_crash = len(model.calls)
+    assert calls_after_simulated_crash == 3  # classification + formalisation + this adjudication
+    state_after_crash = interrupted_engine.inspect(handle.run_id)
+    assert state_after_crash.representation_plan_v2 is None  # never persisted -- the "crash"
+
+    # Resume: a FRESH coordinator instance over the SAME store completes
+    # `select_representation` from here.
+    resumed_engine = FrontierReasoningEngine(
+        interrupted_engine.store,
+        interrupted_engine.artifacts,
+        interrupted_engine.clock,
+        interrupted_engine.uuids,
+    )
+    wave3_resumed = compose_wave3(resumed_engine, model, config)
+    plan = asyncio.run(wave3_resumed.select_representation(handle.run_id, allow_adjudication=True))
+
+    assert plan.tie_triggered is True
+    assert plan.adjudication_record_ref == execution.record.idempotency_key
+    assert len(model.calls) == calls_after_simulated_crash, (
+        "resuming select_representation must not repeat the real adjudication "
+        "model call -- it must reuse the already-settled one"
+    )
+    final_state = resumed_engine.inspect(handle.run_id)
+    assert final_state.representation_plan_v2 == plan
 
 
 @pytest.mark.integration
