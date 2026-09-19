@@ -70,7 +70,7 @@ from fre.domain.common import ArtifactRef, FrozenModel, canonical_hash
 from fre.domain.context import CompilerProfile
 from fre.domain.problem import ProblemBlocker, ProblemSpec
 from fre.domain.representation import RepresentationPlanV2
-from fre.domain.representation_registry import default_registry_v2
+from fre.domain.representation_registry import RepresentationDefinition, default_registry_v2
 from fre.domain.stop import (
     AcceptanceStatus,
     CostEstimateInterval,
@@ -102,6 +102,7 @@ from fre.prompts.schemas import (
     default_output_schema_registry,
 )
 from fre.runtime.budget_meter import BudgetMeter
+from fre.runtime.reducer import RunState
 from fre.runtime.events import (
     ArtifactRegistered,
     BudgetAllocated,
@@ -481,9 +482,32 @@ class Wave3Engine:
                 "representation selection requires an authoritative classification and an "
                 "allocated budget"
             )
+        registry = default_registry_v2()
+        plan, final_state = await self._select_and_verify_plan(
+            run_id, state, allow_adjudication=allow_adjudication, registry=registry
+        )
+        return self._build_and_persist_artifacts(run_id, plan, final_state, registry=registry)
+
+    async def _select_and_verify_plan(
+        self,
+        run_id: UUID,
+        state: RunState,
+        *,
+        allow_adjudication: bool,
+        registry: tuple[RepresentationDefinition, ...],
+    ) -> tuple[RepresentationPlanV2, RunState]:
+        """Steps 2-3 of `select_representation`: deterministic+adjudication
+        selection, then binding-drift verification against a fresh state.
+
+        Mirrors `_bootstrap_budget`'s role in `classify_task`'s own
+        decomposition -- everything up to (but not including) building and
+        persisting the resulting artifacts.
+        """
+        assert state.problem_spec is not None
+        assert state.task_signature is not None
+        assert state.budget.plan is not None
         selector = self.components.representation_selector
         policy = self.components.policy.representation_selection
-        registry = default_registry_v2()
         outcome = await selector.select_with_adjudication_bound(
             state.problem_spec,
             state.task_signature,
@@ -503,6 +527,23 @@ class Wave3Engine:
             raise ValueError(
                 "representation plan source_snapshot_version drifted before persistence"
             )
+        return plan, final_state
+
+    def _build_and_persist_artifacts(
+        self,
+        run_id: UUID,
+        plan: RepresentationPlanV2,
+        final_state: RunState,
+        *,
+        registry: tuple[RepresentationDefinition, ...],
+    ) -> RepresentationPlanV2:
+        """Steps 4-6 of `select_representation`: build the plan's artifacts,
+        construct and append the event batch, and read back the result.
+
+        Mirrors `_finalize_classification`'s role in `classify_task`'s own
+        decomposition.
+        """
+        selector = self.components.representation_selector
         stored_bytes: list[tuple[ArtifactRef, int]] = []
 
         def writer(content_bytes: bytes) -> ArtifactRef:
