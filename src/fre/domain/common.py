@@ -229,6 +229,27 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+def bind_hash(model: BaseModel, *, exclude: set[str]) -> str:
+    """Compute a self-referential seal hash over `model`, excluding `exclude`.
+
+    Mirrors the `ContextPacket.packet_hash` idiom already used throughout this
+    codebase: a model is constructed with a placeholder for its own seal
+    field(s), this helper computes the real value from everything else, and
+    the caller `model_copy(update=...)`s it in. Centralising this single
+    preimage computation (`canonical_hash(model.model_dump(mode="json",
+    exclude=exclude))`) closes a drift risk (C07 remediation, finding M):
+    before this helper existed, `RepresentationSelector.select_bound`/
+    `apply_adjudication_v2` each hand-built a `fields: dict[str, object]`
+    mirror of `RepresentationPlanV2`'s own fields to compute `plan_hash`, and
+    `RunReducer.apply` independently re-derived the "same" preimage a third
+    way -- three independently hand-maintained field lists that could
+    silently drift the moment a field was added to one but not the others.
+    Both the constructors in `fre.modules.m04_representation` and the
+    verification in `fre.runtime.reducer` now call this one function.
+    """
+    return canonical_hash(model.model_dump(mode="json", exclude=exclude))
+
+
 def canonical_unordered[CanonicalT](
     values: tuple[CanonicalT, ...],
 ) -> tuple[CanonicalT, ...]:

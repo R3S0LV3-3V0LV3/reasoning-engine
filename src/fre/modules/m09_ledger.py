@@ -385,6 +385,17 @@ class EpistemicLedger:
                 "resolver relation does not match resolution record"
             )
         nodes = self._node_map(projection)
+        affected = resolution.affected_refs
+        transitions = tuple(ref for ref, _status in resolution.status_transitions)
+        if len(set(affected)) != len(affected) or len(set(transitions)) != len(transitions):
+            raise InvalidContradictionResolution("resolution references must be unique")
+        if set(affected) != set(transitions):
+            raise InvalidContradictionResolution(
+                "resolution affected references must match status transitions"
+            )
+        for ref in (*affected, *transitions, resolution.resolver_ref):
+            if _ref_key(ref) not in nodes:
+                raise DanglingLedgerReference("resolution references an unknown ledger revision")
         if _ref_key(edge.source) not in nodes or _ref_key(edge.target) not in nodes:
             raise DanglingLedgerReference("resolution edge references an unknown ledger revision")
         result = projection.model_copy(

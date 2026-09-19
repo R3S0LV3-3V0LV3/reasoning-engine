@@ -15,7 +15,16 @@ from fre.domain.ledger import (
     LedgerNode,
     LedgerNodeRef,
 )
-from fre.domain.stop import StopDecision
+from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
+from fre.domain.representation import (
+    RepresentationArtifact,
+    RepresentationArtifactV2,
+    RepresentationPlan,
+    RepresentationPlanV2,
+)
+from fre.domain.semantic import SemanticModelCallRecord, SemanticModelCallRecordV2
+from fre.domain.stop import StopDecision, StopDecisionRecord
+from fre.domain.task import ClassificationRecord, TaskSignature
 
 
 class RunCreated(FrozenModel):
@@ -100,13 +109,116 @@ class ContextCompiled(FrozenModel):
     renderer_version: str = "1.0"
 
 
+class ContextCompiledV2(FrozenModel):
+    """Wire identity `("ContextCompiled", "2.0")`: a packet carrying a typed
+    `Wave3SemanticContext` (Phase 6/C08, F12). Same shape as `ContextCompiled`
+    -- the version bump exists purely to mark, at the envelope level, that
+    `RunReducer.apply` must run the additional Wave 3 ground-truth
+    verification below rather than only the v1 packet-hash/terminal-artifact
+    checks. Both durable JSON and Markdown artifacts must already be
+    registered before this event is appended: this is the event that
+    actually persists a compiled Wave 3 context packet (closing F12's
+    "context is never persisted by any production path" gap), so unlike a
+    purely in-memory `compile_semantic()` call, an unregistered artifact ref
+    here is a real, rejected atomicity violation, not merely untested.
+
+    Finding G (C08 remediation): `json_artifact.sha256`/`markdown_artifact.
+    sha256` are verified two ways, not one. `RunReducer.apply` first checks
+    EXISTENCE (the claimed sha256 is some artifact this run genuinely
+    registered) and then, independently, CORRECTNESS: it recomputes the
+    canonical JSON bytes and the Markdown rendering directly from `packet`
+    itself (both are pure functions of the packet) and requires the claimed
+    sha256 to match that recomputation exactly. This proves the referenced
+    artifacts really are the correct rendering of THIS packet, not merely
+    that they are some real artifact this run happened to register earlier
+    (e.g. from an unrelated compilation) with a colliding claim.
+    """
+
+    packet: ContextPacket
+    json_artifact: ArtifactRef
+    markdown_artifact: ArtifactRef
+    renderer_version: str = "1.0"
+
+
 class StopDecisionRecorded(FrozenModel):
     decision: StopDecision
+
+
+class StopDecisionRecordedV2(FrozenModel):
+    record: StopDecisionRecord
 
 
 class TerminalContextAssociated(FrozenModel):
     stop_disposition: str
     packet_hash: str
+
+
+class ModelCallRecorded(FrozenModel):
+    record: SemanticModelCallRecord
+
+
+class ModelCallFailed(FrozenModel):
+    record: SemanticModelCallRecord
+    reason: str
+
+
+class ModelCallRecordedV2(FrozenModel):
+    record: SemanticModelCallRecordV2
+
+
+class ModelCallFailedV2(FrozenModel):
+    record: SemanticModelCallRecordV2
+    reason: str
+
+
+class TaskClassified(FrozenModel):
+    signature: TaskSignature
+    record: ClassificationRecord
+
+
+class TaskPreliminarilyClassified(FrozenModel):
+    """Deterministic-only bootstrap signature used solely to seed the M02 bootstrap budget.
+
+    Distinct from `TaskClassified`: this signature is never itself the
+    authoritative classification -- it is always superseded, in the same
+    atomic batch, by a `TaskClassified` built from the full (deterministic +
+    model) proposal.
+    """
+
+    signature: TaskSignature
+
+
+class ClassificationDiagnosticRecorded(FrozenModel):
+    code: str
+    message: str
+
+
+class ProblemFormalised(FrozenModel):
+    problem: ProblemSpec
+
+
+class ProblemBlockerRecorded(FrozenModel):
+    blocker: ProblemBlocker
+
+
+class ProblemContradictionRecorded(FrozenModel):
+    diagnostic: ContradictionDiagnostic
+
+
+class RepresentationPlanSelected(FrozenModel):
+    plan: RepresentationPlan
+
+
+class RepresentationArtifactCompiled(FrozenModel):
+    artifact: RepresentationArtifact
+
+
+class RepresentationPlanSelectedV2(FrozenModel):
+    plan: RepresentationPlanV2
+
+
+class RepresentationArtifactCompiledV2(FrozenModel):
+    artifact: RepresentationArtifactV2
 
 
 EventPayload = (
@@ -127,8 +239,24 @@ EventPayload = (
     | BudgetReservationSettled
     | BudgetReservationReleased
     | ContextCompiled
+    | ContextCompiledV2
     | StopDecisionRecorded
+    | StopDecisionRecordedV2
     | TerminalContextAssociated
+    | ModelCallRecorded
+    | ModelCallFailed
+    | ModelCallRecordedV2
+    | ModelCallFailedV2
+    | TaskClassified
+    | TaskPreliminarilyClassified
+    | ClassificationDiagnosticRecorded
+    | ProblemFormalised
+    | ProblemBlockerRecorded
+    | ProblemContradictionRecorded
+    | RepresentationPlanSelected
+    | RepresentationArtifactCompiled
+    | RepresentationPlanSelectedV2
+    | RepresentationArtifactCompiledV2
 )
 EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
     (payload.__name__, "1.0"): payload
@@ -152,8 +280,40 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         ContextCompiled,
         StopDecisionRecorded,
         TerminalContextAssociated,
+        ModelCallRecorded,
+        ModelCallFailed,
+        TaskClassified,
+        TaskPreliminarilyClassified,
+        ClassificationDiagnosticRecorded,
+        ProblemFormalised,
+        ProblemBlockerRecorded,
+        ProblemContradictionRecorded,
+        RepresentationPlanSelected,
+        RepresentationArtifactCompiled,
     )
 }
+EVENT_PAYLOADS.update(
+    {
+        ("ModelCallRecorded", "2.0"): ModelCallRecordedV2,
+        ("ModelCallFailed", "2.0"): ModelCallFailedV2,
+        ("StopDecisionRecorded", "2.0"): StopDecisionRecordedV2,
+        ("RepresentationPlanSelected", "2.0"): RepresentationPlanSelectedV2,
+        ("RepresentationArtifactCompiled", "2.0"): RepresentationArtifactCompiledV2,
+        ("ContextCompiled", "2.0"): ContextCompiledV2,
+    }
+)
+EVENT_WIRE_IDENTITIES: dict[type[FrozenModel], tuple[str, SchemaVersion]] = {
+    ModelCallRecordedV2: ("ModelCallRecorded", "2.0"),
+    ModelCallFailedV2: ("ModelCallFailed", "2.0"),
+    StopDecisionRecordedV2: ("StopDecisionRecorded", "2.0"),
+    RepresentationPlanSelectedV2: ("RepresentationPlanSelected", "2.0"),
+    RepresentationArtifactCompiledV2: ("RepresentationArtifactCompiled", "2.0"),
+    ContextCompiledV2: ("ContextCompiled", "2.0"),
+}
+
+
+def event_wire_identity(payload: FrozenModel) -> tuple[str, SchemaVersion]:
+    return EVENT_WIRE_IDENTITIES.get(type(payload), (type(payload).__name__, "1.0"))
 
 
 class UncommittedEvent(FrozenModel):
