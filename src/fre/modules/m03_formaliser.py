@@ -84,6 +84,51 @@ class InvalidProblemSpec(ValueError):
     pass
 
 
+def _normalise_constraint_text(text: str) -> str:
+    """Collapse a constraint statement to a lexical form for coverage
+    comparison only (W3 final-gate remediation).
+
+    This is deliberately shallow -- lowercase, collapse internal whitespace,
+    and strip a small set of trailing punctuation -- because `formalise` has
+    no semantic-equivalence oracle available to it. It exists solely to
+    absorb harmless surface variation (a trailing period, doubled spaces,
+    case) between the user's own wording in `TaskEnvelope.explicit_constraints`
+    and the same requirement as restated inside a proposal's `CONSTRAINT`
+    item description. It is not, and is not meant to be, a paraphrase
+    detector.
+    """
+    return " ".join(text.strip().lower().rstrip(".!").split())
+
+
+def _explicit_constraint_represented(statement: str, constraints: list[ConstraintSpec]) -> bool:
+    """Whether `statement` (one `TaskEnvelope.explicit_constraints` entry) is
+    already represented by at least one HARD-kind constraint already
+    admitted into the `ProblemSpec` (W3 final-gate remediation).
+
+    "Represented" is judged purely by normalised text containment in either
+    direction: the explicit statement's normalised text appears verbatim
+    inside a HARD constraint's normalised description, or vice versa. This
+    catches the common cases -- a proposal that restates the constraint
+    verbatim, wraps it in a longer sentence, or lightly trims it -- without
+    requiring exact equality. It intentionally does NOT catch a proposal that
+    paraphrases the constraint into materially different wording; there is no
+    reliable, deterministic way to judge semantic equivalence here, so a
+    paraphrase (or an outright omission) is treated as "not represented" and
+    handled by synthesising the user's own statement verbatim (see
+    `formalise`) -- the safe default given the ambiguity.
+    """
+    needle = _normalise_constraint_text(statement)
+    if not needle:
+        return True
+    for constraint in constraints:
+        if constraint.kind != "HARD":
+            continue
+        haystack = _normalise_constraint_text(constraint.description)
+        if needle in haystack or haystack in needle:
+            return True
+    return False
+
+
 def _coerce_optional_float(value: object) -> float | None:
     """Coerce a self-reported attribute value to `float`, or `None` if it is
     not a genuine numeric signal.
@@ -590,6 +635,59 @@ class ProblemFormaliser:
                 constraints.append(
                     ConstraintSpec(
                         id=f"explicit-{index}",
+                        description=statement,
+                        kind="HARD",
+                        verification_mode="UNAVAILABLE",
+                        verification_status=VerificationStatus.UNKNOWN,
+                        source_refs=(
+                            f"TaskEnvelope:{envelope.task_id}:/explicit_constraints/{index}",
+                        ),
+                        provenance=EpistemicItemProvenance(
+                            origin=EpistemicOriginLabel.EXPLICIT_INPUT,
+                            anchors=(
+                                SourceAnchor(
+                                    source_kind=SourceKind.TASK_FIELD,
+                                    source_ref=ObjectRef(
+                                        object_type="TaskEnvelope",
+                                        object_id=str(envelope.task_id),
+                                    ),
+                                    selector=f"/explicit_constraints/{index}",
+                                ),
+                            ),
+                        ),
+                    )
+                )
+        else:
+            # W3 final-gate remediation: a model proposal is trusted for
+            # everything it says, but it is never trusted, on its own, to have
+            # said *everything* the user required. `_validate_items` only
+            # checks proposal-internal shape; nothing until now reconciled the
+            # admitted constraints against `envelope.explicit_constraints`, so
+            # a proposal that dropped a user's hard constraint (or downgraded
+            # it to SOFT, or mistranslated it into different wording) produced
+            # a `ProblemSpec` silently missing it -- no validation error, no
+            # ledger record. For every explicit constraint not represented by
+            # an admitted HARD constraint (see `_explicit_constraint_represented`),
+            # synthesise the user's own statement verbatim, using exactly the
+            # same `EpistemicItemProvenance`/`SourceAnchor` treatment as the
+            # `proposal is None` fallback above, anchored to its own
+            # `/explicit_constraints/{index}` position. This is additive only:
+            # a statement the proposal already represents is left alone (no
+            # duplicate), so a proposal that DID cover a constraint -- even in
+            # its own words, as long as one text contains the other -- is
+            # never double-counted.
+            for index, statement in enumerate(envelope.explicit_constraints):
+                if _explicit_constraint_represented(statement, constraints):
+                    continue
+                synthetic_id = f"explicit-{index}"
+                suffix = 0
+                while synthetic_id in ids:
+                    suffix += 1
+                    synthetic_id = f"explicit-{index}-gap-{suffix}"
+                ids.add(synthetic_id)
+                constraints.append(
+                    ConstraintSpec(
+                        id=synthetic_id,
                         description=statement,
                         kind="HARD",
                         verification_mode="UNAVAILABLE",
