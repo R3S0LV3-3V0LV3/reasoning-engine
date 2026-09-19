@@ -571,7 +571,26 @@ class TaskClassifier:
         created_at: datetime,
         uuids: UUIDFactory,
     ) -> tuple[EventPayload, ...]:
-        """Emit M09 provenance for every material, model-derived classification decision."""
+        """Emit M09 provenance for every material, model-derived classification decision.
+
+        C05 remediation (finding #8, re-scoped): emits at most one
+        `LedgerNodeAdded` per MODEL-basis dimension. There are 7 classifiable
+        dimensions (`task_type`, `consequence`, `irreversibility`, `ambiguity`,
+        `evidence_scarcity`, `search_space`, `horizon`) -- the 8th dimension,
+        `output_form`, is provably never MODEL-basis (it is always derived
+        deterministically from `envelope.requested_output.form`, see its
+        `basis="DETERMINISTIC"` assignment in `classify()`), so the true
+        maximum is 7 events (14 UUIDs: one node id + one action id per event),
+        not 8/16. This one-event-per-MODEL-axis granularity is intentional,
+        not accidental fan-out: the reducer's admission check
+        (`RunReducer.apply`, `TaskClassified` branch, "C05 remediation finding
+        #2") looks up provenance per axis by name, so each MODEL axis needs
+        its own independently citable `LedgerNodeRef`. Consolidating these
+        into one event per classification would require changing that
+        per-axis lookup contract in lockstep -- a larger, out-of-scope change
+        touching persisted event shapes and every golden fixture -- so this is
+        deliberately left as-is here.
+        """
         events: list[EventPayload] = []
         for name in sorted(record.dimensions):
             result = record.dimensions[name]
