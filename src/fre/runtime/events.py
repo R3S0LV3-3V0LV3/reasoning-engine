@@ -121,6 +121,17 @@ class ContextCompiledV2(FrozenModel):
     "context is never persisted by any production path" gap), so unlike a
     purely in-memory `compile_semantic()` call, an unregistered artifact ref
     here is a real, rejected atomicity violation, not merely untested.
+
+    Finding G (C08 remediation): `json_artifact.sha256`/`markdown_artifact.
+    sha256` are verified two ways, not one. `RunReducer.apply` first checks
+    EXISTENCE (the claimed sha256 is some artifact this run genuinely
+    registered) and then, independently, CORRECTNESS: it recomputes the
+    canonical JSON bytes and the Markdown rendering directly from `packet`
+    itself (both are pure functions of the packet) and requires the claimed
+    sha256 to match that recomputation exactly. This proves the referenced
+    artifacts really are the correct rendering of THIS packet, not merely
+    that they are some real artifact this run happened to register earlier
+    (e.g. from an unrelated compilation) with a colliding claim.
     """
 
     packet: ContextPacket

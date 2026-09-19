@@ -4,6 +4,7 @@ import pytest
 
 from fre.adapters.storage_sqlite import SQLiteStore
 from fre.domain.budget import BudgetReservation, DeploymentLimits, ResourceVector
+from fre.domain.common import OutputContract
 from fre.domain.context import CompilerProfile
 from fre.domain.ledger import (
     EpistemicStatus,
@@ -11,6 +12,7 @@ from fre.domain.ledger import (
     LedgerNodeType,
     LedgerRelation,
 )
+from fre.domain.problem import ProblemSpec
 from fre.domain.stop import (
     AcceptanceStatus,
     StopDecisionRecord,
@@ -38,17 +40,20 @@ from fre.runtime.events import (
     BudgetReservationSettled,
     BudgetReserved,
     ContextCompiled,
+    ContextCompiledV2,
     EventPayload,
     LedgerDependentsMarkedStale,
     LedgerEdgeAdded,
     LedgerNodeAdded,
     LedgerNodeRevised,
+    ProblemFormalised,
     StopDecisionRecordedV2,
     StoredEvent,
 )
 from fre.runtime.events import TestValueSet as ValueSet
 from fre.runtime.reducer import RunReducer
 from fre.runtime.wave2 import Wave2Runtime
+from fre.runtime.wave3_context import Wave3ContextRuntime
 
 
 def signature() -> TaskSignature:
@@ -942,3 +947,56 @@ def test_terminal_association_must_match_latest_stop_decision(
         engine.append(run.run_id, version, mismatched_status_events)
     assert engine.inspect(run.run_id).version == version
     assert len(engine.store.load(run.run_id)) == event_count
+
+
+@pytest.mark.integration
+def test_finalize_wired_with_wave3_context_runtime_persists_context_compiled_v2(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """C08 remediation, finding E: `Wave3ContextRuntime.compile_and_persist`
+    had zero production callers before this fix -- F12 was closed only in
+    the sense that the code existed, never that any real execution path
+    invoked it. This test drives the actual, composed `Wave2Runtime.finalize`
+    entrypoint (the real terminal-disposition lifecycle call, not a direct,
+    hand-constructed call to `compile_and_persist`) and asserts a real
+    `ContextCompiledV2` event lands in the run's own persisted event log.
+    """
+    run = engine.create_run({"wave": 3})
+    allocator = BudgetAllocator()
+    plan, policy_hash = allocator.allocate(signature(), default_tier_policy(), DeploymentLimits())
+    allocation = engine.make_event(
+        run.run_id,
+        BudgetAllocated(plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash),
+        module_id="M02",
+    )
+    engine.append(run.run_id, run.version, (allocation,))
+
+    state = engine.inspect(run.run_id)
+    problem = ProblemSpec(output_contract=OutputContract(form="JSON"))
+    formalised = engine.make_event(run.run_id, ProblemFormalised(problem=problem), module_id="M03")
+    engine.append(run.run_id, state.version, (formalised,))
+
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+    context_runtime = Wave3ContextRuntime(engine)
+    runtime = Wave2Runtime(engine, wave3_context_runtime=context_runtime)
+    runtime.record_decision(run.run_id, decision)
+    runtime.finalize(run.run_id, decision)
+
+    stored_events = engine.store.load(run.run_id)
+    v2_events = [
+        event for event in stored_events if isinstance(event.validated_payload(), ContextCompiledV2)
+    ]
+    assert len(v2_events) == 1
+    v2_payload = v2_events[0].validated_payload()
+    assert isinstance(v2_payload, ContextCompiledV2)
+    assert v2_payload.packet.wave3_context is not None
+    final_state = engine.inspect(run.run_id)
+    assert v2_payload.packet in final_state.context_packets

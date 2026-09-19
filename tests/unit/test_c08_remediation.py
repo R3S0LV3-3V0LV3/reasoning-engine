@@ -20,7 +20,7 @@ from fre.domain.budget import (
     ResourceVector,
     SearchPolicy,
 )
-from fre.domain.common import ArtifactRef, FrozenModel, OutputContract, canonical_hash
+from fre.domain.common import ArtifactRef, FrozenModel, OutputContract, bind_hash, canonical_hash
 from fre.domain.context import (
     CompilerProfile,
     ContextCompilationResult,
@@ -31,8 +31,11 @@ from fre.domain.ledger import EpistemicStatus, LedgerNodeRef, LedgerNodeType, Le
 from fre.domain.problem import ProblemBlocker, ProblemSpec, UnknownSpec
 from fre.domain.representation import (
     RepresentationArtifact,
+    RepresentationArtifactV2,
+    RepresentationCandidateScore,
     RepresentationKind,
     RepresentationPlan,
+    RepresentationPlanV2,
     RepresentationView,
 )
 from fre.domain.task import (
@@ -793,3 +796,261 @@ def test_generate_delta_covers_the_new_typed_field() -> None:
     delta = generate_delta(v1.packet, v2.packet)
     assert any(op.path == "/wave3_context" for op in delta.operations)
     assert apply_delta(v1.packet, delta) == v2.packet
+
+
+# ---------------------------------------------------------------------------
+# Remediation of independent-review findings A-D (post-merge hardening)
+# ---------------------------------------------------------------------------
+
+
+def _two_view_representation(problem: ProblemSpec) -> RepresentationPlan:
+    return RepresentationPlan(
+        problem_spec_hash=canonical_hash(problem),
+        views=(
+            RepresentationView(
+                id="view-1",
+                kind=RepresentationKind.DECISION_TABLE,
+                role="PRIMARY",
+                compatibility_score=0.9,
+                expected_value="clear trade-offs",
+                builder_ref="m04.decision-table",
+            ),
+            RepresentationView(
+                id="view-2",
+                kind=RepresentationKind.DEPENDENCY_DAG,
+                role="AUXILIARY",
+                compatibility_score=0.8,
+                expected_value="ordering",
+                builder_ref="m04.dependency-dag",
+            ),
+        ),
+    )
+
+
+@pytest.mark.unit
+def test_availability_requires_every_declared_view_to_have_its_own_artifact() -> None:
+    """Finding A: the pre-fix check was `any(... for view in views for
+    artifact in artifacts)`, true the moment ANY single view had a match --
+    even if every OTHER declared view had none. A 2-view plan with only one
+    view's artifact present must be `UNAVAILABLE_VALIDATION`, not `AVAILABLE`.
+    This test fails against the pre-fix `any()` implementation (it would
+    assert `AVAILABLE`) and passes against the `all(any(...))` fix.
+    """
+    problem = _problem()
+    representation = _two_view_representation(problem)
+    # Only DECISION_TABLE (view-1) has a matching artifact; DEPENDENCY_DAG
+    # (view-2) has none.
+    only_one_artifact = (_representation_artifact(problem),)
+    availability, reason = derive_wave3_availability(
+        problem_blockers=(),
+        representation=representation,
+        representation_artifacts=only_one_artifact,
+        budget_remaining=_remaining(),
+    )
+    assert availability is Wave3ContextAvailability.UNAVAILABLE_VALIDATION
+    assert "no corresponding validated artifact" in reason
+
+
+def _bound_plan(
+    problem: ProblemSpec, *, snapshot_version: int = 1, extra_basis: str = ""
+) -> RepresentationPlanV2:
+    view = RepresentationView(
+        id="view-1",
+        kind=RepresentationKind.DECISION_TABLE,
+        role="PRIMARY",
+        compatibility_score=0.9,
+        expected_value="clear trade-offs",
+        builder_ref="m04.decision-table",
+    )
+    provisional = RepresentationPlanV2(
+        registry_version="wave3-m04-registry/2.0",
+        registry_hash="a" * 64,
+        selection_policy_version="wave3-m04/2.0",
+        problem_spec_hash=canonical_hash(problem),
+        input_hash=canonical_hash({"basis": extra_basis or "plan"}),
+        source_snapshot_version=snapshot_version,
+        candidate_scores=(
+            RepresentationCandidateScore(
+                kind=RepresentationKind.DECISION_TABLE,
+                compatibility_score=0.9,
+                builder_available=True,
+                cost=0.1,
+                expected_benefit=0.9,
+            ),
+        ),
+        views=(view,),
+        selection_basis=("deterministic compatibility scoring", extra_basis),
+        tie_band=0.05,
+        tie_triggered=False,
+        fallback_used=False,
+        plan_hash="0" * 64,
+    )
+    return provisional.model_copy(
+        update={"plan_hash": bind_hash(provisional, exclude={"plan_hash"})}
+    )
+
+
+def _bound_artifact(plan: RepresentationPlanV2, problem: ProblemSpec) -> RepresentationArtifactV2:
+    return RepresentationArtifactV2(
+        plan_hash=plan.plan_hash,
+        registry_hash=plan.registry_hash,
+        registry_version=plan.registry_version,
+        selection_policy_version=plan.selection_policy_version,
+        problem_spec_hash=plan.problem_spec_hash,
+        source_snapshot_version=plan.source_snapshot_version,
+        requested_kind=RepresentationKind.DECISION_TABLE,
+        actual_kind=RepresentationKind.DECISION_TABLE,
+        requested_builder_id="m04.decision-table",
+        requested_builder_version="1.0",
+        actual_builder_id="m04.decision-table",
+        actual_builder_version="1.0",
+        physical_artifact_ref=ArtifactRef(artifact_id=UUID(int=555), sha256="b" * 64),
+        content_hash="c" * 64,
+        determinism_hash="d" * 64,
+    )
+
+
+@pytest.mark.unit
+def test_availability_v2_rejects_stale_artifact_bound_to_a_different_plan() -> None:
+    """Findings B + F: `RepresentationArtifact` (v1) has no binding to the
+    exact `RepresentationPlan` that selected it -- only `problem_spec_hash`,
+    which two DIFFERENT plans against the same `ProblemSpec` can share. The
+    C07 v2 contract closes this with `RepresentationArtifactV2.plan_hash`,
+    bound to the exact `RepresentationPlanV2.plan_hash` that selected it.
+    This test selects plan A, builds a genuine bound artifact for it, then
+    selects a genuinely different plan B (different `selection_basis`, hence
+    different `plan_hash`) that wants the SAME `RepresentationKind` but has
+    no artifact of its own yet. `derive_wave3_availability` must return
+    `UNAVAILABLE_VALIDATION` for plan B -- plan A's stale artifact must never
+    satisfy it merely because both plans share a `problem_spec_hash` and a
+    requested kind.
+    """
+    problem = _problem()
+    plan_a = _bound_plan(problem, extra_basis="plan-a")
+    plan_b = _bound_plan(problem, extra_basis="plan-b")
+    assert plan_a.plan_hash != plan_b.plan_hash
+    artifact_for_a = _bound_artifact(plan_a, problem)
+
+    availability_a, _ = derive_wave3_availability(
+        problem_blockers=(),
+        representation=None,
+        representation_v2=plan_a,
+        representation_artifacts_v2=(artifact_for_a,),
+        budget_remaining=_remaining(),
+    )
+    assert availability_a is Wave3ContextAvailability.AVAILABLE
+
+    availability_b, reason_b = derive_wave3_availability(
+        problem_blockers=(),
+        representation=None,
+        representation_v2=plan_b,
+        representation_artifacts_v2=(artifact_for_a,),
+        budget_remaining=_remaining(),
+    )
+    assert availability_b is Wave3ContextAvailability.UNAVAILABLE_VALIDATION
+    assert "no corresponding validated artifact" in reason_b
+
+
+@pytest.mark.unit
+def test_availability_prefers_v2_representation_state_over_v1() -> None:
+    """Finding F: when v2 bound representation state is present, it is used
+    in preference to legacy v1 state, even if v1 state alone would have
+    validated successfully.
+    """
+    problem = _problem()
+    plan_b = _bound_plan(problem, extra_basis="plan-b")
+    availability, _ = derive_wave3_availability(
+        problem_blockers=(),
+        representation=_representation(problem),
+        representation_artifacts=(_representation_artifact(problem),),
+        representation_v2=plan_b,
+        representation_artifacts_v2=(),
+        budget_remaining=_remaining(),
+    )
+    assert availability is Wave3ContextAvailability.UNAVAILABLE_VALIDATION
+
+
+@pytest.mark.unit
+def test_reducer_rejects_wave3_context_omitting_a_real_blocker() -> None:
+    """Finding C: completeness of `blocker_refs` was never verified in the
+    direction that matters most -- that every REAL, currently-applied
+    blocker is declared, not merely that every declared entry is real. This
+    packet under-declares (omits the one real blocker this run actually has)
+    and must be rejected. Fails pre-fix (no such check existed), passes
+    post-fix.
+    """
+    run_id = UUID(int=1)
+    _, state, apply_payload, problem = _full_state(run_id)
+    compiled = _compile_matching_packet(state, problem)
+    assert _wave3(compiled).blocker_refs
+    tampered_context = _wave3(compiled).model_copy(update={"blocker_refs": ()})
+    tampered = compiled.packet.model_copy(update={"wave3_context": tampered_context})
+    rehashed = tampered.model_copy(
+        update={"packet_hash": bind_hash(tampered, exclude={"packet_hash"})}
+    )
+    with pytest.raises(ValueError, match="blocker_refs omits a real"):
+        _register_and_apply(state, apply_payload, compiled.model_copy(update={"packet": rehashed}))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_wave3_context_omitting_a_real_representation_artifact() -> None:
+    """Finding C: same completeness gap for `representation_artifact_refs`."""
+    run_id = UUID(int=1)
+    _, state, apply_payload, problem = _full_state(run_id)
+    compiled = _compile_matching_packet(state, problem)
+    assert _wave3(compiled).representation_artifact_refs
+    tampered_context = _wave3(compiled).model_copy(update={"representation_artifact_refs": ()})
+    tampered = compiled.packet.model_copy(update={"wave3_context": tampered_context})
+    rehashed = tampered.model_copy(
+        update={"packet_hash": bind_hash(tampered, exclude={"packet_hash"})}
+    )
+    with pytest.raises(ValueError, match="representation_artifact_refs omits a real"):
+        _register_and_apply(state, apply_payload, compiled.model_copy(update={"packet": rehashed}))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_wave3_context_omitting_a_real_unresolved_unknown() -> None:
+    """Finding C: same completeness gap for `unresolved_unknowns`."""
+    run_id = UUID(int=1)
+    _, state, apply_payload, problem = _full_state(run_id)
+    compiled = _compile_matching_packet(state, problem)
+    assert _wave3(compiled).unresolved_unknowns
+    tampered_context = _wave3(compiled).model_copy(update={"unresolved_unknowns": ()})
+    tampered = compiled.packet.model_copy(update={"wave3_context": tampered_context})
+    rehashed = tampered.model_copy(
+        update={"packet_hash": bind_hash(tampered, exclude={"packet_hash"})}
+    )
+    with pytest.raises(ValueError, match="unresolved_unknowns omits a real"):
+        _register_and_apply(state, apply_payload, compiled.model_copy(update={"packet": rehashed}))
+
+
+@pytest.mark.unit
+def test_reducer_rejects_forged_prompt_version_and_model_identity() -> None:
+    """Finding D: `prompt_version`/`model_identity` are caller-supplied
+    claims with nothing tying them to a real `SemanticModelCallRecord` on
+    this run. A packet forging both to values unrelated to any real model
+    call in the run must be rejected. Fails pre-fix (no such check existed:
+    the packet would be accepted since no other field is inconsistent),
+    passes post-fix.
+    """
+    run_id = UUID(int=1)
+    _, state, apply_payload, problem = _full_state(run_id)
+    assert state.model_calls == ()
+    compiled = Wave3ContextCompiler().compile_semantic(
+        problem=problem,
+        representation=state.representation_plan,
+        problem_blockers=state.problem_blockers,
+        representation_artifacts=state.representation_artifacts,
+        task_signature=state.task_signature,
+        budget_plan=state.budget.plan,
+        budget_policy_hash=state.budget.policy_hash,
+        prompt_version="forged-prompt-v1",
+        model_identity="forged-model-x",
+        run_id=state.run_id,
+        snapshot_version=state.version,
+        ledger=state.ledger,
+        budget_remaining=_remaining(),
+        profile=CompilerProfile.STANDARD,
+    )
+    with pytest.raises(ValueError, match="prompt_version/model_identity"):
+        _register_and_apply(state, apply_payload, compiled)

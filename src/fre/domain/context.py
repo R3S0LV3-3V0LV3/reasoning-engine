@@ -57,14 +57,23 @@ class UnresolvedUnknownRef(FrozenModel):
 class Wave3SemanticContext(FrozenModel):
     """Typed Wave 3 semantic-context envelope (Phase 6/C08, defect F12).
 
-    Replaces prose/structure sniffing of the overloaded `ContextPacket.
-    objective` field (`compiler_version == "2.0"` plus "is `objective` a
-    dict") with an explicit, typed contract naming exactly what Wave 3
-    semantic state this packet reflects and how available it is. Every ref
-    field here is independently re-derived and verified by `RunReducer.apply`
-    against the actual persisted run state at `ContextCompiled@2.0`
-    application time (see the reducer's `ContextCompiledV2` branch) -- never
-    trusted merely because it is internally self-consistent.
+    Finding J (C08 remediation): this replaces prose/structure sniffing of
+    the overloaded `ContextPacket.objective` field ONLY for the narrow
+    question this type answers -- what Wave 3 semantic state this packet
+    reflects and how available/verifiable it is (`availability`, every `_ref`
+    field, `unresolved_unknowns`). It does NOT replace `objective` as the
+    carrier of the full semantic summary body (objectives, constraints,
+    decision variables, and the rest of `Wave3ContextCompiler.compile_
+    semantic`'s `semantic_summary` dict): `Wave3ContextCompiler.render_
+    markdown` still renders that body by reading `packet.objective` and
+    checking `isinstance(value, dict)` -- the same prose/structure-sniffing
+    pattern this docstring used to claim was fully replaced. This is an
+    additive, honestly-scoped improvement, not a completed migration of the
+    whole packet body off `objective`. Every ref field this type DOES declare
+    is independently re-derived and verified by `RunReducer.apply` against
+    the actual persisted run state at `ContextCompiled@2.0` application time
+    (see the reducer's `ContextCompiledV2` branch) -- never trusted merely
+    because it is internally self-consistent.
 
     `budget_plan_revision` was deliberately NOT included: `BudgetPlan` has no
     revision counter in the domain model, and `BudgetProjection` does not

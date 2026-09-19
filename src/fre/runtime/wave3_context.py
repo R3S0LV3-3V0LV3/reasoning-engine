@@ -67,6 +67,14 @@ class Wave3ContextRuntime:
             representation=state.representation_plan,
             problem_blockers=state.problem_blockers,
             representation_artifacts=state.representation_artifacts,
+            # Finding F (C08 remediation): thread the run's C07 bound v2
+            # representation state through so `derive_wave3_availability`
+            # (called inside `compile_semantic`) uses the same plan-hash-bound
+            # matching the reducer's independent recomputation now uses too --
+            # see that function's docstring for why v2 is preferred whenever
+            # it is populated.
+            representation_v2=state.representation_plan_v2,
+            representation_artifacts_v2=state.representation_artifacts_v2,
             task_signature=state.task_signature,
             budget_plan=budget_plan if budget_plan is not None else state.budget.plan,
             budget_policy_hash=(
@@ -83,6 +91,22 @@ class Wave3ContextRuntime:
             next_action=next_action,
             terminal_disposition=terminal_disposition,
         )
+        # Finding K (C08 remediation, documented tradeoff): `store_artifact`
+        # writes bytes to the artifact store immediately, before the
+        # `ArtifactRegistered`/`ContextCompiledV2` batch below is known to
+        # succeed. `ArtifactRef` needs the real sha256 of already-stored
+        # bytes to construct the event payloads at all, so there is no way to
+        # build this batch without writing the bytes first -- `engine.append`
+        # below can still reject the batch (e.g. a concurrent writer advanced
+        # `state.version` between `inspect` and `append`), in which case these
+        # two artifacts are left stored but never referenced by any applied
+        # event. This is an accepted tradeoff, not a silent bug: an orphaned
+        # blob is inert (content-addressed, never referenced, never trusted by
+        # any reducer check) and costs only storage, whereas losing the bytes
+        # on retry would be the worse failure mode. A caller that retries
+        # `compile_and_persist` after a rejection will simply store a second
+        # (likely byte-identical, hence same-sha256, so de-duplicated by a
+        # content-addressed store) copy and try again.
         json_artifact = self.engine.store_artifact(
             compiled.canonical_bytes, media_type="application/json"
         )

@@ -16,14 +16,29 @@ from fre.runtime.events import (
     StopDecisionRecordedV2,
     TerminalContextAssociated,
 )
+from fre.runtime.wave3_context import Wave3ContextRuntime
 
 
 class Wave2Runtime:
     def __init__(
-        self, engine: FrontierReasoningEngine, compiler: ContextCompiler | None = None
+        self,
+        engine: FrontierReasoningEngine,
+        compiler: ContextCompiler | None = None,
+        *,
+        wave3_context_runtime: Wave3ContextRuntime | None = None,
     ) -> None:
         self.engine = engine
         self.compiler = compiler or ContextCompiler()
+        # C08 (F12/F04) remediation, finding E: prior to this, `Wave3
+        # ContextRuntime.compile_and_persist` had zero production callers --
+        # F12 was closed only in the sense that the wiring existed, never
+        # that any real execution path actually invoked it. When this is
+        # provided (see `fre.composition.compose_wave3`, which now wires the
+        # composed `Wave3ContextRuntime` in), a real terminal `finalize` call
+        # also persists a typed Wave 3 `ContextCompiledV2` packet for runs
+        # that have a `ProblemSpec` formalised, alongside the pre-existing v1
+        # `ContextCompiled` this method has always emitted.
+        self.wave3_context_runtime = wave3_context_runtime
 
     def record_decision(self, run_id: UUID, decision: StopDecision) -> int:
         state = self.engine.inspect(run_id)
@@ -131,4 +146,22 @@ class Wave2Runtime:
             for payload in payloads
         )
         self.engine.append(run_id, state.version, events)
+        # Finding E (C08 remediation): the real wiring. `state` here was
+        # captured before the v1 `ContextCompiled`/terminal-status batch above
+        # was appended, so `self.engine.inspect(run_id)` inside
+        # `compile_and_persist` re-reads the run AFTER that batch landed --
+        # the freshest, actually-applied state, never a stale snapshot. This
+        # only runs for runs that have a Wave 3 `ProblemSpec` formalised;
+        # runs with no Wave 3 semantic state at all have nothing for
+        # `Wave3ContextRuntime.compile_and_persist` to compile and it would
+        # otherwise raise.
+        if self.wave3_context_runtime is not None:
+            refreshed = self.engine.inspect(run_id)
+            if refreshed.problem_spec is not None:
+                self.wave3_context_runtime.compile_and_persist(
+                    run_id,
+                    profile=CompilerProfile.HANDOFF,
+                    size_target=decision.context_request.size_target,
+                    terminal_disposition=decision.disposition,
+                )
         return compiled.packet.packet_hash
