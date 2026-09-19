@@ -1,6 +1,7 @@
 """Pure reducer protocol and foundational run reducer."""
 
 import hashlib
+from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Protocol, TypeVar
 from uuid import UUID
@@ -1603,13 +1604,20 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
     """
     # Pass 1: collect every settlement/release in the batch by reservation_id,
     # in encounter order, regardless of where the corresponding record sits.
-    pending: dict[str, list[tuple[str, ResourceVector | None]]] = {}
+    # EU-03 (C04 cleanup, item #3): a `deque` (not `list`) so pass 2's FIFO
+    # consumption below is O(1) per record via `popleft()` instead of O(n)
+    # via `list.pop(0)` (which shifts every remaining element down). FIFO
+    # ordering semantics are identical to a list's for this append/pop-front
+    # usage; only the complexity of draining the queue changes.
+    pending: dict[str, deque[tuple[str, ResourceVector | None]]] = {}
     for event in events:
         payload = event.validated_payload()
         if isinstance(payload, BudgetReservationSettled):
-            pending.setdefault(payload.reservation_id, []).append(("SETTLED", payload.actual_usage))
+            pending.setdefault(payload.reservation_id, deque()).append(
+                ("SETTLED", payload.actual_usage)
+            )
         elif isinstance(payload, BudgetReservationReleased):
-            pending.setdefault(payload.reservation_id, []).append(("RELEASED", None))
+            pending.setdefault(payload.reservation_id, deque()).append(("RELEASED", None))
     # Pass 2: validate every record against the complete map built above, so a
     # settlement positioned after its record in the tuple is still found.
     for event in events:
@@ -1620,7 +1628,7 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
                 raise ValueError(
                     "semantic model-call reservation settlement evidence is missing from this batch"
                 )
-            kind, actual_usage = queue.pop(0)
+            kind, actual_usage = queue.popleft()
             if kind != "SETTLED":
                 raise ValueError(
                     "semantic model-call must be paired with a reservation settlement "
