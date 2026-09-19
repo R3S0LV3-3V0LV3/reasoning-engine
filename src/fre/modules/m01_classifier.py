@@ -677,9 +677,24 @@ class TaskClassifier:
             envelope, proposal, policy, model_call_key=model_call_key
         )
         final_plan, final_hash = allocator.allocate(final_signature, tier_policy, deployment)
-        # Validate-only: proves the bootstrap -> final handoff never violates
-        # M02's monotone-tier/validation-floor revision invariants before any
-        # event is emitted.
+        # C05 remediation (finding #9, investigated): this `revise()` call is
+        # intentionally validate-only -- its returned `BudgetProjection` is
+        # discarded; only its invariant checks (monotone-tier,
+        # validation-floor, committed-plus-reserved-usage) matter here, to
+        # prove the bootstrap -> final handoff never violates M02's revision
+        # invariants before any event is emitted. This is acceptable as-is:
+        # both `BudgetAllocator.allocate` and `.revise` (see `m02_budget.py`)
+        # are pure, cheap, in-memory arithmetic over already-constructed
+        # `TaskSignature`/`BudgetPlan`/`BudgetProjection` objects -- floor
+        # lookups, `max()`/comparisons, and a `canonical_hash` call for the
+        # policy hash -- with no I/O and nothing that scales with anything
+        # other than the small, fixed set of budget dimensions. There is no
+        # meaningfully cheaper way to run `revise()`'s checks than calling
+        # `revise()` itself: its invariant checks are woven through the same
+        # few lines that would otherwise need duplicating into a standalone
+        # function, which would itself be a second place for the two to drift
+        # out of sync. Extracting a standalone check was considered and
+        # rejected for this reason.
         allocator.revise(
             BudgetProjection(plan=bootstrap_plan, policy_hash=bootstrap_hash),
             final_plan,
