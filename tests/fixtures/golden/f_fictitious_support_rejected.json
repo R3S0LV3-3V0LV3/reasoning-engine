@@ -108,12 +108,12 @@
       "sequence": 17
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 18
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 19
     },
@@ -123,17 +123,22 @@
       "sequence": 20
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 21
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 22
+    },
+    {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 23
     }
   ],
-  "final_state_hash": "a29c8dc1741ae34844126783c90948539bc8e71974dc683f03fff59953897c71",
+  "final_state_hash": "83388b13b2673f83438067ea84a7f10cea05ba3cd266279a31e5b0891010c697",
   "fixture": "F",
   "last_packet": null,
   "model_calls": 2,
@@ -144,5 +149,5 @@
   "stop_decisions": [],
   "terminal_context_packet_hash": null,
   "unknowns": [],
-  "version": 22
+  "version": 23
 }

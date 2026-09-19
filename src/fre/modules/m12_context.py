@@ -348,9 +348,36 @@ class Wave3ContextCompiler(ContextCompiler):
             blocker_refs=tuple(sorted(blocker.blocker_id for blocker in problem_blockers)),
             ledger_root=canonical_hash(ledger_projection),
             ledger_version=cast(int, kwargs["snapshot_version"]),
-            representation_plan_ref=canonical_hash(representation) if representation else None,
-            representation_artifact_refs=tuple(
-                sorted(canonical_hash(artifact) for artifact in representation_artifacts)
+            # W3 final-gate fix #5: prefer the v2 (bound) representation
+            # state when present, mirroring `derive_wave3_availability`'s own
+            # v2-preferred/v1-fallback rule (finding F) above. Before this
+            # fix, these two ref fields were computed ONLY from the legacy
+            # v1 `representation`/`representation_artifacts` -- so a run
+            # using only v2 selection (`representation_v2` populated,
+            # `representation` always `None`) got `representation_plan_ref
+            # =None` and `representation_artifact_refs=()` even when a real,
+            # bound v2 plan and its artifacts existed. Only artifacts whose
+            # `plan_hash` actually matches `representation_v2.plan_hash` are
+            # included, same as `derive_wave3_availability`'s own
+            # `bound_artifacts` filter, so a stale artifact from a
+            # superseded v2 plan is never counted.
+            representation_plan_ref=(
+                canonical_hash(representation_v2)
+                if representation_v2 is not None
+                else (canonical_hash(representation) if representation else None)
+            ),
+            representation_artifact_refs=(
+                tuple(
+                    sorted(
+                        canonical_hash(artifact)
+                        for artifact in representation_artifacts_v2
+                        if artifact.plan_hash == representation_v2.plan_hash
+                    )
+                )
+                if representation_v2 is not None
+                else tuple(
+                    sorted(canonical_hash(artifact) for artifact in representation_artifacts)
+                )
             ),
             prompt_version=prompt_version,
             model_identity=model_identity,

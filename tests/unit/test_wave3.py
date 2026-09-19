@@ -45,11 +45,13 @@ from fre.runtime.events import (
 )
 
 
-def envelope(*, external_write: bool = False) -> TaskEnvelope:
+def envelope(
+    *, external_write: bool = False, explicit_constraints: tuple[str, ...] = ("cost <= 10",)
+) -> TaskEnvelope:
     return TaskEnvelope(
         task_id=UUID(int=1),
         text="Minimize cost subject to cost <= 10.",
-        explicit_constraints=("cost <= 10",),
+        explicit_constraints=explicit_constraints,
         requested_output=OutputContract(form="TEXT"),
         execution_permissions=PermissionSet(allow_external_writes=external_write),
     )
@@ -285,6 +287,143 @@ def test_m03_merges_explicit_hard_constraint_omitted_by_proposal() -> None:
 
 
 @pytest.mark.unit
+def test_m03_partial_clause_match_does_not_hide_missing_conjunctive_clause() -> None:
+    """W3 final-gate fix #1: `_explicit_constraint_represented` used to accept
+    a match in EITHER text-containment direction (`needle in haystack OR
+    haystack in needle`). When a single `TaskEnvelope.explicit_constraints`
+    entry is itself a multi-clause conjunction ("cost <= 10 and weight <=
+    5"), a proposal's HARD constraint covering only the first clause ("cost
+    <= 10") is a literal substring of the envelope statement, so the
+    `haystack in needle` direction wrongly reported the WHOLE conjunction as
+    represented -- silently losing the "weight <= 5" clause with no
+    synthesis and no ledger trace. This test fails on the pre-fix code
+    (the missing clause is never synthesised) and passes after (only the
+    `needle in haystack` direction is honoured, so the incomplete proposal
+    constraint does not count as full coverage and the whole explicit
+    statement is synthesised as its own additional HARD constraint)."""
+    task = TaskEnvelope(
+        task_id=UUID(int=1),
+        text="Keep cost and weight within limits.",
+        explicit_constraints=("cost <= 10 and weight <= 5",),
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(allow_external_writes=False),
+    )
+    anchor = {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {
+            "object_type": "TaskEnvelope",
+            "object_id": str(task.task_id),
+            "revision": None,
+        },
+        "selector": "/explicit_constraints/0",
+    }
+    # The proposal's HARD constraint only covers the "cost <= 10" clause --
+    # a literal substring of the full envelope statement -- and never states
+    # the "weight <= 5" clause anywhere.
+    proposal = ProblemFormalisationOutput.model_validate_json(
+        json.dumps(
+            {
+                "items": (
+                    {
+                        "id": "c1",
+                        "kind": "CONSTRAINT",
+                        "description": "cost <= 10",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [anchor],
+                        "attributes": {
+                            "constraint_kind": "HARD",
+                            "verification_mode": "UNAVAILABLE",
+                            "verification_status": "UNKNOWN",
+                        },
+                    },
+                )
+            }
+        )
+    )
+    problem = ProblemFormaliser().formalise(task, proposal)
+    hard_descriptions = {c.description for c in problem.constraints if c.kind == "HARD"}
+    assert "cost <= 10" in hard_descriptions
+    # The missing conjunctive clause was NOT silently dropped: the full
+    # explicit statement is synthesised as its own additional HARD
+    # constraint.
+    assert "cost <= 10 and weight <= 5" in hard_descriptions
+    assert len(problem.constraints) == 2
+
+
+@pytest.mark.unit
+def test_m03_synthesised_explicit_constraint_gets_a_ledger_node() -> None:
+    """W3 final-gate fix #2: `canonical_events` builds `ProblemSpec.constraints`
+    via `formalise` (which may synthesise extra explicit constraints the
+    proposal omitted, per PR #27's fix and the fix above) but separately
+    called `_ledger_events(proposal, ...)`, which only ever iterated
+    `proposal.items` -- a synthesised constraint therefore got admitted into
+    the `ProblemSpec` with NO corresponding M09 ledger node at all. This test
+    fails on the pre-fix code (no `LedgerNodeAdded` node whose content
+    matches the synthesised constraint) and passes after (the final admitted
+    item list, including synthesised items, is fed through
+    `_ledger_events`)."""
+    task = TaskEnvelope(
+        task_id=UUID(int=1),
+        text="Minimize cost subject to cost <= 10 and weight <= 5kg.",
+        explicit_constraints=("cost <= 10", "weight <= 5kg"),
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(allow_external_writes=False),
+    )
+    anchor = {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {
+            "object_type": "TaskEnvelope",
+            "object_id": str(task.task_id),
+            "revision": None,
+        },
+        "selector": "/explicit_constraints/0",
+    }
+    proposal = ProblemFormalisationOutput.model_validate_json(
+        json.dumps(
+            {
+                "items": (
+                    {
+                        "id": "c1",
+                        "kind": "CONSTRAINT",
+                        "description": "cost <= 10",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [anchor],
+                        "attributes": {
+                            "constraint_kind": "HARD",
+                            "verification_mode": "UNAVAILABLE",
+                            "verification_status": "UNKNOWN",
+                        },
+                    },
+                )
+            }
+        )
+    )
+    events = ProblemFormaliser().canonical_events(
+        task,
+        proposal,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        uuids=FakeUUIDFactory(UUID(int=index) for index in range(100, 110)),
+    )
+    problem_event = next(event for event in events if isinstance(event, ProblemFormalised))
+    synthesised = next(
+        c for c in problem_event.problem.constraints if c.description == "weight <= 5kg"
+    )
+    ledger_nodes = [event.node for event in events if isinstance(event, LedgerNodeAdded)]
+    # Exactly one FACT ledger node was created that carries the synthesised
+    # constraint's own item id in its content -- the same treatment every
+    # proposal-authored explicit-input item already gets.
+    matching = [
+        node
+        for node in ledger_nodes
+        if isinstance(node.content, dict)
+        and node.content.get("id") == synthesised.id
+        and node.content.get("kind") == "CONSTRAINT"
+    ]
+    assert len(matching) == 1
+    assert matching[0].node_type.value == "FACT"
+
+
+@pytest.mark.unit
 def test_m03_downgraded_explicit_constraint_is_restored_as_hard() -> None:
     """A proposal that restates the user's constraint verbatim but downgrades
     it to SOFT must not let the HARD requirement quietly disappear: the
@@ -426,8 +565,13 @@ def test_m03_contradiction_maps_to_frozen_m09_events() -> None:
     # point. The only way to obtain M03 ledger events is `canonical_events`,
     # which always resolves anchors/support via `formalise` first and
     # prepends the resulting `ProblemFormalised` event.
+    # `explicit_constraints=()`: this test is about contradiction-relation
+    # ledger mapping, not explicit-constraint synthesis (W3 final-gate fix
+    # #2 now also emits a ledger node for any synthesised explicit
+    # constraint), so the envelope carries none to keep the expected event
+    # count and indices focused on the contradiction path under test.
     events = ProblemFormaliser().canonical_events(
-        envelope(),
+        envelope(explicit_constraints=()),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 10)),
@@ -491,14 +635,26 @@ def test_m03_material_contradiction_contests_supported_endpoints() -> None:
     )
     # C06 remediation (F06): route through `canonical_events`, the only
     # remaining public path to M03 ledger events -- see the note on the
-    # previous call site.
+    # previous call site. `left_anchor` above anchors into
+    # `/explicit_constraints/0`, so the envelope must keep that entry (unlike
+    # the two tests above that could drop it); since "left"/"right" are
+    # UNKNOWN-kind items (not CONSTRAINT), W3 final-gate fix #2 still
+    # synthesises a HARD constraint node covering "cost <= 10" here (SUPPORTED,
+    # not CONTESTED) -- the node-kind filter below keeps this assertion
+    # scoped to the two UNKNOWN items under test for the contradiction path.
     events = ProblemFormaliser().canonical_events(
         envelope(),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(40, 50)),
     )
-    nodes = [event.node for event in events if isinstance(event, LedgerNodeAdded)]
+    nodes = [
+        event.node
+        for event in events
+        if isinstance(event, LedgerNodeAdded)
+        and isinstance(event.node.content, dict)
+        and event.node.content.get("kind") == "UNKNOWN"
+    ]
     assert [node.epistemic_status for node in nodes] == [
         EpistemicStatus.CONTESTED,
         EpistemicStatus.CONTESTED,

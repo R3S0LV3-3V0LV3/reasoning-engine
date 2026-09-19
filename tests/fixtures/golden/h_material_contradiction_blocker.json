@@ -3,10 +3,10 @@
     "17bfdbe4a79d1523432c8e8c0e2bebdb50a263ca8976bd30e173362e15854dec",
     "1dd4ed62cf1e049392464fcaab89c3a8138c81c51dbad443a29d46bb3859977f",
     "35d691b1693cbd9ec17b3c7474bfde7575a086d2f572dc92f71372e9a1bf691c",
-    "623e5534f7408defb172034de1419f827e7afb5b2cd5df4cd9cec88cda8d33a7",
+    "75ba5e132527b241ad821ba692405f9f5c9387ac5704a8350e9e7759c3918889",
     "9e79bd9175c774bde187e24924a77d12bc85770d51bc8f80d9041d27cb003522",
     "b2b7efc3ef4e92ae5fa5c768fe4547c1052f245855501bfa2a5bac64499990fa",
-    "b2e66d0e0fb02fdcd8d72bb3ca29165c82caedb6e517700acc33cf2dfb58ce82"
+    "f74bd6e1faa5bbc66088f193822af86708ef75b3156e7ac4be1fb44784a6d20a"
   ],
   "assumptions": [],
   "blockers": {
@@ -116,12 +116,12 @@
       "sequence": 17
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 18
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 19
     },
@@ -131,22 +131,22 @@
       "sequence": 20
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 21
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 22
     },
     {
-      "event_type": "ProblemFormalised",
-      "module_id": "M03",
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
       "sequence": 23
     },
     {
-      "event_type": "LedgerNodeAdded",
+      "event_type": "ProblemFormalised",
       "module_id": "M03",
       "sequence": 24
     },
@@ -161,17 +161,17 @@
       "sequence": 26
     },
     {
-      "event_type": "LedgerEdgeAdded",
+      "event_type": "LedgerNodeAdded",
       "module_id": "M03",
       "sequence": 27
     },
     {
-      "event_type": "ProblemContradictionRecorded",
+      "event_type": "LedgerEdgeAdded",
       "module_id": "M03",
       "sequence": 28
     },
     {
-      "event_type": "ProblemBlockerRecorded",
+      "event_type": "ProblemContradictionRecorded",
       "module_id": "M03",
       "sequence": 29
     },
@@ -181,46 +181,56 @@
       "sequence": 30
     },
     {
-      "event_type": "RepresentationPlanSelected",
-      "module_id": "M04",
+      "event_type": "ProblemBlockerRecorded",
+      "module_id": "M03",
       "sequence": 31
     },
     {
-      "event_type": "ArtifactRegistered",
-      "module_id": "M04",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
       "sequence": 32
     },
     {
-      "event_type": "RepresentationArtifactCompiled",
+      "event_type": "RepresentationPlanSelected",
       "module_id": "M04",
       "sequence": 33
     },
     {
       "event_type": "ArtifactRegistered",
-      "module_id": "M12",
+      "module_id": "M04",
       "sequence": 34
+    },
+    {
+      "event_type": "RepresentationArtifactCompiled",
+      "module_id": "M04",
+      "sequence": 35
     },
     {
       "event_type": "ArtifactRegistered",
       "module_id": "M12",
-      "sequence": 35
+      "sequence": 36
+    },
+    {
+      "event_type": "ArtifactRegistered",
+      "module_id": "M12",
+      "sequence": 37
     },
     {
       "event_type": "ContextCompiled",
       "module_id": "M12",
-      "sequence": 36
+      "sequence": 38
     },
     {
       "event_type": "StopDecisionRecorded",
       "module_id": "M13",
-      "sequence": 37
+      "sequence": 39
     }
   ],
-  "final_state_hash": "847c012d46e13c13c21ba1e78cbc5e9d8c2eb7806ecfaec91876618c16c6cae6",
+  "final_state_hash": "1b245cb39f9bb5152c797f9e6906b1ffef4e2efa9301741208e0a126777d0042",
   "fixture": "H",
   "last_packet": {
     "availability": "PARTIAL_BLOCKED",
-    "packet_hash": "65455b3ae1f1792026d5546eccf3a00486cf21489e441935cebc6785357f9aac",
+    "packet_hash": "6522192701e8a2f8f92fb4c9248d4db3dce6a9d7cf79217bfe6c2e72f5020a6b",
     "profile": "STANDARD"
   },
   "model_calls": 2,
@@ -249,5 +259,5 @@
     "right",
     "unresolved-1"
   ],
-  "version": 37
+  "version": 39
 }

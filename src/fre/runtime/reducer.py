@@ -81,6 +81,7 @@ from fre.runtime.events import (
     StopDecisionRecordedV2,
     StoredEvent,
     TaskClassified,
+    TaskEnvelopeBound,
     TaskPreliminarilyClassified,
     TerminalContextAssociated,
     TestValueSet,
@@ -125,6 +126,16 @@ class RunState(FrozenModel):
     preliminary_task_signature: TaskSignature | None = None
     classification_record: ClassificationRecord | None = None
     classification_diagnostics: tuple[str, ...] = ()
+    # W3 final-gate fix #3: the canonical hash of the `TaskEnvelope` that
+    # produced `task_signature`/`problem_spec` respectively, so
+    # `Wave3Engine`'s resumability short-circuits can detect a resume
+    # attempt against a genuinely different envelope instead of silently
+    # returning stale data. `None` until the corresponding
+    # `TaskEnvelopeBound` event lands. Popped from `snapshot_payload` when
+    # both are `None` (see below) so every pre-existing sealed golden
+    # fixture's hash is unaffected.
+    classification_envelope_hash: str | None = None
+    problem_envelope_hash: str | None = None
     problem_spec: ProblemSpec | None = None
     problem_blockers: tuple[ProblemBlocker, ...] = ()
     problem_contradictions: tuple[ContradictionDiagnostic, ...] = ()
@@ -217,6 +228,13 @@ class RunState(FrozenModel):
         # pre-existing run's hash changes merely because this phase shipped.
         if self.representation_plan_v2 is None and not self.representation_artifacts_v2:
             for key in ("representation_plan_v2", "representation_artifacts_v2"):
+                payload.pop(key)
+        # W3 final-gate fix #3: `classification_envelope_hash`/
+        # `problem_envelope_hash` did not exist when every earlier snapshot
+        # was sealed. Pop both whenever they are unset, so no pre-existing
+        # run's hash changes merely because this fix shipped.
+        if self.classification_envelope_hash is None and self.problem_envelope_hash is None:
+            for key in ("classification_envelope_hash", "problem_envelope_hash"):
                 payload.pop(key)
         return payload
 
@@ -821,24 +839,47 @@ class RunReducer:
                 raise ValueError(
                     "wave3_context ledger_version is ahead of the run state actually reached"
                 )
+            # W3 final-gate fix #5: prefer the v2 (bound) representation
+            # state when present, mirroring `Wave3ContextCompiler.
+            # compile_semantic`'s own v2-preferred/v1-fallback computation of
+            # these two ref fields (see that method's docstring/comment).
+            # Before this fix, `Wave3SemanticContext` had "no v2-specific ref
+            # field" per this branch's own prior comment -- a run using only
+            # v2 selection produced a `representation_plan_ref`/
+            # `representation_artifact_refs` that legitimately referenced the
+            # bound v2 plan/artifacts, but this independent verification only
+            # ever compared against legacy v1 `state.representation_plan`/
+            # `state.representation_artifacts`, which are always empty on a
+            # v2-only run -- so a real, correctly-computed v2 ref would have
+            # been wrongly rejected as a dangling/non-matching reference.
+            if state.representation_plan_v2 is not None:
+                real_plan_ref: object | None = canonical_hash(state.representation_plan_v2)
+                real_artifact_hashes = {
+                    canonical_hash(artifact)
+                    for artifact in state.representation_artifacts_v2
+                    if artifact.plan_hash == state.representation_plan_v2.plan_hash
+                }
+            else:
+                real_plan_ref = (
+                    canonical_hash(state.representation_plan)
+                    if state.representation_plan is not None
+                    else None
+                )
+                real_artifact_hashes = {
+                    canonical_hash(artifact) for artifact in state.representation_artifacts
+                }
             _verify_optional_ref(
                 wave3.representation_plan_ref,
-                canonical_hash(state.representation_plan)
-                if state.representation_plan is not None
-                else None,
+                real_plan_ref,
                 "wave3_context representation_plan_ref does not match the run's current "
                 "representation plan",
             )
-            real_artifact_hashes = {
-                canonical_hash(artifact) for artifact in state.representation_artifacts
-            }
             declared_artifact_refs = set(wave3.representation_artifact_refs)
             # Finding C (C08 remediation): completeness in the other direction
-            # too -- every real, currently-applied v1 `representation_artifacts`
-            # entry (the only entries `Wave3SemanticContext.representation_
-            # artifact_refs` can ever represent -- it has no v2-specific ref
-            # field) must be declared; a packet omitting one is understating
-            # real, already-applied state.
+            # too -- every real, currently-applied representation-artifact
+            # entry (v2-bound-and-matching when a v2 plan is bound, else
+            # legacy v1) must be declared; a packet omitting one is
+            # understating real, already-applied state.
             _verify_ref_set_matches(
                 declared_artifact_refs,
                 real_artifact_hashes,
@@ -1183,6 +1224,20 @@ class RunReducer:
                     )
             changes["task_signature"] = payload.signature
             changes["classification_record"] = payload.record
+        elif isinstance(payload, TaskEnvelopeBound):
+            # W3 final-gate fix #3: bind the persisted envelope hash for
+            # whichever stage this event covers. A batch may legitimately
+            # carry at most one of these per stage per call (the coordinator
+            # only ever appends one when the corresponding result did not
+            # already exist), but a resumed run's LATER call binds a fresh
+            # hash again on top -- so this is a plain overwrite, not an
+            # append, mirroring `task_signature`/`problem_spec` themselves.
+            if payload.stage == "classification":
+                changes["classification_envelope_hash"] = payload.envelope_hash
+            elif payload.stage == "formalisation":
+                changes["problem_envelope_hash"] = payload.envelope_hash
+            else:
+                raise ValueError(f"unknown TaskEnvelopeBound stage: {payload.stage!r}")
         elif isinstance(payload, ClassificationDiagnosticRecorded):
             changes["classification_diagnostics"] = (
                 *state.classification_diagnostics,
@@ -1198,6 +1253,21 @@ class RunReducer:
             changes["problem_contradictions"] = ()
             if state.problem_spec is not None and state.problem_spec != payload.problem:
                 changes["representation_plan"] = None
+                # W3 final-gate fix #6: the v1 `representation_plan` was
+                # cleared here, but `representation_plan_v2`/
+                # `representation_artifacts_v2` (C07's bound-v2 selection
+                # state) were not -- a stale v2 plan bound to the OLD
+                # `ProblemSpec` survived a reformalisation untouched, so a
+                # later `select_representation` resumability check
+                # (`state.representation_plan_v2 is not None`) would wrongly
+                # short-circuit and return a plan for a problem that no
+                # longer exists. Both v2 fields are cleared together (unlike
+                # v1, which leaves `representation_artifacts` stale -- a
+                # pre-existing, separately-scoped gap not touched here) since
+                # a v2 plan and its artifacts are always bound to the same
+                # `ProblemSpec` and have no independent lifecycle.
+                changes["representation_plan_v2"] = None
+                changes["representation_artifacts_v2"] = ()
         elif isinstance(payload, ProblemBlockerRecorded):
             # Resolve concrete provenance before accepting a blocker.
             EpistemicLedger().effective_status(state.ledger, payload.blocker.ledger_ref)

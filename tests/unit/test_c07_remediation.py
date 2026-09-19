@@ -40,7 +40,13 @@ from fre.domain.representation import (
 )
 from fre.domain.representation_registry import RepresentationDefinition as _ForgedDefinition
 from fre.domain.representation_registry import representation_determinism_hash
-from fre.domain.semantic import SemanticCallCharge, SemanticModelCallRecord, StructuredModelStatus
+from fre.domain.semantic import (
+    SemanticCallCharge,
+    SemanticModelCallRecord,
+    StructuredModelRequest,
+    StructuredModelResult,
+    StructuredModelStatus,
+)
 from fre.domain.task import TaskEnvelope, TaskSignature
 from fre.engine import FrontierReasoningEngine
 from fre.modules.m01_classifier import TaskClassifier
@@ -1159,3 +1165,120 @@ def test_eu28_reducer_accepts_mismatched_input_hash_when_state_lacks_classificat
 
     final_state = engine.inspect(handle.run_id)
     assert final_state.representation_plan_v2 == forged
+
+
+# ---------------------------------------------------------------------------
+# W3 final-gate fix #6: `ProblemFormalised` changing the problem must also
+# clear a bound v2 representation plan/artifacts -- only the legacy v1
+# `representation_plan` was cleared before this fix, leaving a stale v2 plan
+# (bound to a NOW-SUPERSEDED `ProblemSpec`) behind untouched.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_reformalisation_clears_a_stale_bound_v2_representation_plan(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Apply `ProblemFormalised(A)`, bind a real v2 plan to A, then apply
+    `ProblemFormalised(B)` where `B != A`: `representation_plan_v2`/
+    `representation_artifacts_v2` must both be cleared, not left stale and
+    bound to a `ProblemSpec` the run no longer has. This test fails on the
+    pre-fix code (both fields still hold A's plan/artifact after B lands)
+    and passes after."""
+    handle = engine.create_run({"w3-final-gate-fix6": "stale-v2-plan"})
+    problem_a = ProblemSpec(output_contract=OutputContract(form="TEXT"))
+    store: dict[str, bytes] = {}
+    _append(engine, handle.run_id, ProblemFormalised(problem=problem_a), module_id="M03")
+    plan, artifact, ref = _bound_plan_and_artifact(engine, handle.run_id, problem_a, store)
+    real_bytes = store[ref.sha256]
+    engine.store_artifact(real_bytes, media_type="application/json")
+    _append(engine, handle.run_id, RepresentationPlanSelectedV2(plan=plan), module_id="M04")
+    _append(
+        engine,
+        handle.run_id,
+        ArtifactRegistered(artifact=ref, media_type="application/json", byte_size=len(real_bytes)),
+    )
+    _append(
+        engine, handle.run_id, RepresentationArtifactCompiledV2(artifact=artifact), module_id="M04"
+    )
+    state = engine.inspect(handle.run_id)
+    assert state.representation_plan_v2 == plan
+    assert state.representation_artifacts_v2 == (artifact,)
+
+    problem_b = ProblemSpec(
+        output_contract=OutputContract(form="TEXT"),
+        decision_variables=(DecisionVariable(id="dv-1", name="a genuinely different problem"),),
+    )
+    assert problem_b != problem_a
+    _append(engine, handle.run_id, ProblemFormalised(problem=problem_b), module_id="M03")
+
+    final_state = engine.inspect(handle.run_id)
+    assert final_state.problem_spec == problem_b
+    assert final_state.representation_plan_v2 is None
+    assert final_state.representation_artifacts_v2 == ()
+
+    replayed = engine.replay(handle.run_id)
+    assert replayed.state_hash == final_state.state_hash
+
+
+# ---------------------------------------------------------------------------
+# W3 final-gate fix #5: `Wave3ContextCompiler.compile_semantic`'s
+# `representation_plan_ref`/`representation_artifact_refs` must be computed
+# from v2 (bound) state when that is what a run actually has, and the
+# reducer's own independent verification of a `ContextCompiledV2` carrying
+# those refs must accept the v2-derived values too.
+# ---------------------------------------------------------------------------
+
+
+class _UnusedModel:
+    async def generate(self, request: StructuredModelRequest) -> StructuredModelResult:
+        raise AssertionError(f"unexpected model call: {request!r}")
+
+
+@pytest.mark.integration
+def test_compile_semantic_populates_refs_from_v2_only_representation_state(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """A run using only v2 representation selection (no v1
+    `RepresentationPlanSelected` ever emitted) must still get a populated
+    `representation_plan_ref`/`representation_artifact_refs` on the compiled
+    `Wave3SemanticContext`, and the reducer must accept the resulting
+    `ContextCompiledV2` event. Driven entirely through the real
+    `compose_wave3` coordinator (`classify_task_semantic` ->
+    `formalise_problem` -> `select_representation` -> `compile_context`),
+    which only ever selects/builds v2 representation state -- exactly the
+    "no v1 `RepresentationPlanSelected` ever ran on this run" scenario.
+    Before this fix, both ref fields were computed only from the legacy v1
+    `representation`/`representation_artifacts` parameters (always `None`/
+    `()` here), so they stayed `None`/`()` even though a real, bound v2 plan
+    and artifact existed. This test fails on the pre-fix code (the two
+    assertions on `wave3_context` below fail) and passes after."""
+    import asyncio
+
+    from fre.composition import compose_wave3
+    from fre.config import Wave3Config
+
+    wave3 = compose_wave3(engine, _UnusedModel(), Wave3Config())
+    handle = wave3.create_run()
+    task = envelope()
+
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=False))
+    asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=False))
+    plan = asyncio.run(wave3.select_representation(handle.run_id, allow_adjudication=False))
+
+    state = engine.inspect(handle.run_id)
+    assert state.representation_plan is None
+    assert state.representation_artifacts == ()
+    assert state.representation_plan_v2 == plan
+    assert state.representation_artifacts_v2
+
+    wave3.compile_context(handle.run_id)
+
+    final_state = engine.inspect(handle.run_id)
+    packet = final_state.context_packets[-1]
+    wave3_context = packet.wave3_context
+    assert wave3_context is not None
+    assert wave3_context.representation_plan_ref == canonical_hash(state.representation_plan_v2)
+    assert wave3_context.representation_artifact_refs == tuple(
+        sorted(canonical_hash(artifact) for artifact in state.representation_artifacts_v2)
+    )

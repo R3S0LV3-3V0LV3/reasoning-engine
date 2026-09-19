@@ -108,12 +108,12 @@
       "sequence": 17
     },
     {
-      "event_type": "BudgetReserved",
-      "module_id": "semantic-runtime",
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M01",
       "sequence": 18
     },
     {
-      "event_type": "ArtifactRegistered",
+      "event_type": "BudgetReserved",
       "module_id": "semantic-runtime",
       "sequence": 19
     },
@@ -123,27 +123,37 @@
       "sequence": 20
     },
     {
-      "event_type": "BudgetReservationSettled",
+      "event_type": "ArtifactRegistered",
       "module_id": "semantic-runtime",
       "sequence": 21
     },
     {
-      "event_type": "ModelCallRecorded",
+      "event_type": "BudgetReservationSettled",
       "module_id": "semantic-runtime",
       "sequence": 22
     },
     {
+      "event_type": "ModelCallRecorded",
+      "module_id": "semantic-runtime",
+      "sequence": 23
+    },
+    {
       "event_type": "ProblemFormalised",
       "module_id": "M03",
-      "sequence": 23
+      "sequence": 24
     },
     {
       "event_type": "LedgerNodeAdded",
       "module_id": "M03",
-      "sequence": 24
+      "sequence": 25
+    },
+    {
+      "event_type": "TaskEnvelopeBound",
+      "module_id": "M03",
+      "sequence": 26
     }
   ],
-  "final_state_hash": "c1ef203e57af66a888a40ac8dd77d5faff9f917dc09f90baebb2bbb3cb1a251a",
+  "final_state_hash": "f9f4be2dfbbb4217674faa76c43597f062aacdeeb650553dd6aab5584b6aca67",
   "fixture": "E",
   "inference_node_status": "PROVISIONAL",
   "inference_node_type": "INFERENCE",
@@ -157,5 +167,5 @@
   "unknowns": [
     "inferred-1"
   ],
-  "version": 24
+  "version": 26
 }

@@ -1000,3 +1000,82 @@ def test_finalize_wired_with_wave3_context_runtime_persists_context_compiled_v2(
     assert v2_payload.packet.wave3_context is not None
     final_state = engine.inspect(run.run_id)
     assert v2_payload.packet in final_state.context_packets
+
+
+@pytest.mark.integration
+def test_finalize_does_not_strand_a_run_terminal_without_context_when_v3_compile_fails(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """W3 final-gate fix #7: `Wave2Runtime.finalize` used to append the v1
+    terminal batch (`ContextCompiled`/`TerminalContextAssociated`/
+    `RunStatusChanged` -- making the run terminal) BEFORE calling
+    `Wave3ContextRuntime.compile_and_persist` for the typed Wave 3 context.
+    If that second call raised, the run was left permanently stuck: already
+    terminal (so no further `StopDecision`/M13 evaluation, and `finalize`
+    itself is not re-enterable once terminal), yet with no `ContextCompiledV2`
+    ever persisted and no way to retry.
+
+    This test forces `compile_and_persist` to raise (a broken/failing
+    artifact writer) and asserts the run does NOT end up in that stuck
+    state: `finalize` must raise (the failure is real and must propagate),
+    but the run's `status` must remain non-terminal and no v1 terminal batch
+    (`ContextCompiled`/`TerminalContextAssociated`/`RunStatusChanged`) may
+    have been persisted -- the run must still be in a genuinely retryable
+    state. This test fails on the pre-fix code (the run's status is already
+    terminal, and the v1 terminal events are already persisted, by the time
+    the exception from `compile_and_persist` propagates) and passes after
+    (compile_and_persist runs first, so its failure prevents the v1 terminal
+    batch from ever being appended at all)."""
+    run = engine.create_run({"wave": 3})
+    allocator = BudgetAllocator()
+    plan, policy_hash = allocator.allocate(signature(), default_tier_policy(), DeploymentLimits())
+    allocation = engine.make_event(
+        run.run_id,
+        BudgetAllocated(plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash),
+        module_id="M02",
+    )
+    engine.append(run.run_id, run.version, (allocation,))
+
+    state = engine.inspect(run.run_id)
+    problem = ProblemSpec(output_contract=OutputContract(form="JSON"))
+    formalised = engine.make_event(run.run_id, ProblemFormalised(problem=problem), module_id="M03")
+    engine.append(run.run_id, state.version, (formalised,))
+
+    state = engine.inspect(run.run_id)
+    decision = StopController().evaluate(
+        StopInputs(
+            budget=BudgetMeter().remaining(state.budget),
+            acceptance=AcceptanceStatus.SATISFIED,
+            validation=ValidationStatus.COMPLETE,
+        ),
+        StopPolicy(version="stop/1.0"),
+    )
+
+    class _BrokenContextRuntime(Wave3ContextRuntime):
+        def compile_and_persist(self, *args: object, **kwargs: object) -> str:
+            raise RuntimeError("simulated artifact-store outage during Wave 3 compilation")
+
+    runtime = Wave2Runtime(engine, wave3_context_runtime=_BrokenContextRuntime(engine))
+    runtime.record_decision(run.run_id, decision)
+
+    pre_finalize_state = engine.inspect(run.run_id)
+    assert pre_finalize_state.status not in {
+        "COMPLETE",
+        "PARTIAL_BUDGET",
+        "BLOCKED",
+        "FAILED_INVARIANT",
+        "CANCELLED",
+    }
+
+    with pytest.raises(RuntimeError, match="simulated artifact-store outage"):
+        runtime.finalize(run.run_id, decision)
+
+    post_failure_state = engine.inspect(run.run_id)
+    assert post_failure_state.status == pre_finalize_state.status
+    assert post_failure_state.terminal_context_packet_hash is None
+    assert post_failure_state.terminal_context_disposition is None
+    stored_events = engine.store.load(run.run_id)
+    assert not any(
+        isinstance(event.validated_payload(), ContextCompiledV2 | ContextCompiled)
+        for event in stored_events
+    )

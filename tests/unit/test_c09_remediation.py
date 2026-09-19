@@ -469,3 +469,95 @@ def test_legacy_pre_schema_representation_plan_replays_without_problem_spec_hash
     replayed = engine.replay(handle.run_id)
     assert replayed.representation_plan == legacy_plan
     assert replayed.state_hash == state.state_hash
+
+
+# ---------------------------------------------------------------------------
+# W3 final-gate fix #3: a resumable step's short-circuit must verify the
+# CURRENT call's envelope matches the one that originally produced the
+# persisted result, not silently return stale data for a different envelope.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_classify_task_semantic_rejects_resume_with_a_different_envelope(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """`classify_task_semantic` returned `state.task_signature` unchanged
+    whenever it was already persisted, with no check that THIS call's
+    `envelope` was the one that produced it. Calling it to completion with
+    envelope A and then again on the same `run_id` with a genuinely
+    different envelope B (different `task_id`) must now raise
+    `EnvelopeMismatchError` instead of silently handing back A's stale
+    signature. This test fails on the pre-fix code (no error, A's signature
+    returned) and passes after."""
+    import asyncio
+
+    from fre.composition import EnvelopeMismatchError
+
+    wave3 = compose_wave3(engine, UnusedModel(), Wave3Config())
+    handle = wave3.create_run()
+    envelope_a = TaskEnvelope(
+        task_id=UUID(int=1),
+        text="Envelope A.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+    envelope_b = TaskEnvelope(
+        task_id=UUID(int=2),
+        text="Envelope B -- a different task entirely.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+
+    signature_a = asyncio.run(
+        wave3.classify_task_semantic(handle.run_id, envelope_a, allow_model=False)
+    )
+    assert signature_a is not None
+
+    with pytest.raises(EnvelopeMismatchError):
+        asyncio.run(wave3.classify_task_semantic(handle.run_id, envelope_b, allow_model=False))
+
+    # Resuming with the SAME envelope must still be a genuine no-op.
+    replayed = asyncio.run(
+        wave3.classify_task_semantic(handle.run_id, envelope_a, allow_model=False)
+    )
+    assert replayed == signature_a
+
+
+@pytest.mark.unit
+def test_formalise_problem_rejects_resume_with_a_different_envelope(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """Same defect, `formalise_problem`'s own resumability short-circuit:
+    a run whose `problem_spec` is already persisted from envelope A must
+    reject a later `formalise_problem` call for the same `run_id` with a
+    genuinely different envelope B, instead of silently returning A's stale
+    `ProblemSpec`. Fails on the pre-fix code, passes after."""
+    import asyncio
+
+    from fre.composition import EnvelopeMismatchError
+
+    wave3 = compose_wave3(engine, UnusedModel(), Wave3Config())
+    handle = wave3.create_run()
+    envelope_a = TaskEnvelope(
+        task_id=UUID(int=1),
+        text="Envelope A.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+    envelope_b = TaskEnvelope(
+        task_id=UUID(int=2),
+        text="Envelope B -- a different task entirely.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+    )
+
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, envelope_a, allow_model=False))
+    problem_a = asyncio.run(wave3.formalise_problem(handle.run_id, envelope_a, allow_model=False))
+    assert problem_a is not None
+
+    with pytest.raises(EnvelopeMismatchError):
+        asyncio.run(wave3.formalise_problem(handle.run_id, envelope_b, allow_model=False))
+
+    replayed = asyncio.run(wave3.formalise_problem(handle.run_id, envelope_a, allow_model=False))
+    assert replayed == problem_a

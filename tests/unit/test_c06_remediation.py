@@ -56,11 +56,11 @@ from fre.runtime.events import (
 from fre.runtime.reducer import RunReducer
 
 
-def envelope() -> TaskEnvelope:
+def envelope(*, explicit_constraints: tuple[str, ...] = ("cost <= 10",)) -> TaskEnvelope:
     return TaskEnvelope(
         task_id=UUID(int=1),
         text="Minimize cost subject to cost <= 10.",
-        explicit_constraints=("cost <= 10",),
+        explicit_constraints=explicit_constraints,
         requested_output=OutputContract(form="TEXT"),
         execution_permissions=PermissionSet(),
     )
@@ -365,8 +365,13 @@ def test_ledger_nodes_are_emitted_in_dependency_order_for_a_three_level_support_
             )
         }
     )
+    # `explicit_constraints=()`: this test is about dependency-order
+    # emission for support-chained items, not explicit-constraint synthesis
+    # (W3 final-gate fix #2 now also emits a ledger node for any synthesised
+    # explicit constraint, which would otherwise appear in `emitted_order`
+    # and break this test's exact-sequence assertion below).
     events = ProblemFormaliser().canonical_events(
-        envelope(),
+        envelope(explicit_constraints=()),
         proposal,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 20)),
@@ -542,6 +547,70 @@ def test_support_ledger_node_ref_resolves_through_the_real_coordinator(
     resolved = next(item for item in problem.unknowns if item.id == "cites-prior-m01-ledger-node")
     assert resolved.provenance is not None
     assert len(resolved.provenance.support) == 1
+
+
+@pytest.mark.unit
+def test_formalise_problem_registers_envelope_attachments_before_appending(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """W3 final-gate fix #4: `formalise_problem` built `available_artifacts`
+    from `envelope.attachments` purely as a LOCAL `frozenset` for M03's own
+    `ProblemFormaliser.formalise()` anchor/support check, but never emitted
+    a real `ArtifactRegistered` event for any of them. The reducer's OWN
+    independent verification of an M03 `LedgerNodeAdded`'s anchors
+    (`_validate_m03_ledger_node_provenance` in `runtime/reducer.py`) checks
+    against `state.artifacts`, which is populated ONLY by applied
+    `ArtifactRegistered` events -- so a proposal item anchored to a real
+    envelope attachment passed `formalise()` locally and then was rejected
+    by the reducer at `engine.append`, with no way to ever succeed. This
+    test fails on the pre-fix code (the coordinator call below raises) and
+    passes after (the coordinator registers every not-yet-known attachment
+    in the same atomic batch as the formalisation events)."""
+    attachment = ArtifactDataRef(artifact_id=UUID(int=42), sha256="a" * 64)
+    task = TaskEnvelope(
+        task_id=UUID(int=901),
+        text="Use the attached document.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+        attachments=(attachment,),
+    )
+    model = _QueueModel(
+        [
+            _formalisation_response(
+                [
+                    {
+                        "id": "anchored-to-attachment",
+                        "kind": "UNKNOWN",
+                        "description": "derived from the attached document",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [
+                            {
+                                "source_kind": "ARTIFACT",
+                                "source_ref": {
+                                    "artifact_id": str(attachment.artifact_id),
+                                    "sha256": attachment.sha256,
+                                },
+                                "selector": "",
+                            }
+                        ],
+                    }
+                ]
+            )
+        ]
+    )
+    wave3 = compose_wave3(engine, model)
+    handle = wave3.create_run()
+    # Bootstrap the budget a real semantic call needs to reserve against
+    # (deterministic-only: this model's queue holds only the formalisation
+    # response above, so `allow_model=False` here must never draw from it).
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=False))
+
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+
+    resolved = next(item for item in problem.unknowns if item.id == "anchored-to-attachment")
+    assert resolved.provenance is not None
+    state = engine.inspect(handle.run_id)
+    assert attachment.sha256 in state.artifacts
 
 
 # ---------------------------------------------------------------------------
