@@ -801,6 +801,53 @@ class Wave3Engine:
         product already present, including a context packet compiled at the
         run's current version) replays this entire method with zero provider
         invocations.
+
+        EU-34 (w3-cleanup), downgraded to DOCUMENT-ONLY: one call to this
+        method issues `self.engine.inspect(run_id)` at least once per step
+        (15 sites across `composition.py`, plus 5 in `semantic_runtime.py`
+        and 1 in `m04_representation.py`), most of which are each step's own
+        leading precondition/idempotency check against a state the
+        immediately-prior step arguably already fetched. Threading an
+        optional `state: RunState | None = None` parameter through
+        `classify_task`/`formalise_problem`/`select_representation`/
+        `compile_context`/`evaluate_stop` to let this method skip that
+        redundant leading inspect was investigated and deliberately NOT
+        implemented, for two compounding reasons found during that
+        investigation:
+
+        1. This method never actually holds a fresh `RunState` between
+           steps today -- each step returns only its own typed product
+           (`TaskSignature`, `ProblemSpec`, ...), not the state it was
+           derived from. Threading a passed-in state would first require
+           adding an extra `self.engine.inspect(run_id)` call HERE, after
+           every step, purely to capture what the next step could reuse --
+           which does not reduce this method's own aggregate inspect count
+           at all; it only shifts which method pays for each inspect while
+           adding a new state-passing surface across five method signatures.
+        2. Worse, that newly-added inspect (taken by `execute_front_end`
+           immediately after one step returns) would be reused by the NEXT
+           step's leading precondition check instead of that step's own
+           fresh inspect -- reopening exactly the class of staleness bug
+           `formalise_problem`'s and `select_representation`'s docstrings
+           each independently document and fix (findings C and H): a
+           concurrent writer on the same `run_id` can append real events in
+           the gap between "state captured" and "state acted on," and every
+           leading precondition/idempotency inspect exists specifically to
+           observe that. There is no gap in this method's step sequence that
+           is provably free of that risk without re-deriving the concurrent-
+           double-bootstrap/double-append race-safety analysis this
+           coordinator already relies on -- risking exactly the invariant
+           this unit was told not to regress, for a Tier-4 efficiency
+           finding, not a correctness bug.
+
+        The replay volume this documents is an accepted, known cost of the
+        resumability-by-design architecture described in the module
+        docstring above: every step's own fresh inspect is what makes
+        interruption-and-resume, and concurrent retries, safe. `FrontierReasoningEngine.snapshot()`/`.replay_from_snapshot()` exist as a
+        separate, larger architectural option (optimizing replay-from-genesis
+        cost, not this "many inspects within one coordinator call" pattern)
+        for a future pass, if this volume is ever measured as a real
+        bottleneck in production rather than assessed from source alone.
         """
         await self.classify_task_semantic(
             run_id,
