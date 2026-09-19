@@ -1,6 +1,13 @@
 # Wave 3 review register
 
-Only findings with decisive regression coverage are closed here.
+Only findings with decisive regression coverage are closed here. This table closes each
+remediation round's DEFECT GROUP against the tests that decisively prove it. It does not, on its
+own, distinguish "a test exercises the general area" from "a test proves the exact named
+semantic" at per-acceptance granularity — that finer-grained, per-row traceability (with a real
+implementation symbol, positive test, negative test, and evidence commit SHA per numbered
+acceptance) is what `docs/wave3-requirements-matrix.md` provides, machine-checked by
+`scripts/verify_requirements_matrix.py`. Read the two documents together: this register is the
+per-PR defect closure history; the matrix is the per-acceptance evidence index.
 
 | Finding | Resolution | Evidence | State |
 |---|---|---|---|
@@ -11,3 +18,5 @@ Only findings with decisive regression coverage are closed here.
 | M04 defects 22–26 | Specialized views now require relevant structural features; registry builder availability is carried into plans and typed fallbacks; optional adjudication is policy-gated and limited to deterministic tie candidates; and kind-specific builders emit deterministic projections without Wave 4 solving or inference. | `tests/unit/test_m04_representations.py`, `tests/unit/test_wave3.py`, `tests/property/test_wave3_properties.py`, and `tests/integration/test_wave3_gate.py` | Fixed and regression-tested |
 | M12 defects 27–28 | Compiler 2.0 now retains every canonical problem group, verification state, explicit blocker, output requirement, relation, and only a currently bound representation; its deterministic Markdown projection uses a fixed semantic-section order while compiler 1.0 rendering remains isolated. | `tests/unit/test_m12_wave3_context.py`, `tests/fixtures/m12_wave3/`, `tests/unit/test_foundation_freeze.py`, and `tests/integration/test_wave3_gate.py` | Fixed and regression-tested |
 | Configuration defect 29 | A single composition root validates every configured version, derives and injects the effective M01, semantic-runtime, M04, registry, and M12 policies, and persists their complete canonical identity at run creation. Zero repair and non-default reservation/selection settings are retained exactly; replay reads the persisted identity rather than current configuration. | `tests/unit/test_wave3_composition.py`, plus the component and historic replay suites | Fixed and regression-tested |
+| Coordinator defect F08 (C09) | `Wave3Engine` (`fre.composition`) sequences the real M01 -> M02 -> M03 -> M04 -> M12 front end as `execute_front_end`, replacing hand-wired, test-only module construction. Every step is independently resumable/idempotent (no duplicate provider call or event batch on retry); `execute_front_end` is documented as RECOMMENDED, not structurally exclusive — the underlying modules remain independently callable, and the coordinator's own docstring documents exactly what discipline is and is not lost by bypassing it. | `tests/integration/test_wave3_gate.py` (16 coordinator-level cases), `tests/unit/test_c09_remediation.py`, `tests/golden/test_golden_fixtures.py` (fixtures A–L) | Fixed and regression-tested |
+| Acceptance/evidence defect F14 (C10, this PR) | The Wave 3 requirements matrix was rebuilt from a 110-row many-to-one generic mapping (every row citing the same four cells) into per-row real implementation symbols, positive/negative tests, and evidence commit SHAs, machine-verified by `scripts/verify_requirements_matrix.py`. Twelve golden fixtures (A–L) were added under `tests/golden/`, each driving a decisive scenario through the real `Wave3Engine` coordinator and asserting checked-in evidence. `WAVE3_DEFERRED_CLEANUP_REGISTER.md`'s existence and scope (28+ Tier 4–7 items) is now referenced from `README.md` and the matrix itself, rather than left implicit. | `docs/wave3-requirements-matrix.md`, `scripts/verify_requirements_matrix.py`, `tests/unit/test_verify_requirements_matrix.py`, `tests/golden/test_golden_fixtures.py` | Fixed and regression-tested |

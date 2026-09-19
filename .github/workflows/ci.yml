@@ -68,6 +68,8 @@ jobs:
           uv pip install --python .venv/bin/python --no-deps . --no-build-isolation
       - name: Run unit tests
         run: uv run --no-sync pytest tests/unit
+      - name: Verify requirements matrix referential integrity
+        run: uv run --no-sync python scripts/verify_requirements_matrix.py
 
   property:
     name: property
