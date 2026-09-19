@@ -673,6 +673,22 @@ class Wave3Engine:
         # accepts `task_signature`/`representation_v2` as optional (M01/M04
         # need not have run; `derive_wave3_availability` reports that
         # honestly via `Wave3ContextAvailability`, it does not require it).
+        #
+        # EU-40 (w3-cleanup): investigated removing this guard as a duplicate
+        # of `Wave3ContextRuntime.compile_and_persist`'s own identical
+        # `problem_spec is None` check. That removal is NOT safe: this method
+        # does genuine work between its own guard and the delegate call --
+        # notably `BudgetMeter().remaining(state.budget)` below, which raises
+        # its own (less specific, differently-worded) error when
+        # `state.budget.plan` is `None`, as it always is on a fresh run that
+        # has not even reached M01/M02 yet. Removing this guard would
+        # therefore surface a confusing "budget has not been allocated"
+        # failure instead of this method's own clear, correctly-named
+        # precondition message for a run that simply never formalised a
+        # `ProblemSpec` -- so both guards are kept; this one stays the
+        # earliest, most specific diagnostic for its own precondition, and
+        # `compile_and_persist`'s copy remains the single source of truth for
+        # any caller that reaches it directly, bypassing this coordinator.
         if state.problem_spec is None:
             raise ValueError("context compilation requires a formalised ProblemSpec")
         problem_ref = canonical_hash(state.problem_spec)
