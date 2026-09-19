@@ -346,6 +346,23 @@ def _validate_m03_ledger_node_provenance(
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
+def _find_model_call_by_idempotency_key(
+    state: "RunState", key: str
+) -> "SemanticModelCallRecordV2 | SemanticModelCallRecord | None":
+    """Return the first entry in ``state.model_calls`` whose
+    ``idempotency_key`` matches ``key``, or ``None`` if there is no match.
+
+    Shared by both the duplicate-identity admission guard (which only needs
+    presence/absence) and the adjudication-reference resolution (which needs
+    the matching record itself), so the two independent linear scans over
+    ``state.model_calls`` stay in sync.
+    """
+    for call in state.model_calls:
+        if call.idempotency_key == key:
+            return call
+    return None
+
+
 class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
@@ -907,8 +924,9 @@ class RunReducer:
         elif isinstance(
             payload, (ModelCallRecorded, ModelCallFailed, ModelCallRecordedV2, ModelCallFailedV2)
         ):
-            if any(
-                item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
+            if (
+                _find_model_call_by_idempotency_key(state, payload.record.idempotency_key)
+                is not None
             ):
                 raise ValueError("semantic model-call identity already recorded")
             if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
@@ -1323,13 +1341,8 @@ class RunReducer:
                         "representation plan (v2) references adjudication outside its own "
                         "declared tie band"
                     )
-                matching_call = next(
-                    (
-                        call
-                        for call in state.model_calls
-                        if call.idempotency_key == plan.adjudication_record_ref
-                    ),
-                    None,
+                matching_call = _find_model_call_by_idempotency_key(
+                    state, plan.adjudication_record_ref
                 )
                 if matching_call is None:
                     raise ValueError(

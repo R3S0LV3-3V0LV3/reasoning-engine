@@ -64,7 +64,7 @@ from fre.runtime.events import (
     StoredEvent,
     event_wire_identity,
 )
-from fre.runtime.reducer import RunReducer, RunState
+from fre.runtime.reducer import RunReducer, RunState, _find_model_call_by_idempotency_key
 
 
 def envelope(text: str = "Compare causal and dependency structure.") -> TaskEnvelope:
@@ -1080,3 +1080,22 @@ def test_finding_i_fails_closed_without_artifact_reader_unless_trust_flag_set() 
         trusting_state, RepresentationArtifactCompiledV2(artifact=artifact2)
     )
     assert final_state.representation_artifacts_v2 == (artifact2,)
+
+
+@pytest.mark.unit
+def test_find_model_call_by_idempotency_key_found_and_not_found() -> None:
+    """EU-24: direct unit test for the shared idempotency-key lookup helper
+    that replaced the two independent linear scans over `state.model_calls`
+    (the duplicate-identity `any(...)` guard and the adjudication-ref
+    `next(...)` scan)."""
+    ref = ArtifactRef(artifact_id=UUID(int=1), sha256="a" * 64)
+    present_key = "b" * 64
+    absent_key = "c" * 64
+    call = _real_call_record(
+        idempotency_key=present_key, module_id="M03", operation="formalise", ref=ref
+    )
+    state = RunState(run_id=UUID(int=1), version=1, model_calls=(call,))
+
+    assert _find_model_call_by_idempotency_key(state, present_key) is call
+    assert _find_model_call_by_idempotency_key(state, absent_key) is None
+    assert _find_model_call_by_idempotency_key(RunState(run_id=UUID(int=1), version=0), present_key) is None
