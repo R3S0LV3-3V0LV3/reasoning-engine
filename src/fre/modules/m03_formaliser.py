@@ -84,6 +84,20 @@ class InvalidProblemSpec(ValueError):
     pass
 
 
+def _coerce_optional_float(value: object) -> float | None:
+    """Coerce a self-reported attribute value to `float`, or `None` if it is
+    not a genuine numeric signal.
+
+    C06 remediation (EU-19): shared by `_is_material`'s `numeric_relevance`
+    and both `UNKNOWN`/`ASSUMPTION` branches' `decision_relevance` below --
+    previously duplicated verbatim 3x. `bool` is deliberately excluded even
+    though it is an `int` subclass in Python: a proposal's stray `True`/
+    `False` for a field meant to carry a relevance score must never be
+    silently coerced into `1.0`/`0.0`.
+    """
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+
 def _topologically_ordered_items(
     items: tuple[ProblemItemProposal, ...],
 ) -> tuple[ProblemItemProposal, ...]:
@@ -127,11 +141,7 @@ def _topologically_ordered_items(
 def _is_material(item: ProblemItemProposal) -> bool:
     material = item.attributes.get("material")
     relevance = item.attributes.get("decision_relevance")
-    numeric_relevance = (
-        float(relevance)
-        if isinstance(relevance, int | float) and not isinstance(relevance, bool)
-        else None
-    )
+    numeric_relevance = _coerce_optional_float(relevance)
     claims_low_materiality = (material is False) or (
         numeric_relevance is not None
         and numeric_relevance < MATERIALITY_DECISION_RELEVANCE_THRESHOLD
@@ -512,12 +522,7 @@ class ProblemFormaliser:
                         domain=attrs.get("domain"),
                         rationale=rationale if isinstance(rationale, str) else None,
                         impact=attrs.get("impact"),
-                        decision_relevance=(
-                            float(decision_relevance)
-                            if isinstance(decision_relevance, int | float)
-                            and not isinstance(decision_relevance, bool)
-                            else None
-                        ),
+                        decision_relevance=_coerce_optional_float(decision_relevance),
                         resolvable=(
                             resolvable
                             if isinstance((resolvable := attrs.get("resolvable")), bool)
@@ -548,12 +553,7 @@ class ProblemFormaliser:
                         id=item.id,
                         statement=item.description,
                         why_needed=item.basis or "required for formalisation",
-                        decision_relevance=(
-                            float(decision_relevance)
-                            if isinstance(decision_relevance, int | float)
-                            and not isinstance(decision_relevance, bool)
-                            else None
-                        ),
+                        decision_relevance=_coerce_optional_float(decision_relevance),
                         scope=scope if isinstance(scope, str) else None,
                         provenance=provenance,
                     )

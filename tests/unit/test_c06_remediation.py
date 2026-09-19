@@ -27,7 +27,11 @@ from fre.domain.semantic import (
 )
 from fre.domain.task import TaskEnvelope
 from fre.engine import FrontierReasoningEngine
-from fre.modules.m03_formaliser import InvalidProblemSpec, ProblemFormaliser
+from fre.modules.m03_formaliser import (
+    InvalidProblemSpec,
+    ProblemFormaliser,
+    _coerce_optional_float,
+)
 from fre.modules.source_anchors import (
     DanglingLedgerSupportReference,
     IncompatibleSupportReferenceKind,
@@ -465,6 +469,28 @@ def test_material_defaults_true_when_no_explicit_signal_is_given() -> None:
         uuids=FakeUUIDFactory(UUID(int=index) for index in range(1, 10)),
     )
     assert any(isinstance(event, ProblemBlockerRecorded) for event in events)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0.75, 0.75),
+        (2, 2.0),
+        (0, 0.0),
+        (True, None),
+        (False, None),
+        ("0.75", None),
+        (None, None),
+        ({"nested": 1}, None),
+    ],
+)
+def test_coerce_optional_float_isolated(value: object, expected: float | None) -> None:
+    """EU-19 (C06 cleanup): `_coerce_optional_float` -- isolated from its
+    three call sites -- must coerce `int`/`float` to `float`, reject `bool`
+    (an `int` subclass in Python) despite that, and treat every other type
+    (`str`, `None`, other) as "no numeric signal"."""
+    assert _coerce_optional_float(value) == expected
 
 
 # ---------------------------------------------------------------------------
