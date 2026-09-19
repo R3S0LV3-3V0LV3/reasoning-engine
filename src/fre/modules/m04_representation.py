@@ -626,6 +626,26 @@ class RepresentationSelector:
         deterministic plan is genuinely ambiguous within its own declared
         `tie_band`, never as a floating condition outside that one declared
         policy gate.
+
+        Independent-review remediation (PR #24 finding H): this method used
+        to bind the FINAL adjudicated plan's `source_snapshot_version` to the
+        caller-supplied `source_snapshot_version` captured before `runtime.
+        execute`'s `await` -- but that call can itself append real events
+        (budget reservation/settlement, the model-call record) that advance
+        the run's committed version. A plan built that way would then fail
+        `RunReducer.apply`'s own binding check (`source_snapshot_version !=
+        state.version`) the moment a caller tried to actually persist it,
+        exactly the bug `fre.composition.Wave3Engine.select_representation`
+        documents fixing for its own (inline, ~90-line duplicate of this
+        method's logic) adjudication path -- see that method's docstring.
+        Fixed the same way here: once `runtime.execute` returns a real
+        record, the deterministic plan is RE-DERIVED from a fresh `runtime.
+        engine.inspect(run_id)` (never the pre-await snapshot), so the
+        `source_snapshot_version` bound into the final plan always reflects
+        the run's actual version immediately after the semantic call landed.
+        `fre.composition.Wave3Engine.select_representation` now calls this
+        method directly instead of duplicating the pattern inline -- see that
+        method's own (shortened) docstring.
         """
         registry = registry or default_registry_v2()
         policy = policy or self.policy
@@ -674,17 +694,37 @@ class RepresentationSelector:
                 "view_limit": budget.search.max_representation_views,
             },
         )
+        if execution.record is None:
+            return outcome(
+                deterministic, f"RUNTIME_UNAVAILABLE: {execution.cause or 'no record produced'}"
+            )
+        # Finding H: re-derive the deterministic plan from the run's FRESH
+        # state (never the pre-await `deterministic`/`candidates` captured
+        # above) now that `runtime.execute` has actually landed real events.
+        # `runtime.engine.inspect` is the same primitive `fre.composition.
+        # Wave3Engine.select_representation` uses for this.
+        from uuid import UUID
+
+        assert isinstance(run_id, UUID)
+        refreshed_state = runtime.engine.inspect(run_id)
+        assert refreshed_state.problem_spec is not None
+        assert refreshed_state.task_signature is not None
+        assert refreshed_state.budget.plan is not None
+        rescoped = self.select_bound(
+            refreshed_state.problem_spec,
+            refreshed_state.task_signature,
+            refreshed_state.budget.plan,
+            refreshed_state.version,
+            registry,
+            policy,
+        )
         proposal = (
             execution.proposal
             if isinstance(execution.proposal, RepresentationAdjudicationOutput)
             else None
         )
-        if execution.record is None:
-            return outcome(
-                deterministic, f"RUNTIME_UNAVAILABLE: {execution.cause or 'no record produced'}"
-            )
         return self.apply_adjudication_v2(
-            deterministic,
+            rescoped,
             proposal,
             allowed_kinds=frozenset(view.kind for view in candidates),
             view_limit=budget.search.max_representation_views,

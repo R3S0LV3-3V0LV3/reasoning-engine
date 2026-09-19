@@ -1229,11 +1229,34 @@ class RunReducer:
                     )
                 # Finding C: recompute `tie_triggered` from the (now-verified)
                 # scores instead of trusting the plan's self-reported boolean.
-                # `fallback_used=True` means selection fell through to the
+                #
+                # IMPORTANT (independent-review remediation, PR #24 finding
+                # A): `tie_triggered` and `fallback_used` are INDEPENDENT
+                # flags on `RepresentationPlanV2` and must be recomputed
+                # independently. It is tempting to assume
+                # `fallback_used=True` implies "selection fell through to the
                 # single typed-fallback candidate with no real competing
-                # candidate, which short-circuits tie detection entirely
-                # (see `RepresentationSelector.select_bound`) -- so no
-                # fallback plan can ever legitimately claim a tie.
+                # candidate", which would make `recomputed_tie` trivially
+                # `False` whenever `fallback_used` is set. That assumption is
+                # WRONG: `RepresentationSelector.select_bound` also sets
+                # `fallback_used=True` in a second, legitimate case -- when
+                # there ARE >=2 real compatible candidates, they ARE tied
+                # within `tie_band` (so `tie_triggered=True`), and the
+                # tied second-place candidate that gets admitted as the
+                # AUXILIARY view happens to be `TEXT_TABLE_FALLBACK` itself.
+                # In that case both flags are `True` simultaneously, and
+                # coupling them here would cause `RunReducer.apply` to
+                # wrongly reject an entirely legitimate plan. `tie_triggered`
+                # is therefore recomputed here PURELY from
+                # `candidate_scores`/`tie_band` (top-2 within tie_band among
+                # candidates meeting `minimum_compatibility`), with no
+                # reference to `fallback_used` at all. Note this recomputation
+                # is deliberately consistent with the "no compatible
+                # candidate at all" fallback case too: when every candidate
+                # scores below `minimum_compatibility`, `compatible_scores`
+                # below is empty (length < 2), so `recomputed_tie` is `False`
+                # there as well -- the same outcome the old coupled logic
+                # produced for that case, without needing to special-case it.
                 #
                 # NOTE (documented limitation): the plan does not carry the
                 # exact `minimum_compatibility` policy threshold that was in
@@ -1246,21 +1269,18 @@ class RunReducer:
                 # `minimum_compatibility` could, in a narrow edge case,
                 # disagree with this recomputation; no such policy override
                 # is wired anywhere outside test-only construction today.
-                if plan.fallback_used:
-                    recomputed_tie = False
-                else:
-                    compatible_scores = [
-                        candidate
-                        for candidate in recomputed_scores
-                        if candidate.compatibility_score >= 0.20
-                    ]
-                    recomputed_tie = len(compatible_scores) > 1 and (
-                        abs(
-                            compatible_scores[0].compatibility_score
-                            - compatible_scores[1].compatibility_score
-                        )
-                        <= plan.tie_band
+                compatible_scores = [
+                    candidate
+                    for candidate in recomputed_scores
+                    if candidate.compatibility_score >= 0.20
+                ]
+                recomputed_tie = len(compatible_scores) > 1 and (
+                    abs(
+                        compatible_scores[0].compatibility_score
+                        - compatible_scores[1].compatibility_score
                     )
+                    <= plan.tie_band
+                )
                 if plan.tie_triggered != recomputed_tie:
                     raise ValueError(
                         "representation plan (v2) tie_triggered does not match an independent "
