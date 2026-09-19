@@ -63,6 +63,17 @@ def main() -> None:
             ],
             check=True,
         )
+        # C09 (F08): the coordinator (`fre.composition.Wave3Engine`) is the
+        # one authoritative, replayable Wave 3 front-end path -- verify it is
+        # actually importable and callable end-to-end from this isolated
+        # installed wheel, not merely from the source checkout's own test
+        # suite. A zero-call (`allow_model=False`) run exercises the full
+        # M01 -> M02 -> M03 -> M04 -> M12 sequence without any network access
+        # or provider dependency, which is exactly what a packaging smoke
+        # test can run unconditionally.
+        subprocess.run(
+            [str(python), str(Path(__file__).with_name("_verify_coordinator.py"))], check=True
+        )
 
     print(f"verified {wheel}")
 
