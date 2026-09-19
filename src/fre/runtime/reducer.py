@@ -9,7 +9,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from fre.domain.budget import BudgetProjection, ResourceVector
 from fre.domain.common import FrozenModel, JsonValue, bind_hash, canonical_hash, canonical_json
-from fre.domain.context import ContextCompilationRecord, ContextPacket
+from fre.domain.context import ContextCompilationRecord, ContextPacket, UnresolvedUnknownRef
 from fre.domain.ledger import EpistemicStatus, LedgerProjection
 from fre.domain.problem import ContradictionDiagnostic, ProblemBlocker, ProblemSpec
 from fre.domain.representation import (
@@ -38,6 +38,7 @@ from fre.domain.stop import StopDecision, StopDecisionRecord
 from fre.domain.task import ClassificationRecord, TaskSignature
 from fre.modules.m02_budget import BudgetAllocator
 from fre.modules.m09_ledger import EpistemicLedger
+from fre.modules.m12_context import Wave3ContextCompiler, derive_wave3_availability
 from fre.modules.source_anchors import (
     resolve_support_ref_at_reduction,
     validate_anchor_artifact_registration,
@@ -54,6 +55,7 @@ from fre.runtime.events import (
     BudgetRevised,
     ClassificationDiagnosticRecorded,
     ContextCompiled,
+    ContextCompiledV2,
     LedgerContradictionResolved,
     LedgerDependentsMarkedStale,
     LedgerEdgeAdded,
@@ -552,9 +554,9 @@ class RunReducer:
                 payload.json_artifact is None or payload.markdown_artifact is None
             ):
                 raise ValueError("terminal context requires durable JSON and Markdown artifacts")
-            expected_packet_hash = canonical_hash(
-                payload.packet.model_dump(exclude={"packet_hash"})
-            )
+            # Finding H (C08 remediation): shared `bind_hash` helper (see
+            # `ContextCompiler.compile`'s own use of it).
+            expected_packet_hash = bind_hash(payload.packet, exclude={"packet_hash"})
             if payload.packet.packet_hash != expected_packet_hash:
                 raise ValueError("context packet hash does not match canonical preimage")
             changes["context_packets"] = (*state.context_packets, payload.packet)
@@ -574,6 +576,280 @@ class RunReducer:
                     markdown_artifact_sha256=payload.markdown_artifact.sha256
                     if payload.markdown_artifact
                     else None,
+                ),
+            )
+        elif isinstance(payload, ContextCompiledV2):
+            # C08 (M12, F12/F04 remediation): this is the event that actually
+            # PERSISTS a compiled Wave 3 context packet -- unlike the
+            # in-memory-only `Wave3ContextCompiler.compile_semantic()` return
+            # value, appending this event is what closes F12's "context is
+            # never persisted by any production path" gap. Both artifacts are
+            # mandatory on the payload type itself (unlike v1 `ContextCompiled`,
+            # where they are optional), so atomicity of "packet + both durable
+            # artifacts" is enforced structurally, not merely by a runtime
+            # `if` check.
+            packet = payload.packet
+            if packet.wave3_context is None:
+                raise ValueError(
+                    "ContextCompiled@2.0 requires a packet with a typed wave3_context; use "
+                    "the v1 ContextCompiled event for packets with no Wave 3 semantic context"
+                )
+            wave3 = packet.wave3_context
+            # Finding H (C08 remediation): shared `bind_hash` helper.
+            expected_packet_hash = bind_hash(packet, exclude={"packet_hash"})
+            if packet.packet_hash != expected_packet_hash:
+                raise ValueError("context packet hash does not match canonical preimage")
+            for context_artifact in (payload.json_artifact, payload.markdown_artifact):
+                if context_artifact.sha256 not in state.artifacts:
+                    raise ValueError("context compilation artifact is not registered")
+            # --- Objective 3 / critical-lesson remediation --------------
+            # Everything above only proves the packet is internally self-
+            # consistent (its own packet_hash seals its own fields) and that
+            # its declared artifacts are real registered bytes. None of it
+            # proves `wave3_context`'s claimed refs/availability correspond to
+            # the run state that was ACTUALLY applied before this event. Every
+            # ref field is independently re-derived/re-checked against that
+            # real, already-applied state below -- never trusted merely
+            # because it agrees with itself.
+            if wave3.schema_version != "1.0":
+                raise ValueError("wave3_context schema_version does not match a known contract")
+            if state.problem_spec is None or wave3.problem_spec_ref != canonical_hash(
+                state.problem_spec
+            ):
+                raise ValueError(
+                    "wave3_context problem_spec_ref does not match the run's current ProblemSpec"
+                )
+            if wave3.task_signature_ref is not None and (
+                state.task_signature is None
+                or wave3.task_signature_ref != canonical_hash(state.task_signature)
+            ):
+                raise ValueError(
+                    "wave3_context task_signature_ref does not match the run's current "
+                    "TaskSignature"
+                )
+            if wave3.budget_plan_ref is not None and (
+                state.budget.plan is None
+                or wave3.budget_plan_ref != canonical_hash(state.budget.plan)
+            ):
+                raise ValueError(
+                    "wave3_context budget_plan_ref does not match the run's current BudgetPlan"
+                )
+            if (
+                wave3.budget_policy_hash is not None
+                and wave3.budget_policy_hash != state.budget.policy_hash
+            ):
+                raise ValueError(
+                    "wave3_context budget_policy_hash does not match the run's current budget "
+                    "policy_hash"
+                )
+            # Every declared blocker ref must resolve to an actually-applied
+            # ProblemBlocker -- a ref naming a blocker_id this run never
+            # recorded is a dangling reference and is rejected outright (the
+            # C04-C07-pattern check the plan calls out explicitly).
+            real_blocker_ids = {blocker.blocker_id for blocker in state.problem_blockers}
+            declared_blocker_ids = set(wave3.blocker_refs)
+            if declared_blocker_ids - real_blocker_ids:
+                raise ValueError(
+                    "wave3_context blocker_refs references a blocker_id absent from the run's "
+                    "applied problem_blockers"
+                )
+            # Finding C (C08 remediation): the check above only proves every
+            # DECLARED entry is real -- it never proved every REAL entry was
+            # declared. A packet could silently omit a real, currently-applied
+            # blocker from `blocker_refs` (understating what this run actually
+            # knows) and the check above would never notice. Completeness is
+            # required in both directions.
+            if real_blocker_ids - declared_blocker_ids:
+                raise ValueError(
+                    "wave3_context blocker_refs omits a real problem_blocker applied to this run"
+                )
+            # Finding D (C08 remediation): `prompt_version`/`model_identity`
+            # are caller-supplied claims about which semantic model call
+            # produced/influenced this compilation. Neither field is otherwise
+            # tied to anything real -- a packet could forge any string here.
+            # Require them to correspond to an actual, already-applied
+            # `SemanticModelCallRecord`(V2) on this run, mirroring how C07's
+            # reducer verifies `adjudication_record_ref` against a real
+            # applied call.
+            if (wave3.prompt_version is not None or wave3.model_identity is not None) and not any(
+                call.prompt_version == wave3.prompt_version
+                and call.model_id == wave3.model_identity
+                for call in state.model_calls
+            ):
+                raise ValueError(
+                    "wave3_context prompt_version/model_identity does not correspond to "
+                    "any real SemanticModelCallRecord applied to this run"
+                )
+            if wave3.ledger_root != canonical_hash(state.ledger):
+                raise ValueError(
+                    "wave3_context ledger_root does not match the run's actual ledger state"
+                )
+            # `ledger_version` is pinned to `packet.snapshot_version` at
+            # construction time (both come from the exact same compile-time
+            # `snapshot_version` value) and can legitimately be BEHIND
+            # `state.version` at apply time: a `ContextCompiledV2` batch may
+            # (and, in `Wave3ContextRuntime.compile_and_persist`, always does)
+            # append its own `ArtifactRegistered` events ahead of itself in
+            # the same batch, each advancing `state.version` by one before
+            # this event is reached -- none of which changes `state.ledger`
+            # itself. It can never legitimately be AHEAD of `state.version`
+            # (no packet can be compiled against a ledger revision the run
+            # has not yet reached).
+            if wave3.ledger_version != packet.snapshot_version:
+                raise ValueError(
+                    "wave3_context ledger_version does not match this packet's own snapshot_version"
+                )
+            if wave3.ledger_version > state.version:
+                raise ValueError(
+                    "wave3_context ledger_version is ahead of the run state actually reached"
+                )
+            if wave3.representation_plan_ref is not None and (
+                state.representation_plan is None
+                or wave3.representation_plan_ref != canonical_hash(state.representation_plan)
+            ):
+                raise ValueError(
+                    "wave3_context representation_plan_ref does not match the run's current "
+                    "representation plan"
+                )
+            real_artifact_hashes = {
+                canonical_hash(artifact) for artifact in state.representation_artifacts
+            }
+            declared_artifact_refs = set(wave3.representation_artifact_refs)
+            if declared_artifact_refs - real_artifact_hashes:
+                raise ValueError(
+                    "wave3_context representation_artifact_refs references an artifact absent "
+                    "from the run's applied representation_artifacts"
+                )
+            # Finding C (C08 remediation): completeness in the other direction
+            # too -- every real, currently-applied v1 `representation_artifacts`
+            # entry (the only entries `Wave3SemanticContext.representation_
+            # artifact_refs` can ever represent -- it has no v2-specific ref
+            # field) must be declared; a packet omitting one is understating
+            # real, already-applied state.
+            if real_artifact_hashes - declared_artifact_refs:
+                raise ValueError(
+                    "wave3_context representation_artifact_refs omits a real "
+                    "representation_artifact applied to this run"
+                )
+            # Sibling enumeration (the C06 lesson applied here): every UNKNOWN
+            # surfaced into the permitted view must match, field-for-field, an
+            # UNKNOWN the current ProblemSpec actually declares -- not only
+            # `support`-style refs, and not only a subset of UnknownSpec's
+            # fields.
+            real_unknowns_by_id = (
+                {item.id: item for item in state.problem_spec.unknowns}
+                if state.problem_spec is not None
+                else {}
+            )
+            # Finding I (C08 remediation): rather than a hand-ordered 7-tuple
+            # positional comparison (which would silently stop catching a
+            # mismatch the moment `UnknownSpec`/`UnresolvedUnknownRef` gained a
+            # field that wasn't also added to both tuples here), reconstruct
+            # the expected `UnresolvedUnknownRef` using the exact same field
+            # mapping `Wave3ContextCompiler.compile_semantic` uses and compare
+            # full model instances directly.
+            for declared in wave3.unresolved_unknowns:
+                real = real_unknowns_by_id.get(declared.id)
+                if real is None:
+                    raise ValueError(
+                        "wave3_context unresolved_unknowns does not match the run's current "
+                        "ProblemSpec UNKNOWN metadata exactly"
+                    )
+                expected_unknown_ref = UnresolvedUnknownRef(
+                    id=real.id,
+                    description=real.description,
+                    domain=real.domain,
+                    rationale=real.rationale,
+                    impact=real.impact,
+                    decision_relevance=real.decision_relevance,
+                    resolvable=real.resolvable,
+                    candidate_actions=real.candidate_actions,
+                )
+                if declared != expected_unknown_ref:
+                    raise ValueError(
+                        "wave3_context unresolved_unknowns does not match the run's current "
+                        "ProblemSpec UNKNOWN metadata exactly"
+                    )
+            # Finding C (C08 remediation): completeness in the other direction
+            # -- every real, currently open UNKNOWN on the applied ProblemSpec
+            # must be surfaced; a packet omitting one silently understates
+            # governed uncertainty this run actually has open.
+            declared_unknown_ids = {item.id for item in wave3.unresolved_unknowns}
+            if set(real_unknowns_by_id) - declared_unknown_ids:
+                raise ValueError(
+                    "wave3_context unresolved_unknowns omits a real, currently open UNKNOWN "
+                    "from the run's ProblemSpec"
+                )
+            # Finally: `availability`/`availability_reason` are re-derived from
+            # the same pure function the compiler itself calls, applied to the
+            # REAL, already-applied state -- not trusted from the packet's own
+            # (already ref-verified above) claim. A packet whose refs are all
+            # individually genuine could still misclassify overall
+            # availability (e.g. omit a real material blocker from its own
+            # narrative); this closes that gap.
+            recomputed_availability, recomputed_reason = derive_wave3_availability(
+                problem_blockers=state.problem_blockers,
+                representation=state.representation_plan,
+                representation_artifacts=state.representation_artifacts,
+                # Finding F (C08 remediation): recompute using the run's C07
+                # bound v2 representation state too, exactly like
+                # `Wave3ContextRuntime.compile_and_persist` now does -- see
+                # `derive_wave3_availability`'s own docstring for why v2 is
+                # preferred (finding B is only fully closed on the v2 path).
+                representation_v2=state.representation_plan_v2,
+                representation_artifacts_v2=state.representation_artifacts_v2,
+                budget_remaining=BudgetMeter().remaining(state.budget),
+            )
+            if wave3.availability != recomputed_availability:
+                raise ValueError(
+                    "wave3_context availability does not match an independent recomputation "
+                    "from the run's actually-applied state"
+                )
+            if wave3.availability_reason != recomputed_reason:
+                raise ValueError(
+                    "wave3_context availability_reason does not match the canonical reason for "
+                    "the independently recomputed availability"
+                )
+            # Finding G (C08 remediation): every check above only proves the
+            # packet is internally self-consistent and that `wave3_context`'s
+            # claims match real, applied run state -- none of it proves the
+            # two DECLARED ARTIFACTS actually contain the correct rendering of
+            # THIS exact packet (they could be any other artifact this run
+            # happened to register earlier, with a colliding claim). Checked
+            # last, once the packet is already known-good on every other
+            # count: `RunState.artifacts` stores only registered sha256
+            # strings, not the underlying bytes, so the reducer cannot re-read
+            # and re-hash stored bytes directly; it CAN independently
+            # recompute what those bytes must be from `packet` itself (both
+            # renderings are pure functions of the packet) and require the
+            # claimed sha256 to match that recomputation exactly.
+            expected_json_sha256 = hashlib.sha256(canonical_json(packet)).hexdigest()
+            if payload.json_artifact.sha256 != expected_json_sha256:
+                raise ValueError(
+                    "context json artifact sha256 does not match the canonical bytes "
+                    "recomputed from the packet itself"
+                )
+            expected_markdown_sha256 = hashlib.sha256(
+                Wave3ContextCompiler.render_markdown(packet).encode()
+            ).hexdigest()
+            if payload.markdown_artifact.sha256 != expected_markdown_sha256:
+                raise ValueError(
+                    "context markdown artifact sha256 does not match the markdown "
+                    "recomputed from the packet itself"
+                )
+            changes["context_packets"] = (*state.context_packets, packet)
+            changes["context_compilations"] = (
+                *state.context_compilations,
+                ContextCompilationRecord(
+                    packet_hash=packet.packet_hash,
+                    profile=packet.profile,
+                    compiler_version=packet.compiler_version,
+                    compression_policy_version=packet.compression_policy_version,
+                    applied_rule_ids=packet.applied_rule_ids,
+                    renderer_version=payload.renderer_version,
+                    canonical_byte_size=len(canonical_json(packet)),
+                    json_artifact_sha256=payload.json_artifact.sha256,
+                    markdown_artifact_sha256=payload.markdown_artifact.sha256,
                 ),
             )
         elif isinstance(payload, StopDecisionRecordedV2):

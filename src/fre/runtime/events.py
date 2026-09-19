@@ -109,6 +109,37 @@ class ContextCompiled(FrozenModel):
     renderer_version: str = "1.0"
 
 
+class ContextCompiledV2(FrozenModel):
+    """Wire identity `("ContextCompiled", "2.0")`: a packet carrying a typed
+    `Wave3SemanticContext` (Phase 6/C08, F12). Same shape as `ContextCompiled`
+    -- the version bump exists purely to mark, at the envelope level, that
+    `RunReducer.apply` must run the additional Wave 3 ground-truth
+    verification below rather than only the v1 packet-hash/terminal-artifact
+    checks. Both durable JSON and Markdown artifacts must already be
+    registered before this event is appended: this is the event that
+    actually persists a compiled Wave 3 context packet (closing F12's
+    "context is never persisted by any production path" gap), so unlike a
+    purely in-memory `compile_semantic()` call, an unregistered artifact ref
+    here is a real, rejected atomicity violation, not merely untested.
+
+    Finding G (C08 remediation): `json_artifact.sha256`/`markdown_artifact.
+    sha256` are verified two ways, not one. `RunReducer.apply` first checks
+    EXISTENCE (the claimed sha256 is some artifact this run genuinely
+    registered) and then, independently, CORRECTNESS: it recomputes the
+    canonical JSON bytes and the Markdown rendering directly from `packet`
+    itself (both are pure functions of the packet) and requires the claimed
+    sha256 to match that recomputation exactly. This proves the referenced
+    artifacts really are the correct rendering of THIS packet, not merely
+    that they are some real artifact this run happened to register earlier
+    (e.g. from an unrelated compilation) with a colliding claim.
+    """
+
+    packet: ContextPacket
+    json_artifact: ArtifactRef
+    markdown_artifact: ArtifactRef
+    renderer_version: str = "1.0"
+
+
 class StopDecisionRecorded(FrozenModel):
     decision: StopDecision
 
@@ -208,6 +239,7 @@ EventPayload = (
     | BudgetReservationSettled
     | BudgetReservationReleased
     | ContextCompiled
+    | ContextCompiledV2
     | StopDecisionRecorded
     | StopDecisionRecordedV2
     | TerminalContextAssociated
@@ -267,6 +299,7 @@ EVENT_PAYLOADS.update(
         ("StopDecisionRecorded", "2.0"): StopDecisionRecordedV2,
         ("RepresentationPlanSelected", "2.0"): RepresentationPlanSelectedV2,
         ("RepresentationArtifactCompiled", "2.0"): RepresentationArtifactCompiledV2,
+        ("ContextCompiled", "2.0"): ContextCompiledV2,
     }
 )
 EVENT_WIRE_IDENTITIES: dict[type[FrozenModel], tuple[str, SchemaVersion]] = {
@@ -275,6 +308,7 @@ EVENT_WIRE_IDENTITIES: dict[type[FrozenModel], tuple[str, SchemaVersion]] = {
     StopDecisionRecordedV2: ("StopDecisionRecorded", "2.0"),
     RepresentationPlanSelectedV2: ("RepresentationPlanSelected", "2.0"),
     RepresentationArtifactCompiledV2: ("RepresentationArtifactCompiled", "2.0"),
+    ContextCompiledV2: ("ContextCompiled", "2.0"),
 }
 
 

@@ -1,9 +1,11 @@
 """The narrow composition root for configured Wave 3 services."""
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from fre.config import Wave3Config
 from fre.domain.common import FrozenModel, canonical_hash
+from fre.domain.stop import StopDecision
 from fre.engine import FrontierReasoningEngine, RunHandle
 from fre.modules.m01_classifier import ClassificationPolicy, TaskClassifier
 from fre.modules.m04_representation import (
@@ -15,6 +17,8 @@ from fre.modules.m12_context import Wave3ContextCompiler
 from fre.ports.models import StructuredModelPort
 from fre.prompts.registry import PromptRegistry, default_prompt_registry
 from fre.prompts.schemas import OutputSchemaRegistry, default_output_schema_registry
+from fre.runtime.wave2 import Wave2Runtime
+from fre.runtime.wave3_context import Wave3ContextRuntime
 from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
 
 
@@ -47,6 +51,17 @@ class Wave3Components:
     semantic_runtime: SemanticModelRuntime
     representation_selector: RepresentationSelector
     context_compiler: Wave3ContextCompiler
+    # C08 (F12): the real caller that persists a compiled Wave 3 semantic
+    # context packet (`ContextCompiled@2.0` + its two durable artifacts,
+    # atomically) instead of `context_compiler.compile_semantic()` ever being
+    # invoked only to produce an in-memory-only result nothing durably reads.
+    context_runtime: Wave3ContextRuntime
+    # C08 (F12) remediation, finding E: the real production call site.
+    # `Wave2Runtime.finalize` is the sole terminal-disposition lifecycle
+    # entrypoint; wiring `context_runtime` into it here (rather than leaving
+    # `context_runtime` reachable only from ad-hoc/test code) is what closes
+    # F12 on an actual execution path.
+    wave2_runtime: Wave2Runtime
     prompts: PromptRegistry
     schemas: OutputSchemaRegistry
 
@@ -61,6 +76,16 @@ class Wave3Engine:
 
     def create_run(self) -> RunHandle:
         return self.engine.create_run(self.effective_policy)
+
+    def finalize(self, run_id: UUID, decision: StopDecision) -> str:
+        """Real call site for the composed Wave 2 + Wave 3 terminal lifecycle.
+
+        Delegates to `Wave2Runtime.finalize`, which (now that it is composed
+        with `components.context_runtime` here) also persists a typed Wave 3
+        `ContextCompiledV2` packet whenever this run has a formalised
+        `ProblemSpec` -- see finding E in the C08 remediation.
+        """
+        return self.components.wave2_runtime.finalize(run_id, decision)
 
 
 def _require(name: str, actual: str, supported: str) -> None:
@@ -128,6 +153,8 @@ def compose_wave3(
     )
     prompts = default_prompt_registry()
     schemas = default_output_schema_registry()
+    context_compiler = Wave3ContextCompiler()
+    context_runtime = Wave3ContextRuntime(engine, context_compiler)
     components = Wave3Components(
         policy=effective,
         classifier=TaskClassifier(classification),
@@ -140,7 +167,14 @@ def compose_wave3(
             execution_config_hash=effective.policy_hash,
         ),
         representation_selector=RepresentationSelector(representation, default_registry()),
-        context_compiler=Wave3ContextCompiler(),
+        context_compiler=context_compiler,
+        context_runtime=context_runtime,
+        # Finding E (C08 remediation): compose `Wave2Runtime` with this run's
+        # `Wave3ContextRuntime` so `Wave3Engine.finalize` (and any other real
+        # caller of this composed `Wave2Runtime`) actually persists a typed
+        # Wave 3 context packet on every terminal disposition, not merely
+        # returns one from an in-memory-only call nothing durable reads.
+        wave2_runtime=Wave2Runtime(engine, wave3_context_runtime=context_runtime),
         prompts=prompts,
         schemas=schemas,
     )
