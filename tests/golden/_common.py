@@ -21,6 +21,21 @@ by pytest's rootdir-relative import mode, and `tests.integration.
 test_wave3_gate` when imported by dotted path from here -- and refuses to
 type-check the result. Duplicating these small, stable builders locally
 avoids that ambiguity entirely.)
+
+Confirmed experimentally (2026-09, Wave 3 post-freeze cleanup pass, C10
+EU-44): adding a bare `tests/__init__.py` (with `pythonpath = ["."]` in
+`pyproject.toml`, `testpaths = ["tests"]`) does NOT reproduce the collision
+under pytest -- the full suite still collects and passes -- but it does
+break `mypy --strict src tests`, which then fails with:
+`tests/golden/test_golden_fixtures.py:35: error: Cannot find implementation
+or library stub for module named "_common"  [import-not-found]`. That is
+because turning `tests/` into a package changes how mypy resolves the
+sibling-relative `from _common import ...` in `test_golden_fixtures.py`;
+fixing it would require converting every such import to a fully-qualified
+`tests.golden._common` form throughout the golden suite (and possibly
+elsewhere), which is exactly the broader import-mode change this module's
+docstring already judged out of scope for a mechanical duplication fix.
+The experimental `tests/__init__.py` was discarded; nothing from it landed.
 """
 
 from __future__ import annotations
