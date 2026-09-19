@@ -131,7 +131,6 @@ from fre.prompts.schemas import (
     default_output_schema_registry,
 )
 from fre.runtime.budget_meter import BudgetMeter
-from fre.runtime.reducer import RunState
 from fre.runtime.events import (
     ArtifactRegistered,
     BudgetAllocated,
@@ -142,6 +141,7 @@ from fre.runtime.events import (
     TaskClassified,
     TaskPreliminarilyClassified,
 )
+from fre.runtime.reducer import RunState
 from fre.runtime.wave2 import Wave2Runtime
 from fre.runtime.wave3_context import Wave3ContextRuntime
 from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
@@ -843,7 +843,8 @@ class Wave3Engine:
         The replay volume this documents is an accepted, known cost of the
         resumability-by-design architecture described in the module
         docstring above: every step's own fresh inspect is what makes
-        interruption-and-resume, and concurrent retries, safe. `FrontierReasoningEngine.snapshot()`/`.replay_from_snapshot()` exist as a
+        interruption-and-resume, and concurrent retries, safe.
+        `FrontierReasoningEngine.snapshot()`/`.replay_from_snapshot()` exist as a
         separate, larger architectural option (optimizing replay-from-genesis
         cost, not this "many inspects within one coordinator call" pattern)
         for a future pass, if this volume is ever measured as a real

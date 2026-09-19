@@ -1098,7 +1098,10 @@ def test_find_model_call_by_idempotency_key_found_and_not_found() -> None:
 
     assert _find_model_call_by_idempotency_key(state, present_key) is call
     assert _find_model_call_by_idempotency_key(state, absent_key) is None
-    assert _find_model_call_by_idempotency_key(RunState(run_id=UUID(int=1), version=0), present_key) is None
+    assert (
+        _find_model_call_by_idempotency_key(RunState(run_id=UUID(int=1), version=0), present_key)
+        is None
+    )
 
 
 @pytest.mark.unit

@@ -15,12 +15,9 @@ used.
 """
 
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
-from typing import TypeVar
-
-K = TypeVar("K", bound=Hashable)
 
 
-def depth_first_traverse(
+def depth_first_traverse[K: Hashable](
     edges: Mapping[K, Sequence[K]],
     *,
     order: Iterable[K],

@@ -2,7 +2,8 @@
 
 import hashlib
 from collections import deque
-from collections.abc import Callable, Mapping, Set as AbstractSet
+from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
@@ -745,8 +746,7 @@ class RunReducer:
             _verify_optional_ref(
                 wave3.task_signature_ref,
                 canonical_hash(state.task_signature) if state.task_signature is not None else None,
-                "wave3_context task_signature_ref does not match the run's current "
-                "TaskSignature",
+                "wave3_context task_signature_ref does not match the run's current TaskSignature",
             )
             _verify_optional_ref(
                 wave3.budget_plan_ref,

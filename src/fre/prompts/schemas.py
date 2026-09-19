@@ -1,6 +1,6 @@
 """Strict structured-output schemas and deterministic registry."""
 
-from functools import lru_cache
+from functools import cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,7 +51,7 @@ def canonical_schema_bytes(model: type[BaseModel]) -> bytes:
     return canonical_json(model.model_json_schema())
 
 
-@lru_cache(maxsize=None)
+@cache
 def canonical_schema_hash(model: type[BaseModel]) -> str:
     """Hash of a model's canonical JSON-Schema representation.
 

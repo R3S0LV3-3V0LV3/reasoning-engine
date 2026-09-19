@@ -330,9 +330,13 @@ def test_validated_payload_decodes_exactly_once_across_admit_then_apply(
     def spy_model_validate(cls: object, *args: object, **kwargs: object) -> RunStatusChanged:
         nonlocal call_count
         call_count += 1
-        return real_model_validate(*args, **kwargs)
+        return real_model_validate(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(RunStatusChanged, "model_validate", classmethod(spy_model_validate))
+    monkeypatch.setattr(
+        RunStatusChanged,
+        "model_validate",
+        classmethod(spy_model_validate),  # type: ignore[arg-type]
+    )
 
     event = engine.make_event(
         handle.run_id, RunStatusChanged(status="RUNNING", reason="eu-02"), module_id="test"

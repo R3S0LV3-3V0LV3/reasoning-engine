@@ -524,7 +524,9 @@ def test_support_ledger_node_ref_resolves_through_the_real_coordinator(
                         "kind": "UNKNOWN",
                         "description": "supported by a real prior M01 ledger node",
                         "origin": "SUPPORTED_INFERENCE",
-                        "basis": "cross-checked against the classifier's own model-derived inference",
+                        "basis": (
+                            "cross-checked against the classifier's own model-derived inference"
+                        ),
                         "support": [
                             {
                                 "node_id": str(prior_node.node_id),
@@ -537,9 +539,7 @@ def test_support_ledger_node_ref_resolves_through_the_real_coordinator(
         ]
     )
     problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
-    resolved = next(
-        item for item in problem.unknowns if item.id == "cites-prior-m01-ledger-node"
-    )
+    resolved = next(item for item in problem.unknowns if item.id == "cites-prior-m01-ledger-node")
     assert resolved.provenance is not None
     assert len(resolved.provenance.support) == 1
 

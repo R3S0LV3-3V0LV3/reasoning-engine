@@ -499,9 +499,7 @@ class TaskClassifier:
             "evidence_scarcity",
             evidence_scarcity_proposal.estimate if evidence_scarcity_proposal else None,
             evidence_scarcity_proposal.confidence if evidence_scarcity_proposal else None,
-            evidence_scarcity_proposal.conservative_upper
-            if evidence_scarcity_proposal
-            else None,
+            evidence_scarcity_proposal.conservative_upper if evidence_scarcity_proposal else None,
             evidence_scarcity_proposal.rationale if evidence_scarcity_proposal else None,
             floor_evidence_scarcity,
             evidence_scarcity_proposal.anchors if evidence_scarcity_proposal else (),

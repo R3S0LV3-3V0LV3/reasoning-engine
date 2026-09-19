@@ -284,7 +284,7 @@ def test_canonical_schema_hash_is_memoized_per_model(
         value: int
 
     call_count = 0
-    real_canonical_hash = schemas_module.canonical_hash
+    real_canonical_hash = schemas_module.canonical_hash  # type: ignore[attr-defined]
 
     def spy_canonical_hash(value: object) -> str:
         nonlocal call_count

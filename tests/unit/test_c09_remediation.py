@@ -221,9 +221,7 @@ def test_select_representation_rejects_run_missing_classification_or_budget(
     assert state.task_signature is None
     assert state.budget.plan is None
 
-    with pytest.raises(
-        ValueError, match="authoritative classification and an allocated budget"
-    ):
+    with pytest.raises(ValueError, match="authoritative classification and an allocated budget"):
         asyncio.run(wave3.select_representation(handle.run_id, allow_adjudication=False))
 
 

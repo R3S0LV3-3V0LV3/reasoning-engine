@@ -952,7 +952,9 @@ def test_availability_v2_rejects_stale_artifact_bound_to_a_different_plan() -> N
 
 
 @pytest.mark.unit
-def test_availability_v1_fallback_reports_available_for_stale_artifact_bound_to_a_different_plan_revision() -> None:  # noqa: E501
+def test_availability_v1_fallback_reports_available_for_stale_artifact_bound_to_a_different_plan_revision() -> (  # noqa: E501
+    None
+):
     """EU-33 (C08 post-freeze remediation): pins a KNOWN LIMITATION, not
     desired behavior.
 

@@ -561,7 +561,8 @@ def test_many_settlements_for_one_reservation_are_matched_in_fifo_order(
     # `charged_usage`/`policy_charge` mutually consistent so each variant
     # still satisfies `SemanticModelCallRecordV2.consistent_accounting`.
     charged_usages = tuple(
-        genuine.charged_usage.model_copy(update={"output_tokens": index + 1}) for index in range(count)
+        genuine.charged_usage.model_copy(update={"output_tokens": index + 1})
+        for index in range(count)
     )
 
     settlement_events = tuple(
@@ -582,7 +583,9 @@ def test_many_settlements_for_one_reservation_are_matched_in_fifo_order(
                         "idempotency_key": f"{index:064x}",
                         "reservation_id": shared_reservation_id,
                         "charged_usage": usage,
-                        "usage": genuine.usage.model_copy(update={"output_tokens": usage.output_tokens}),
+                        "usage": genuine.usage.model_copy(
+                            update={"output_tokens": usage.output_tokens}
+                        ),
                         "reported_usage": genuine.reported_usage.model_copy(
                             update={"output_tokens": usage.output_tokens}
                         ),
