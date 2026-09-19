@@ -59,6 +59,35 @@ C09 (F08) remediation in PR #24 (finding D):
     semantic-model call or re-append an event batch that the coordinator
     path would have skipped. `execute_front_end` is the only path that gets
     that discipline for free across the whole M01-M04/M12 sequence.
+
+EU-38 (w3-cleanup): `classify_task`, `formalise_problem`,
+`select_representation`, `compile_context`, and `evaluate_stop` share an
+intentional convention -- fetch state, check idempotency/preconditions, do
+the step's work, [append and re-inspect], return -- that any future step
+method should follow. Two of the five are deliberate shape EXCEPTIONS, not
+drift to be "fixed" into template conformance: `compile_context` never
+appends directly (it delegates its actual persistence entirely to
+`Wave3ContextRuntime.compile_and_persist`), and `evaluate_stop` never
+appends at all (`Wave2Runtime.record_decision`, called separately, does).
+A template-method abstraction forcing all five into one shape was
+considered and rejected -- it would obscure these two methods' genuinely
+different mutation patterns for a marginal readability gain. Revisit only
+if a future sixth step method naturally fits a fully-identical
+fetch/precondition/append/return skeleton with an existing one.
+
+EU-41 (w3-cleanup): this module's docstring above already accurately
+documents `execute_front_end` as RECOMMENDED-not-exclusive and
+`Wave3Components`/`Wave3Engine.components` as intentionally plain/public,
+not sealed (finding F). True structural enforcement of "the coordinator is
+the only path" was considered and explicitly deferred, not attempted here:
+it would require (a) renaming `Wave3Components` fields to leading-
+underscore with read-only `@property` accessors, and/or (b) making
+`Wave3Engine.components` non-public behind a narrower facade exposing only
+the coordinator's own step methods -- both are breaking API changes for any
+current direct-component-access caller (including this repo's own
+pre-C09 tests), out of scope for a cleanup pass. A future hardening pass
+should treat this as its own scoped unit with an explicit compatibility
+budget, not bundle it into an unrelated change.
 """
 
 from dataclasses import dataclass
