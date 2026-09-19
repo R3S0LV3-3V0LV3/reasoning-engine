@@ -84,7 +84,26 @@ def canonical_schema_hash(model: type[BaseModel]) -> str:
 
 
 def _resolve_local_ref(root: JsonValue, ref: str) -> JsonValue | None:
-    """Resolve a local JSON-Schema pointer (e.g. "#/$defs/Thing") against `root`."""
+    """Resolve a local JSON-Schema pointer (e.g. "#/$defs/Thing") against `root`.
+
+    EU-06 (C04 cleanup, item #6): deliberately does NOT perform RFC 6901
+    `~0`/`~1` unescaping, unlike `source_anchors._resolve_pointer` (which
+    does full RFC 6901 unescaping). This is not an oversight -- the two
+    functions resolve pointers over disjoint, differently-sourced document
+    kinds. Every `ref` this function ever sees is a `$ref` string Pydantic
+    itself generated inside `model.model_json_schema()`'s own `$defs`
+    table, keyed by the model's own Python class/type names -- identifiers
+    that can never contain a literal `/` or `~`, so there is nothing to
+    escape in the first place. `_resolve_pointer`, in contrast, resolves
+    `SourceAnchor` selectors against arbitrary externally-sourced JSON
+    documents, whose object keys (e.g. real-world field/column names) can
+    legitimately contain `/` or `~` and therefore MUST be RFC 6901-escaped
+    on the wire and unescaped here. Do not "fix" this function into RFC
+    6901 compliance -- for its actual, always-Pydantic-generated input
+    domain, a raw `/`-split is both correct and simpler; escaping semantics
+    should track each function's own input domain, not be unified for its
+    own sake.
+    """
     if not ref.startswith("#/"):
         return None
     node: JsonValue = root
