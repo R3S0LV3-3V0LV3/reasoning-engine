@@ -181,6 +181,55 @@ def test_stale_request_schema_hash_is_rejected_before_provider_invocation(
 
 
 @pytest.mark.unit
+def test_release_failure_in_schema_mismatch_path_does_not_mask_binding_error(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """EU-07 (C04 cleanup, item #7): if `_release()` itself raises while
+    cleaning up after a stale-schema-hash rejection, the caller must still
+    see `SemanticSchemaBindingError` -- not the release failure -- with the
+    release failure surfaced as `__cause__` rather than replacing the
+    propagated exception outright."""
+    run_id, value = _setup(engine)
+    model = CapturingModel([_result()])
+    schemas = default_output_schema_registry()
+    real_get = schemas.get
+    calls = {"n": 0}
+
+    def flaky_get(schema_id: str, version: str):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        definition, model_type = real_get(schema_id, version)
+        if calls["n"] > 1:
+            definition = definition.model_copy(update={"schema_hash": "0" * 64})
+        return definition, model_type
+
+    schemas.get = flaky_get  # type: ignore[method-assign]
+    runtime = SemanticModelRuntime(model, engine, default_prompt_registry(), schemas)
+
+    release_error = RuntimeError("simulated _release failure")
+
+    def failing_release(run_id: object, reservation_id: str) -> None:
+        raise release_error
+
+    runtime._release = failing_release  # type: ignore[method-assign]
+
+    with pytest.raises(SemanticSchemaBindingError) as excinfo:
+        asyncio.run(
+            runtime.execute(
+                run_id=run_id,
+                module_id="M01",
+                module_version="1.0",
+                operation="classify",
+                prompt_id="m01.classify",
+                prompt_version="1.0",
+                canonical_input=value,
+                policy=SemanticRuntimePolicy(maximum_repair_attempts=0),
+            )
+        )
+    assert not model.requests
+    assert excinfo.value.__cause__ is release_error
+
+
+@pytest.mark.unit
 def test_conflicting_registration_of_same_id_and_version_is_rejected() -> None:
     """2.1.5: a schema id+version paired with materially different bytes must
     be rejected, whether the difference comes from a different model

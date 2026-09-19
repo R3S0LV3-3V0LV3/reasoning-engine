@@ -260,10 +260,26 @@ class SemanticModelRuntime:
             request.output_schema_id, request.output_schema_version
         )
         if current_definition.schema_hash != request.output_schema_hash:
-            self._release(run_id, reservation.reservation_id)
-            raise SemanticSchemaBindingError(
+            # EU-07 (C04 cleanup, item #7): construct the real error first and
+            # guard the cleanup call so a failure inside `_release()` itself
+            # can never replace/mask it. Before this change, an unguarded
+            # `self._release(...); raise SemanticSchemaBindingError(...)`
+            # meant a `_release()` failure here would propagate *instead of*
+            # the schema-mismatch error -- silently hiding the actual
+            # decisive fault behind an unrelated cleanup exception. Mirrors
+            # the neighboring provider-invoke path's `except BaseException:
+            # self._release(...); raise` cleanup-then-propagate shape, but
+            # additionally chains a release failure onto the schema error
+            # (`from release_error`) so it surfaces as `__cause__` rather
+            # than replacing the propagated exception outright.
+            binding_error = SemanticSchemaBindingError(
                 "structured request schema hash does not match the registered schema bytes"
             )
+            try:
+                self._release(run_id, reservation.reservation_id)
+            except BaseException as release_error:
+                raise binding_error from release_error
+            raise binding_error
         try:
             result = await self.model.generate(request)
         except BaseException:
