@@ -1,12 +1,11 @@
 """Strict structured-output schemas and deterministic registry."""
 
-import hashlib
 from functools import lru_cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fre.domain.common import FrozenModel, JsonValue, canonical_json
+from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.semantic import EpistemicOriginLabel, SourceAnchor, SupportRef
 from fre.domain.task import HorizonClass, Ordinal4, SearchSpaceClass, TaskType
 
@@ -54,7 +53,19 @@ def canonical_schema_bytes(model: type[BaseModel]) -> bytes:
 
 @lru_cache(maxsize=None)
 def canonical_schema_hash(model: type[BaseModel]) -> str:
-    """Hash of `canonical_schema_bytes` (== `canonical_hash(model.model_json_schema())`).
+    """Hash of a model's canonical JSON-Schema representation.
+
+    Delegates to the shared `canonical_hash` primitive (EU-04, C04 cleanup,
+    item #4) rather than hand-rolling `hashlib.sha256(canonical_json(...))`
+    itself -- `canonical_hash(value) == hashlib.sha256(canonical_json(value)).hexdigest()`,
+    so `canonical_hash(model.model_json_schema())` is byte-for-byte identical
+    to the old hand-rolled computation for every currently-registered schema
+    (confirmed by an explicit before/after parity test;
+    see `test_canonical_schema_hash_matches_canonical_hash_of_the_json_schema`
+    in `tests/unit/test_output_schema_binding.py`). `canonical_schema_bytes`
+    is kept as a separate helper (still used directly by resource-exhaustion
+    size checks in `enforce_schema_limits`) and remains equal to
+    `canonical_json(model.model_json_schema())`.
 
     Memoized per model class (EU-01, C04 cleanup, item #1): a registered
     output-schema model's JSON-Schema shape is fixed once the class is
@@ -69,7 +80,7 @@ def canonical_schema_hash(model: type[BaseModel]) -> str:
     definition.schema_hash`) on every call -- only the underlying
     computation is now cheap, not the check itself.
     """
-    return hashlib.sha256(canonical_schema_bytes(model)).hexdigest()
+    return canonical_hash(model.model_json_schema())
 
 
 def _resolve_local_ref(root: JsonValue, ref: str) -> JsonValue | None:

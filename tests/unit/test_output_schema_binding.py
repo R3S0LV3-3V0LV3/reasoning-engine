@@ -235,14 +235,14 @@ def test_canonical_schema_hash_is_memoized_per_model(
         value: int
 
     call_count = 0
-    real_sha256 = schemas_module.hashlib.sha256
+    real_canonical_hash = schemas_module.canonical_hash
 
-    def spy_sha256(data: bytes):  # type: ignore[no-untyped-def]
+    def spy_canonical_hash(value: object) -> str:
         nonlocal call_count
         call_count += 1
-        return real_sha256(data)
+        return real_canonical_hash(value)
 
-    monkeypatch.setattr(schemas_module.hashlib, "sha256", spy_sha256)
+    monkeypatch.setattr(schemas_module, "canonical_hash", spy_canonical_hash)
 
     registry_a = OutputSchemaRegistry()
     registry_b = OutputSchemaRegistry()
@@ -265,6 +265,24 @@ def test_canonical_schema_hash_is_memoized_per_model(
     registry_a.get("memo.schema.a", "1.0")
     registry_a.get("memo.schema.a", "1.0")
     assert call_count == 1
+
+
+@pytest.mark.unit
+def test_canonical_schema_hash_matches_canonical_hash_of_the_json_schema() -> None:
+    """EU-04 (C04 cleanup, item #4) parity check: `canonical_schema_hash(model)`
+    must be byte-for-byte identical to `canonical_hash(model.model_json_schema())`
+    for every currently-registered schema, since `canonical_schema_hash` is
+    defined in terms of the same `canonical_json` serialization `canonical_hash`
+    uses -- there is no independent hand-rolled hashing path to diverge from
+    the shared primitive."""
+    registry = default_output_schema_registry()
+    for schema_id, version in (
+        ("m01.classification-output", "1.0"),
+        ("m03.problem-formalisation-output", "1.0"),
+        ("m04.representation-adjudication-output", "1.0"),
+    ):
+        _, model = registry.get(schema_id, version)
+        assert canonical_schema_hash(model) == canonical_hash(model.model_json_schema())
 
 
 @pytest.mark.unit
