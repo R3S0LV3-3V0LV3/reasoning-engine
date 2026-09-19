@@ -15,6 +15,7 @@ from fre.modules.m12_context import Wave3ContextCompiler
 from fre.ports.models import StructuredModelPort
 from fre.prompts.registry import PromptRegistry, default_prompt_registry
 from fre.prompts.schemas import OutputSchemaRegistry, default_output_schema_registry
+from fre.runtime.wave3_context import Wave3ContextRuntime
 from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
 
 
@@ -47,6 +48,11 @@ class Wave3Components:
     semantic_runtime: SemanticModelRuntime
     representation_selector: RepresentationSelector
     context_compiler: Wave3ContextCompiler
+    # C08 (F12): the real caller that persists a compiled Wave 3 semantic
+    # context packet (`ContextCompiled@2.0` + its two durable artifacts,
+    # atomically) instead of `context_compiler.compile_semantic()` ever being
+    # invoked only to produce an in-memory-only result nothing durably reads.
+    context_runtime: Wave3ContextRuntime
     prompts: PromptRegistry
     schemas: OutputSchemaRegistry
 
@@ -128,6 +134,7 @@ def compose_wave3(
     )
     prompts = default_prompt_registry()
     schemas = default_output_schema_registry()
+    context_compiler = Wave3ContextCompiler()
     components = Wave3Components(
         policy=effective,
         classifier=TaskClassifier(classification),
@@ -140,7 +147,8 @@ def compose_wave3(
             execution_config_hash=effective.policy_hash,
         ),
         representation_selector=RepresentationSelector(representation, default_registry()),
-        context_compiler=Wave3ContextCompiler(),
+        context_compiler=context_compiler,
+        context_runtime=Wave3ContextRuntime(engine, context_compiler),
         prompts=prompts,
         schemas=schemas,
     )

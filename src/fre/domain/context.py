@@ -1,9 +1,10 @@
 """Deterministic context packet, compression, and delta contracts."""
 
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SerializerFunctionWrapHandler, model_serializer
 
 from fre.domain.budget import BudgetRemaining
 from fre.domain.common import FrozenModel, JsonValue
@@ -14,6 +15,82 @@ class Availability(StrEnum):
     AVAILABLE = "AVAILABLE"
     NOT_PRODUCED = "NOT_PRODUCED"
     NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+class Wave3ContextAvailability(StrEnum):
+    """Explicit, typed Wave 3 semantic-context availability (Phase 6/C08, F12).
+
+    Modelled on the existing `*_projection_availability` pattern above, but
+    for the compiled Wave 3 semantic snapshot as a whole (ProblemSpec state,
+    blockers, and representation), not any single M04 projection kind.
+    """
+
+    AVAILABLE = "AVAILABLE"
+    PARTIAL_BLOCKED = "PARTIAL_BLOCKED"
+    UNAVAILABLE_BUDGET = "UNAVAILABLE_BUDGET"
+    UNAVAILABLE_VALIDATION = "UNAVAILABLE_VALIDATION"
+    NOT_REQUESTED = "NOT_REQUESTED"
+
+
+WAVE3_CONTEXT_SCHEMA_VERSION = "1.0"
+
+
+class UnresolvedUnknownRef(FrozenModel):
+    """Full-fidelity mirror of one still-open `problem.UnknownSpec`.
+
+    Every field `UnknownSpec` declares is carried through verbatim so no
+    governed-uncertainty metadata is lost when it is surfaced into the
+    permitted context view -- applying the C06 UNKNOWN-preservation lesson to
+    M12's compiled output, not only to M03's ledger admission path.
+    """
+
+    id: str
+    description: str
+    domain: JsonValue | None = None
+    rationale: str | None = None
+    impact: JsonValue | None = None
+    decision_relevance: float | None = None
+    resolvable: bool | None = None
+    candidate_actions: tuple[str, ...] = ()
+
+
+class Wave3SemanticContext(FrozenModel):
+    """Typed Wave 3 semantic-context envelope (Phase 6/C08, defect F12).
+
+    Replaces prose/structure sniffing of the overloaded `ContextPacket.
+    objective` field (`compiler_version == "2.0"` plus "is `objective` a
+    dict") with an explicit, typed contract naming exactly what Wave 3
+    semantic state this packet reflects and how available it is. Every ref
+    field here is independently re-derived and verified by `RunReducer.apply`
+    against the actual persisted run state at `ContextCompiled@2.0`
+    application time (see the reducer's `ContextCompiledV2` branch) -- never
+    trusted merely because it is internally self-consistent.
+
+    `budget_plan_revision` was deliberately NOT included: `BudgetPlan` has no
+    revision counter in the domain model, and `BudgetProjection` does not
+    track how many times a plan has been revised either, so a "revision"
+    field here could only ever be a caller-supplied, unverifiable claim --
+    exactly the class of defect this phase exists to remove. `budget_
+    policy_hash` is used instead: it is a value already stored verbatim on
+    `BudgetProjection.policy_hash`, so the reducer check is an exact stored-
+    value comparison, not a fabricated recomputation.
+    """
+
+    schema_version: str = WAVE3_CONTEXT_SCHEMA_VERSION
+    availability: Wave3ContextAvailability
+    availability_reason: str = Field(min_length=1)
+    problem_spec_ref: str = Field(pattern=r"^[0-9a-f]{64}$")
+    task_signature_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    budget_plan_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    budget_policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blocker_refs: tuple[str, ...] = ()
+    ledger_root: str = Field(pattern=r"^[0-9a-f]{64}$")
+    ledger_version: int = Field(ge=0)
+    representation_plan_ref: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    representation_artifact_refs: tuple[str, ...] = ()
+    prompt_version: str | None = None
+    model_identity: str | None = None
+    unresolved_unknowns: tuple[UnresolvedUnknownRef, ...] = ()
 
 
 class CompilerProfile(StrEnum):
@@ -84,7 +161,22 @@ class ContextPacket(FrozenModel):
     acquisition_projection_availability: Availability = Availability.NOT_PRODUCED
     next_action: str | None = None
     terminal_disposition: str | None = None
+    # C08 (F12) addition: typed Wave 3 semantic availability. `None` for every
+    # Wave 1/2/v1-semantic packet, exactly as before this field existed.
+    # `serialize_compatibly` below omits the key entirely whenever it is
+    # `None`, so `packet_hash`, `canonical_json`, and every embedding
+    # `RunState.state_hash` computed over a packet that never populated this
+    # field are byte-for-byte unchanged by this phase (mirrors
+    # `RepresentationView.serialize_compatibly`'s `builder_available` trick).
+    wave3_context: Wave3SemanticContext | None = None
     packet_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_serializer(mode="wrap")
+    def serialize_compatibly(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        payload: dict[str, Any] = handler(self)
+        if self.wave3_context is None:
+            payload.pop("wave3_context", None)
+        return payload
 
 
 class ContextCompilationRecord(FrozenModel):

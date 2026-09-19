@@ -4,7 +4,7 @@ import copy
 from typing import cast
 from uuid import UUID
 
-from fre.domain.budget import BudgetRemaining
+from fre.domain.budget import RESOURCE_NAMES, BudgetPlan, BudgetRemaining
 from fre.domain.common import JsonValue, canonical_hash, canonical_json, canonical_unordered
 from fre.domain.context import (
     CompilerProfile,
@@ -19,10 +19,14 @@ from fre.domain.context import (
     DeltaOperation,
     DeltaOperationType,
     RejectedItem,
+    UnresolvedUnknownRef,
+    Wave3ContextAvailability,
+    Wave3SemanticContext,
 )
 from fre.domain.ledger import EpistemicStatus, LedgerNode, LedgerNodeRef, LedgerProjection
 from fre.domain.problem import ProblemBlocker, ProblemSpec
-from fre.domain.representation import RepresentationPlan
+from fre.domain.representation import RepresentationArtifact, RepresentationPlan
+from fre.domain.task import TaskSignature
 from fre.modules.m09_ledger import EpistemicLedger
 
 DEFAULT_TARGETS = {
@@ -30,6 +34,58 @@ DEFAULT_TARGETS = {
     CompilerProfile.STANDARD: 65536,
     CompilerProfile.HANDOFF: 32768,
 }
+
+
+def derive_wave3_availability(
+    *,
+    problem_blockers: tuple[ProblemBlocker, ...],
+    representation: RepresentationPlan | None,
+    representation_artifacts: tuple[RepresentationArtifact, ...] = (),
+    budget_remaining: BudgetRemaining,
+) -> tuple[Wave3ContextAvailability, str]:
+    """Pure derivation of Wave 3 semantic availability from real state.
+
+    This is the SAME function `Wave3ContextCompiler.compile_semantic` calls to
+    populate `Wave3SemanticContext.availability`/`availability_reason` and
+    that `RunReducer.apply` calls again, independently, from the actually-
+    applied run state at `ContextCompiled@2.0` time (see the critical lesson
+    in the Phase 6/C08 plan: a claim is only trustworthy when the reducer
+    recomputes it from ground truth rather than checking it only against
+    itself). Sharing one function closes the drift risk C07 named explicitly
+    for `bind_hash` (three independently hand-maintained recomputations that
+    could silently disagree).
+    """
+    material_blockers = tuple(blocker for blocker in problem_blockers if not blocker.resolvable)
+    if material_blockers:
+        ids = ", ".join(sorted(blocker.blocker_id for blocker in material_blockers))
+        return (
+            Wave3ContextAvailability.PARTIAL_BLOCKED,
+            f"material (non-resolvable) problem blocker(s) unresolved: {ids}",
+        )
+    if representation is None:
+        return (
+            Wave3ContextAvailability.NOT_REQUESTED,
+            "representation plan was not requested for this compilation",
+        )
+    resources = budget_remaining.resources
+    if all(getattr(resources, name) <= 0 for name in RESOURCE_NAMES):
+        return (
+            Wave3ContextAvailability.UNAVAILABLE_BUDGET,
+            "remaining budget is exhausted across every countable resource",
+        )
+    if representation.views and not any(
+        artifact.requested_kind == view.kind or artifact.actual_kind == view.kind
+        for view in representation.views
+        for artifact in representation_artifacts
+    ):
+        return (
+            Wave3ContextAvailability.UNAVAILABLE_VALIDATION,
+            "representation plan selects view(s) with no corresponding validated artifact",
+        )
+    return (
+        Wave3ContextAvailability.AVAILABLE,
+        "problem, blockers, and representation are all available and mutually consistent",
+    )
 
 
 class ContextCompiler:
@@ -56,6 +112,7 @@ class ContextCompiler:
         terminal_disposition: str | None = None,
         objective: JsonValue | None = None,
         output_contract: JsonValue | None = None,
+        wave3_context: "Wave3SemanticContext | None" = None,
     ) -> ContextCompilationResult:
         eligible_rules = self.policy.profile_rule_eligibility[profile]
         applied: list[str] = ["C01"] if "C01" in eligible_rules else []
@@ -122,6 +179,7 @@ class ContextCompiler:
             budget_remaining=budget_remaining,
             next_action=next_action,
             terminal_disposition=terminal_disposition,
+            wave3_context=wave3_context,
             packet_hash="0" * 64,
         )
         packet = packet.model_copy(
@@ -187,6 +245,12 @@ class Wave3ContextCompiler(ContextCompiler):
         problem: ProblemSpec,
         representation: RepresentationPlan | None,
         problem_blockers: tuple[ProblemBlocker, ...] = (),
+        representation_artifacts: tuple[RepresentationArtifact, ...] = (),
+        task_signature: TaskSignature | None = None,
+        budget_plan: BudgetPlan | None = None,
+        budget_policy_hash: str | None = None,
+        prompt_version: str | None = None,
+        model_identity: str | None = None,
         **kwargs: object,
     ) -> ContextCompilationResult:
         if representation is not None and representation.problem_spec_hash != canonical_hash(
@@ -199,6 +263,44 @@ class Wave3ContextCompiler(ContextCompiler):
         )
         if tuple(sorted(set(supplied_blockers))) != tuple(sorted(set(blocker_descriptions))):
             raise ValueError("unresolved_blockers does not match the supplied problem_blockers")
+        ledger_projection = cast(LedgerProjection, kwargs["ledger"])
+        budget_remaining = cast(BudgetRemaining, kwargs["budget_remaining"])
+        availability, availability_reason = derive_wave3_availability(
+            problem_blockers=problem_blockers,
+            representation=representation,
+            representation_artifacts=representation_artifacts,
+            budget_remaining=budget_remaining,
+        )
+        wave3_context = Wave3SemanticContext(
+            availability=availability,
+            availability_reason=availability_reason,
+            problem_spec_ref=canonical_hash(problem),
+            task_signature_ref=canonical_hash(task_signature) if task_signature else None,
+            budget_plan_ref=canonical_hash(budget_plan) if budget_plan else None,
+            budget_policy_hash=budget_policy_hash,
+            blocker_refs=tuple(sorted(blocker.blocker_id for blocker in problem_blockers)),
+            ledger_root=canonical_hash(ledger_projection),
+            ledger_version=cast(int, kwargs["snapshot_version"]),
+            representation_plan_ref=canonical_hash(representation) if representation else None,
+            representation_artifact_refs=tuple(
+                sorted(canonical_hash(artifact) for artifact in representation_artifacts)
+            ),
+            prompt_version=prompt_version,
+            model_identity=model_identity,
+            unresolved_unknowns=tuple(
+                UnresolvedUnknownRef(
+                    id=item.id,
+                    description=item.description,
+                    domain=item.domain,
+                    rationale=item.rationale,
+                    impact=item.impact,
+                    decision_relevance=item.decision_relevance,
+                    resolvable=item.resolvable,
+                    candidate_actions=item.candidate_actions,
+                )
+                for item in problem.unknowns
+            ),
+        )
         semantic_summary: JsonValue = {
             "objectives": [item.model_dump(mode="json") for item in problem.objectives],
             "hard_constraints": [
@@ -233,6 +335,7 @@ class Wave3ContextCompiler(ContextCompiler):
             output_contract=problem.output_contract.model_dump(mode="json"),
             hard_constraints=constraints,
             unresolved_blockers=blocker_descriptions,
+            wave3_context=wave3_context,
             **kwargs,  # type: ignore[arg-type]
         )
 
@@ -246,6 +349,24 @@ class Wave3ContextCompiler(ContextCompiler):
             f"- Snapshot: `{packet.snapshot_version}`",
             f"- Packet hash: `{packet.packet_hash}`",
         ]
+        lines.extend(("", "## Wave 3 semantic availability"))
+        if packet.wave3_context is None:
+            lines.append("- NOT_REQUESTED (no typed Wave 3 semantic context was compiled)")
+        else:
+            wave3 = packet.wave3_context
+            lines.extend(
+                (
+                    f"- Availability: `{wave3.availability}` — {wave3.availability_reason}",
+                    f"- Problem spec ref: `{wave3.problem_spec_ref}`",
+                    f"- Ledger root: `{wave3.ledger_root}` @ version `{wave3.ledger_version}`",
+                    f"- Blocker refs: `{', '.join(wave3.blocker_refs) or 'none'}`",
+                    "- Representation plan ref: `"
+                    f"{wave3.representation_plan_ref or 'NOT_PRODUCED'}`",
+                    "- Representation artifact refs: `"
+                    f"{', '.join(wave3.representation_artifact_refs) or 'none'}`",
+                    f"- Unresolved UNKNOWNs: `{len(wave3.unresolved_unknowns)}`",
+                )
+            )
         sections = (
             ("Objectives", "objectives"),
             ("Hard constraints", "hard_constraints"),

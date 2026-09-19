@@ -2,7 +2,16 @@
 
 - Profile: `STANDARD`
 - Snapshot: `7`
-- Packet hash: `52e086409c0f0551cf071597adea0b706a10a08dbec098c826b3d9e6693804d9`
+- Packet hash: `b2d72057d9466f6da11db464afdd81aaea1dd0e5e61b704572b4341e721c90ac`
+
+## Wave 3 semantic availability
+- Availability: `UNAVAILABLE_VALIDATION` — representation plan selects view(s) with no corresponding validated artifact
+- Problem spec ref: `9679dbf97ee5f63c5ab9de1d45f84224071c702a1facfe18c16240ba9337db36`
+- Ledger root: `a3d3d81f139103f97338bc4d7a6e01bb266eee9810c39ccbea4b90d8a987f3fd` @ version `7`
+- Blocker refs: `blocker-1`
+- Representation plan ref: `0407d2fce7f31a1e282309ccc464d8ca4b097e2f81f6b447c566be4ab533fb7b`
+- Representation artifact refs: `none`
+- Unresolved UNKNOWNs: `1`
 
 ## Objectives
 - `{"description":"Minimize cost","direction":"MIN","evaluator_ref":null,"id":"obj-1","name":"cost","priority":null,"provenance":null,"unit":null}`
