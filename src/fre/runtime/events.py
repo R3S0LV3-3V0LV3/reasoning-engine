@@ -178,6 +178,25 @@ class TaskClassified(FrozenModel):
     record: ClassificationRecord
 
 
+class TaskEnvelopeBound(FrozenModel):
+    """W3 final-gate fix #3: records the canonical hash of the `TaskEnvelope`
+    that produced a resumable Wave 3 front-end step's persisted result.
+
+    `Wave3Engine.classify_task`/`classify_task_semantic`/`formalise_problem`
+    return their already-persisted result unchanged whenever it exists,
+    without previously checking that the CURRENT call's `envelope` argument
+    is the same one that produced it. A caller resuming the same `run_id`
+    with a genuinely different `TaskEnvelope` (e.g. a different `task_id`)
+    got back stale data silently instead of an error. `stage` is either
+    `"classification"` or `"formalisation"`; `envelope_hash` is
+    `canonical_hash(envelope)` at the moment that stage's result was first
+    persisted.
+    """
+
+    stage: str
+    envelope_hash: str
+
+
 class TaskPreliminarilyClassified(FrozenModel):
     """Deterministic-only bootstrap signature used solely to seed the M02 bootstrap budget.
 
@@ -267,6 +286,7 @@ EventPayload = (
     | ModelCallRecordedV2
     | ModelCallFailedV2
     | TaskClassified
+    | TaskEnvelopeBound
     | TaskPreliminarilyClassified
     | ClassificationDiagnosticRecorded
     | ProblemFormalised
@@ -302,6 +322,7 @@ EVENT_PAYLOADS: dict[tuple[str, str], type[EventPayload]] = {
         ModelCallRecorded,
         ModelCallFailed,
         TaskClassified,
+        TaskEnvelopeBound,
         TaskPreliminarilyClassified,
         ClassificationDiagnosticRecorded,
         ProblemFormalised,

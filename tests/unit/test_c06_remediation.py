@@ -549,6 +549,70 @@ def test_support_ledger_node_ref_resolves_through_the_real_coordinator(
     assert len(resolved.provenance.support) == 1
 
 
+@pytest.mark.unit
+def test_formalise_problem_registers_envelope_attachments_before_appending(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """W3 final-gate fix #4: `formalise_problem` built `available_artifacts`
+    from `envelope.attachments` purely as a LOCAL `frozenset` for M03's own
+    `ProblemFormaliser.formalise()` anchor/support check, but never emitted
+    a real `ArtifactRegistered` event for any of them. The reducer's OWN
+    independent verification of an M03 `LedgerNodeAdded`'s anchors
+    (`_validate_m03_ledger_node_provenance` in `runtime/reducer.py`) checks
+    against `state.artifacts`, which is populated ONLY by applied
+    `ArtifactRegistered` events -- so a proposal item anchored to a real
+    envelope attachment passed `formalise()` locally and then was rejected
+    by the reducer at `engine.append`, with no way to ever succeed. This
+    test fails on the pre-fix code (the coordinator call below raises) and
+    passes after (the coordinator registers every not-yet-known attachment
+    in the same atomic batch as the formalisation events)."""
+    attachment = ArtifactDataRef(artifact_id=UUID(int=42), sha256="a" * 64)
+    task = TaskEnvelope(
+        task_id=UUID(int=901),
+        text="Use the attached document.",
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(),
+        attachments=(attachment,),
+    )
+    model = _QueueModel(
+        [
+            _formalisation_response(
+                [
+                    {
+                        "id": "anchored-to-attachment",
+                        "kind": "UNKNOWN",
+                        "description": "derived from the attached document",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [
+                            {
+                                "source_kind": "ARTIFACT",
+                                "source_ref": {
+                                    "artifact_id": str(attachment.artifact_id),
+                                    "sha256": attachment.sha256,
+                                },
+                                "selector": "",
+                            }
+                        ],
+                    }
+                ]
+            )
+        ]
+    )
+    wave3 = compose_wave3(engine, model)
+    handle = wave3.create_run()
+    # Bootstrap the budget a real semantic call needs to reserve against
+    # (deterministic-only: this model's queue holds only the formalisation
+    # response above, so `allow_model=False` here must never draw from it).
+    asyncio.run(wave3.classify_task_semantic(handle.run_id, task, allow_model=False))
+
+    problem = asyncio.run(wave3.formalise_problem(handle.run_id, task, allow_model=True))
+
+    resolved = next(item for item in problem.unknowns if item.id == "anchored-to-attachment")
+    assert resolved.provenance is not None
+    state = engine.inspect(handle.run_id)
+    assert attachment.sha256 in state.artifacts
+
+
 # ---------------------------------------------------------------------------
 # F07: contradicted-without-relation must be rejected; material vs.
 # non-material items produce blockers only when material.

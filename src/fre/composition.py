@@ -139,6 +139,7 @@ from fre.runtime.events import (
     RepresentationArtifactCompiledV2,
     RepresentationPlanSelectedV2,
     TaskClassified,
+    TaskEnvelopeBound,
     TaskPreliminarilyClassified,
 )
 from fre.runtime.reducer import RunState
@@ -149,6 +150,17 @@ from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
 
 class UnsupportedWave3Configuration(ValueError):
     """A configured version has no implementation in this build."""
+
+
+class EnvelopeMismatchError(ValueError):
+    """W3 final-gate fix #3: raised when a resumable Wave 3 front-end step
+    (`classify_task`/`classify_task_semantic`/`formalise_problem`) is called
+    again for a `run_id` that already has a persisted result, but with a
+    `TaskEnvelope` whose canonical hash does not match the one that produced
+    that result. Before this fix, the resumability short-circuit returned
+    the stale, already-persisted result unconditionally -- silently ignoring
+    the caller's (different) envelope -- instead of surfacing the
+    inconsistency."""
 
 
 class EffectiveWave3Policy(FrozenModel):
@@ -234,6 +246,29 @@ class Wave3Engine:
     def create_run(self) -> RunHandle:
         return self.engine.create_run(self.effective_policy)
 
+    @staticmethod
+    def _check_envelope_binding(
+        run_id: UUID, persisted_hash: str | None, envelope: TaskEnvelope, *, stage: str
+    ) -> None:
+        """W3 final-gate fix #3: reject a resume attempt whose `envelope`
+        does not match the one that produced the already-persisted result
+        for `stage` ("classification" or "formalisation"), instead of
+        silently returning stale data bound to a different envelope.
+        `persisted_hash is None` covers both "no result persisted yet" and
+        "a result was persisted before this fix shipped, with no recorded
+        binding" -- either way there is nothing to compare against, so it is
+        never treated as a mismatch.
+        """
+        if persisted_hash is None:
+            return
+        current_hash = canonical_hash(envelope)
+        if persisted_hash != current_hash:
+            raise EnvelopeMismatchError(
+                f"run {run_id} already has a persisted {stage} result bound to a different "
+                "TaskEnvelope (hash mismatch) -- refusing to return stale data for the "
+                "envelope passed to this call"
+            )
+
     def finalize(self, run_id: UUID, decision: StopDecision) -> str:
         """Real call site for the composed Wave 2 + Wave 3 terminal lifecycle.
 
@@ -289,6 +324,9 @@ class Wave3Engine:
         """
         state = self.engine.inspect(run_id)
         if state.task_signature is not None:
+            self._check_envelope_binding(
+                run_id, state.classification_envelope_hash, envelope, stage="classification"
+            )
             return state.task_signature
         self._bootstrap_budget(run_id, envelope, tier_policy, deployment)
         return self._finalize_classification(
@@ -334,6 +372,9 @@ class Wave3Engine:
     ) -> TaskSignature:
         state = self.engine.inspect(run_id)
         if state.task_signature is not None:
+            self._check_envelope_binding(
+                run_id, state.classification_envelope_hash, envelope, stage="classification"
+            )
             return state.task_signature
         classifier = self.components.classifier
         policy = self.components.policy.classification
@@ -355,6 +396,12 @@ class Wave3Engine:
         events.append(TaskClassified(signature=signature, record=record))
         events.append(
             BudgetRevised(plan=plan, policy_version=plan.policy_version, policy_hash=policy_hash)
+        )
+        # W3 final-gate fix #3: bind the envelope that produced this
+        # classification, in the same atomic batch, so a later resume
+        # attempt with a different envelope can be detected.
+        events.append(
+            TaskEnvelopeBound(stage="classification", envelope_hash=canonical_hash(envelope))
         )
         stored = tuple(self.engine.make_event(run_id, item, module_id="M01") for item in events)
         self.engine.append(run_id, state.version, stored)
@@ -385,6 +432,9 @@ class Wave3Engine:
         """
         state = self.engine.inspect(run_id)
         if state.task_signature is not None:
+            self._check_envelope_binding(
+                run_id, state.classification_envelope_hash, envelope, stage="classification"
+            )
             return state.task_signature
         self._bootstrap_budget(run_id, envelope, tier_policy, deployment)
         proposal: ClassificationOutput | None = None
@@ -440,6 +490,9 @@ class Wave3Engine:
         """
         state = self.engine.inspect(run_id)
         if state.problem_spec is not None:
+            self._check_envelope_binding(
+                run_id, state.problem_envelope_hash, envelope, stage="formalisation"
+            )
             return state.problem_spec
         proposal: ProblemFormalisationOutput | None = None
         if allow_model:
@@ -463,6 +516,28 @@ class Wave3Engine:
         known_ledger_refs = frozenset(
             (node.node_id, node.revision) for node in current.ledger.nodes
         )
+        # W3 final-gate fix #4: `available_artifacts` above makes M03's own
+        # LOCAL anchor/support checks (`ProblemFormaliser.formalise`) treat
+        # every envelope attachment as usable evidence, but the reducer's
+        # OWN independent verification of an M03 ledger node's anchors
+        # (`_validate_m03_ledger_node_provenance` in `runtime/reducer.py`)
+        # checks against `state.artifacts`, which is populated ONLY by
+        # applied `ArtifactRegistered` events -- never by this coordinator
+        # merely constructing a local `frozenset`. Without ever emitting
+        # `ArtifactRegistered` for these attachments, a proposal that
+        # anchors/supports an item using one would pass `formalise` locally
+        # and then be rejected by the reducer at `engine.append` below.
+        # Registering every not-yet-known attachment HERE, in the SAME
+        # atomic batch as the formalisation events, closes that gap: either
+        # the whole batch (registration + formalisation) lands, or none of
+        # it does.
+        registration_events: tuple[EventPayload, ...] = tuple(
+            ArtifactRegistered(
+                artifact=attachment, media_type="application/octet-stream", byte_size=0
+            )
+            for attachment in envelope.attachments
+            if attachment.sha256 not in current.artifacts
+        )
         events = self.components.formaliser.canonical_events(
             envelope,
             proposal,
@@ -472,7 +547,16 @@ class Wave3Engine:
             trusted_verifier_results=trusted_verifier_results,  # type: ignore[arg-type]
             known_ledger_refs=known_ledger_refs,
         )
-        stored = tuple(self.engine.make_event(run_id, item, module_id="M03") for item in events)
+        # W3 final-gate fix #3: bind the envelope that produced this
+        # formalisation, in the same atomic batch, so a later resume attempt
+        # with a different envelope can be detected.
+        envelope_binding = (
+            TaskEnvelopeBound(stage="formalisation", envelope_hash=canonical_hash(envelope)),
+        )
+        stored = tuple(
+            self.engine.make_event(run_id, item, module_id="M03")
+            for item in (*registration_events, *events, *envelope_binding)
+        )
         self.engine.append(run_id, current.version, stored)
         result = self.engine.inspect(run_id).problem_spec
         assert result is not None
@@ -657,11 +741,14 @@ class Wave3Engine:
            compiled (`plan.source_snapshot_version < packet.snapshot_version`)
            -- this is a purely state-derived check, not a new stored/trusted
            packet field, so it needs no reducer or schema change. (`wave3_
-           context.representation_plan_ref` is NOT used for this: it is only
-           ever populated from the legacy v1 `representation` argument to
-           `compile_semantic`, which this v2-only coordinator path never
-           supplies, so that field is always `None` here and cannot
-           distinguish pre- from post-representation-selection packets.)
+           context.representation_plan_ref` is NOT used for this, even
+           though -- after the W3 final-gate fix that made `compile_semantic`
+           populate it from v2 state too -- it is no longer always `None` on
+           this v2-only coordinator path: it is a plain content hash of
+           whichever plan was bound at compile time, with no ordering
+           information of its own, so it still cannot distinguish "compiled
+           before this v2 plan was selected" from "compiled after" the way
+           the `source_snapshot_version` comparison below can.)
         2. `task_signature` (classification) could change on a run (e.g. a
            mid-run revision) without moving `problem_spec_ref`/`ledger_root`/
            `budget_plan_ref` at all. `wave3_context.task_signature_ref` IS
