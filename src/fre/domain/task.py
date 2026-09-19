@@ -105,7 +105,27 @@ class ClassificationDimensionResult(FrozenModel):
 
 
 class FloorOverrideRecord(FrozenModel):
-    """Audit trail entry for a deterministic floor/escalation changing a dimension."""
+    """Audit trail entry for a deterministic floor/escalation changing a dimension.
+
+    C05 remediation (finding #16, ARCH-DEFER -- explicitly not fixed in this
+    cleanup pass): the name `FloorOverrideRecord`, and the
+    `"permission_floor"` / `"low_confidence_escalation"` /
+    `"no_proposal_fallback"` vocabulary used in `reason`/`approving_rule`
+    (see `m01_classifier.py`'s `dimension()`/`categorical_dimension()`), are
+    overloaded beyond literal "floor" changes -- `low_confidence_escalation`
+    and `no_proposal_fallback` are escalations, not floors, yet are recorded
+    through the same "floor override" audit shape. A more accurate future
+    name (e.g. `DimensionOverrideRecord`) would improve auditor clarity, but
+    a rename here would touch this class, every `override_basis`/`reason`
+    string literal in `m01_classifier.py`, persisted event payloads, every
+    golden fixture, and the diagnostic-string parsing at
+    `m01_classifier.py`'s `diagnostics` construction
+    (`f"{override.axis}:{override.reason}"`) -- a wide-blast-radius,
+    schema-adjacent change requiring full golden-fixture regeneration.
+    Deferred: if undertaken, it should be scoped as its own
+    SCHEMA-RISK-REFACTOR unit with an explicit fixture-reseal budget, not
+    folded into a cleanup pass.
+    """
 
     axis: str
     reason: str
