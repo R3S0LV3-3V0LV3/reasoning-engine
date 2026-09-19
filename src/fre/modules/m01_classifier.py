@@ -170,6 +170,30 @@ def _explicit_ordinals(envelope: TaskEnvelope) -> dict[str, Ordinal4]:
     return explicit
 
 
+def _require_model_rationale_and_support(
+    name: str, rationale: str | None, anchors: tuple[SourceAnchor, ...]
+) -> None:
+    """Guard shared by `dimension()`/`categorical_dimension()` (C05 remediation, finding #12).
+
+    A material, MODEL-basis classification dimension must carry both a
+    rationale and at least one resolvable supporting anchor. The two call
+    sites' *gating* condition (when this guard applies at all) genuinely
+    differs -- `dimension()` additionally requires `not is_explicit and
+    proposed is not None`, `categorical_dimension()` requires only
+    `basis == "MODEL"` -- but the guard body itself (these two checks, with
+    this exact error message text) was byte-identical duplication. Each call
+    site still evaluates its own gating condition before calling this helper.
+    """
+    if not rationale or not rationale.strip():
+        raise ClassificationBlocked(
+            f"{name}: material classification dimension is missing a rationale"
+        )
+    if not anchors:
+        raise ClassificationBlocked(
+            f"{name}: material classification dimension has no resolvable support"
+        )
+
+
 def _validate_ordinal_bound(
     axis: str, estimate: Ordinal4, upper: Ordinal4, *, ascending: bool
 ) -> None:
@@ -284,14 +308,7 @@ class TaskClassifier:
             estimate = explicit.get(name, proposed or policy.fallback_ordinal)
             basis = "EXPLICIT" if is_explicit else "MODEL" if proposal else "POLICY_FALLBACK"
             if basis == "MODEL" and not is_explicit and proposed is not None:
-                if not rationale or not rationale.strip():
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension is missing a rationale"
-                    )
-                if not proposed_anchors:
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension has no resolvable support"
-                    )
+                _require_model_rationale_and_support(name, rationale, proposed_anchors)
                 if upper is not None:
                     _validate_ordinal_bound(
                         name,
@@ -299,33 +316,51 @@ class TaskClassifier:
                         upper,
                         ascending=name in _ASCENDING_AXES or name == "irreversibility",
                     )
-            after_floor = harder(estimate, floor)
-            effective = after_floor
             effective_confidence = None if is_explicit else confidence
             effective_upper = None if is_explicit else upper
-            low_confidence_applied = False
-            if (
+            # C05 remediation (finding #15): a single ordered pipeline of
+            # three escalation stages (permission floor -> low-confidence
+            # escalation -> no-proposal fallback), each computing its own
+            # "did this stage actually change the running value" flag exactly
+            # once, right where it computes the new value -- instead of the
+            # prior shape, where the low-confidence and fallback stages each
+            # tracked their own boolean but the floor stage did not, forcing
+            # a separate, later re-comparison (`after_floor != estimate`) to
+            # recover the same information. Each stage's `applied` flag is
+            # reused directly to build `reasons`, with no re-derivation.
+            # Preserves the exact fixed stage order and the exact `"+"`-joined
+            # `override_basis` string for every input combination -- this
+            # value is persisted in event payloads and golden fixtures.
+            after_floor = harder(estimate, floor)
+            floor_applied = after_floor != estimate
+
+            low_confidence_applies = (
                 not is_explicit
                 and confidence is not None
                 and confidence < policy.confidence_threshold
-            ):
-                escalated = harder(
-                    after_floor, harder(upper or estimate, policy.low_confidence_floor)
-                )
-                low_confidence_applied = escalated != after_floor
-                effective = escalated
-            fallback_applied = False
-            if proposal is None and name not in explicit:
-                escalated = harder(effective, policy.fallback_ordinal)
-                fallback_applied = escalated != effective
-                effective = escalated
-            reasons = []
-            if after_floor != estimate:
-                reasons.append("permission_floor")
-            if low_confidence_applied:
-                reasons.append("low_confidence_escalation")
-            if fallback_applied:
-                reasons.append("no_proposal_fallback")
+            )
+            after_low_confidence = (
+                harder(after_floor, harder(upper or estimate, policy.low_confidence_floor))
+                if low_confidence_applies
+                else after_floor
+            )
+            low_confidence_applied = after_low_confidence != after_floor
+
+            fallback_applies = proposal is None and name not in explicit
+            after_fallback = (
+                harder(after_low_confidence, policy.fallback_ordinal)
+                if fallback_applies
+                else after_low_confidence
+            )
+            fallback_applied = after_fallback != after_low_confidence
+
+            effective = after_fallback
+            stages = (
+                (floor_applied, "permission_floor"),
+                (low_confidence_applied, "low_confidence_escalation"),
+                (fallback_applied, "no_proposal_fallback"),
+            )
+            reasons = [label for applied, label in stages if applied]
             override_basis = "+".join(reasons) if reasons else None
             dimensions[name] = ClassificationDimensionResult(
                 estimated=estimate.value,
@@ -358,14 +393,7 @@ class TaskClassifier:
             rationale = proposal_obj.rationale if proposal_obj else None
             basis = "MODEL" if proposal_obj else "POLICY_FALLBACK"
             if basis == "MODEL":
-                if not rationale or not rationale.strip():
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension is missing a rationale"
-                    )
-                if not anchors:
-                    raise ClassificationBlocked(
-                        f"{name}: material classification dimension has no resolvable support"
-                    )
+                _require_model_rationale_and_support(name, rationale, anchors)
             effective = estimate
             override_basis = None
             if (
@@ -391,30 +419,40 @@ class TaskClassifier:
                 record_override(name, estimate, effective, override_basis)
             return effective
 
+        # C05 remediation (finding #10): one upfront per-axis unpack of the
+        # proposal's dimension sub-object, instead of repeating
+        # `proposal.<axis>.<field> if proposal else None` for every field
+        # below. Same resulting values for every input combination -- purely
+        # a mechanical de-duplication of the "no proposal at all" guard.
+        consequence_proposal = proposal.consequence if proposal else None
+        reversibility_proposal = proposal.reversibility if proposal else None
+        ambiguity_proposal = proposal.ambiguity if proposal else None
+        evidence_scarcity_proposal = proposal.evidence_scarcity if proposal else None
+
         irreversibility: Ordinal4 | None
         irreversible_upper: Ordinal4 | None
-        if proposal:
+        if reversibility_proposal is not None:
             if "irreversibility" not in explicit:
                 _validate_ordinal_bound(
                     "reversibility",
-                    proposal.reversibility.estimate,
-                    proposal.reversibility.conservative_upper,
+                    reversibility_proposal.estimate,
+                    reversibility_proposal.conservative_upper,
                     ascending=False,
                 )
-            irreversibility = reversibility_to_irreversibility(proposal.reversibility.estimate)
+            irreversibility = reversibility_to_irreversibility(reversibility_proposal.estimate)
             irreversible_upper = reversibility_to_irreversibility(
-                proposal.reversibility.conservative_upper
+                reversibility_proposal.conservative_upper
             )
         else:
             irreversibility = irreversible_upper = None
         consequence = dimension(
             "consequence",
-            proposal.consequence.estimate if proposal else None,
-            proposal.consequence.confidence if proposal else None,
-            proposal.consequence.conservative_upper if proposal else None,
-            proposal.consequence.rationale if proposal else None,
+            consequence_proposal.estimate if consequence_proposal else None,
+            consequence_proposal.confidence if consequence_proposal else None,
+            consequence_proposal.conservative_upper if consequence_proposal else None,
+            consequence_proposal.rationale if consequence_proposal else None,
             floor_consequence,
-            proposal.consequence.anchors if proposal else (),
+            consequence_proposal.anchors if consequence_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/consequence"),)
                 if "consequence" in explicit
@@ -426,11 +464,11 @@ class TaskClassifier:
         irreversible = dimension(
             "irreversibility",
             irreversibility,
-            proposal.reversibility.confidence if proposal else None,
+            reversibility_proposal.confidence if reversibility_proposal else None,
             irreversible_upper,
-            proposal.reversibility.rationale if proposal else None,
+            reversibility_proposal.rationale if reversibility_proposal else None,
             floor_irreversibility,
-            proposal.reversibility.anchors if proposal else (),
+            reversibility_proposal.anchors if reversibility_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/irreversibility"),)
                 if "irreversibility" in explicit
@@ -443,12 +481,12 @@ class TaskClassifier:
         )
         ambiguity = dimension(
             "ambiguity",
-            proposal.ambiguity.estimate if proposal else None,
-            proposal.ambiguity.confidence if proposal else None,
-            proposal.ambiguity.conservative_upper if proposal else None,
-            proposal.ambiguity.rationale if proposal else None,
+            ambiguity_proposal.estimate if ambiguity_proposal else None,
+            ambiguity_proposal.confidence if ambiguity_proposal else None,
+            ambiguity_proposal.conservative_upper if ambiguity_proposal else None,
+            ambiguity_proposal.rationale if ambiguity_proposal else None,
             floor_ambiguity,
-            proposal.ambiguity.anchors if proposal else (),
+            ambiguity_proposal.anchors if ambiguity_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/ambiguity"),)
                 if "ambiguity" in explicit
@@ -459,12 +497,12 @@ class TaskClassifier:
         )
         scarcity = dimension(
             "evidence_scarcity",
-            proposal.evidence_scarcity.estimate if proposal else None,
-            proposal.evidence_scarcity.confidence if proposal else None,
-            proposal.evidence_scarcity.conservative_upper if proposal else None,
-            proposal.evidence_scarcity.rationale if proposal else None,
+            evidence_scarcity_proposal.estimate if evidence_scarcity_proposal else None,
+            evidence_scarcity_proposal.confidence if evidence_scarcity_proposal else None,
+            evidence_scarcity_proposal.conservative_upper if evidence_scarcity_proposal else None,
+            evidence_scarcity_proposal.rationale if evidence_scarcity_proposal else None,
             floor_evidence_scarcity,
-            proposal.evidence_scarcity.anchors if proposal else (),
+            evidence_scarcity_proposal.anchors if evidence_scarcity_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/evidence_scarcity"),)
                 if "evidence_scarcity" in explicit
@@ -571,7 +609,26 @@ class TaskClassifier:
         created_at: datetime,
         uuids: UUIDFactory,
     ) -> tuple[EventPayload, ...]:
-        """Emit M09 provenance for every material, model-derived classification decision."""
+        """Emit M09 provenance for every material, model-derived classification decision.
+
+        C05 remediation (finding #8, re-scoped): emits at most one
+        `LedgerNodeAdded` per MODEL-basis dimension. There are 7 classifiable
+        dimensions (`task_type`, `consequence`, `irreversibility`, `ambiguity`,
+        `evidence_scarcity`, `search_space`, `horizon`) -- the 8th dimension,
+        `output_form`, is provably never MODEL-basis (it is always derived
+        deterministically from `envelope.requested_output.form`, see its
+        `basis="DETERMINISTIC"` assignment in `classify()`), so the true
+        maximum is 7 events (14 UUIDs: one node id + one action id per event),
+        not 8/16. This one-event-per-MODEL-axis granularity is intentional,
+        not accidental fan-out: the reducer's admission check
+        (`RunReducer.apply`, `TaskClassified` branch, "C05 remediation finding
+        #2") looks up provenance per axis by name, so each MODEL axis needs
+        its own independently citable `LedgerNodeRef`. Consolidating these
+        into one event per classification would require changing that
+        per-axis lookup contract in lockstep -- a larger, out-of-scope change
+        touching persisted event shapes and every golden fixture -- so this is
+        deliberately left as-is here.
+        """
         events: list[EventPayload] = []
         for name in sorted(record.dimensions):
             result = record.dimensions[name]
@@ -642,6 +699,16 @@ class TaskClassifier:
         unchanged. A future orchestrator (C09) driving re-classification of an
         already-active run must not call this method at all; it would need
         its own revision path built around the real projection, not this one.
+
+        EU-36 (w3-cleanup) cross-reference: `fre.composition.Wave3Engine.
+        classify_task` is exactly that C09 orchestrator, and it deliberately
+        does NOT call this method -- see its own docstring for why the
+        bootstrap-then-semantic-call-then-finalize ordering it needs cannot
+        be expressed as one call to `canonical_events` (this method runs the
+        semantic call synchronously with no interleaving point to persist a
+        bootstrap budget first). The two implementations look similar but
+        exist for structurally different calling contexts; this is
+        intentional duplication, not drift.
         """
         if current_projection is not None and current_projection.plan is not None:
             raise ValueError(
@@ -658,9 +725,24 @@ class TaskClassifier:
             envelope, proposal, policy, model_call_key=model_call_key
         )
         final_plan, final_hash = allocator.allocate(final_signature, tier_policy, deployment)
-        # Validate-only: proves the bootstrap -> final handoff never violates
-        # M02's monotone-tier/validation-floor revision invariants before any
-        # event is emitted.
+        # C05 remediation (finding #9, investigated): this `revise()` call is
+        # intentionally validate-only -- its returned `BudgetProjection` is
+        # discarded; only its invariant checks (monotone-tier,
+        # validation-floor, committed-plus-reserved-usage) matter here, to
+        # prove the bootstrap -> final handoff never violates M02's revision
+        # invariants before any event is emitted. This is acceptable as-is:
+        # both `BudgetAllocator.allocate` and `.revise` (see `m02_budget.py`)
+        # are pure, cheap, in-memory arithmetic over already-constructed
+        # `TaskSignature`/`BudgetPlan`/`BudgetProjection` objects -- floor
+        # lookups, `max()`/comparisons, and a `canonical_hash` call for the
+        # policy hash -- with no I/O and nothing that scales with anything
+        # other than the small, fixed set of budget dimensions. There is no
+        # meaningfully cheaper way to run `revise()`'s checks than calling
+        # `revise()` itself: its invariant checks are woven through the same
+        # few lines that would otherwise need duplicating into a standalone
+        # function, which would itself be a second place for the two to drift
+        # out of sync. Extracting a standalone check was considered and
+        # rejected for this reason.
         allocator.revise(
             BudgetProjection(plan=bootstrap_plan, policy_hash=bootstrap_hash),
             final_plan,

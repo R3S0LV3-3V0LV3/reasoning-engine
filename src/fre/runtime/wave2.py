@@ -155,9 +155,40 @@ class Wave2Runtime:
         # runs with no Wave 3 semantic state at all have nothing for
         # `Wave3ContextRuntime.compile_and_persist` to compile and it would
         # otherwise raise.
+        # EU-42 (w3-cleanup): this call and `Wave3Engine.compile_context`'s
+        # own 7-key-deduped call (`composition.py`) avoid double-compiling a
+        # packet only because their `(profile, terminal_disposition)` values
+        # happen to differ today -- this call always passes
+        # `profile=CompilerProfile.HANDOFF` with a real, non-None
+        # `terminal_disposition`, while `compile_context`'s own default is
+        # `profile=CompilerProfile.STANDARD` with `terminal_disposition=None`
+        # unless a caller explicitly overrides it. That is incidental
+        # avoidance, not a structural guarantee: this call performs no dedup
+        # scan of its own (unlike `compile_context`), so a future change to
+        # either caller's `profile`/`terminal_disposition` values -- e.g. a
+        # caller invoking `compile_context` with `profile=HANDOFF` and a
+        # matching `terminal_disposition` after this method already ran --
+        # could silently reintroduce double-persistence of a context packet.
+        # A narrower fix, if ever pursued, would move `compile_context`'s
+        # dedup scan into a method on `Wave3ContextRuntime` itself (e.g.
+        # `find_matching_packet(...)`) and have this call go through the same
+        # method first; that is deliberately not attempted in this pass.
         if self.wave3_context_runtime is not None:
             refreshed = self.engine.inspect(run_id)
             if refreshed.problem_spec is not None:
+                # ARCH-DEFER (C08 remediation, EU-32): this call persists the
+                # typed v2 `wave3_context` (via `ContextCompiledV2`), but no
+                # terminal-disposition consumer reads it back today -- the
+                # actual disposition decision above is driven entirely by the
+                # v1 `ContextCompiled`/`TerminalContextAssociated` pair
+                # appended earlier in this method, keyed off
+                # `ContextPacket.terminal_disposition`; `m13_stop.py` has zero
+                # references to `wave3_context`/`ContextCompiledV2`. There is
+                # no near-term plan to change that here: teaching
+                # finalize/M13 to read `wave3_context` for real
+                # terminal-disposition decisions is new coordinator work
+                # (likely a C09-adjacent follow-up), not a cleanup item, and
+                # is intentionally out of scope for this pass.
                 self.wave3_context_runtime.compile_and_persist(
                     run_id,
                     profile=CompilerProfile.HANDOFF,

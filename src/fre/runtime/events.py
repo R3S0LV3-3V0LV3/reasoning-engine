@@ -1,9 +1,11 @@
 """Typed event envelopes and payload registry."""
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from fre.domain.budget import BudgetPlan, BudgetReservation, ResourceVector
 from fre.domain.common import ArtifactRef, FrozenModel, JsonValue, SchemaVersion, UtcDateTime
@@ -183,6 +185,23 @@ class TaskPreliminarilyClassified(FrozenModel):
     authoritative classification -- it is always superseded, in the same
     atomic batch, by a `TaskClassified` built from the full (deterministic +
     model) proposal.
+
+    C05 remediation (finding #14, documentation-only): this event, and the
+    `RunState.preliminary_task_signature` field it is reduced into (see
+    `runtime/reducer.py`), are intentionally write-only in production code
+    today: (a) they are persisted purely for audit/forensic traceability of
+    the bootstrap-budget-sizing step -- so a later investigator can see
+    exactly what signature `TaskClassifier.canonical_events` used to size the
+    bootstrap `BudgetAllocated`; (b) the bootstrap budget calculation itself
+    reads the local `bootstrap_signature` variable directly (see
+    `canonical_events`), never this persisted field -- so there is currently
+    no production read path for `preliminary_task_signature`; (c) all 10
+    `tests/fixtures/golden/*.json` streams include a
+    `TaskPreliminarilyClassified` event, so removing this event or field
+    would require regenerating every golden fixture, which is explicitly out
+    of scope for this cleanup pass. If a future consumer is added for this
+    field, update this note to reflect the new read site rather than
+    removing it.
     """
 
     signature: TaskSignature
@@ -328,7 +347,41 @@ class UncommittedEvent(FrozenModel):
     created_at: UtcDateTime
     payload: dict[str, JsonValue]
 
+    # EU-02 (C04 cleanup, item #2): `validated_payload()` used to re-decode
+    # `self.payload` from scratch on every call. Within a single
+    # `FrontierReasoningEngine.append`, the same `StoredEvent` instance is
+    # decoded once by `validate_semantic_reservation_admission` (twice,
+    # actually -- once per pass) and again by `RunReducer.apply` -- all
+    # identical decodes of the same immutable payload dict, since every call
+    # site invokes this same method with no parameters (no strict/lenient
+    # variance to preserve). `UncommittedEvent`/`StoredEvent` are frozen
+    # (`FrozenModel`, `frozen=True`), but a `PrivateAttr` is exempt from that
+    # field-level immutability enforcement -- it is not a pydantic "field" --
+    # so it can safely hold a per-instance memo without weakening the
+    # model's frozen-field guarantees. The cache is instance-scoped (not a
+    # module-level/keyed cache), so it never leaks across distinct events.
+    _validated_payload_cache: EventPayload | None = PrivateAttr(default=None)
+
+    def __eq__(self, other: object) -> bool:
+        # Pydantic's default `__eq__` folds `__pydantic_private__` into the
+        # comparison, so two field-identical events would compare unequal
+        # purely because one had `validated_payload()` called on it (and
+        # therefore populated `_validated_payload_cache`) and the other
+        # hadn't. That would make equality depend on incidental memoization
+        # state rather than on the event's actual (field) value -- restore
+        # pure field-based value equality, matching this class's pre-EU-02
+        # behavior. `__hash__` is left untouched: pydantic's generated hash
+        # function for a frozen model already hashes only the field values,
+        # not `__pydantic_private__`, so it needs no corresponding override.
+        if not isinstance(other, BaseModel):
+            return NotImplemented
+        if type(self) is not type(other):
+            return False
+        return self.__dict__ == other.__dict__
+
     def validated_payload(self) -> EventPayload:
+        if self._validated_payload_cache is not None:
+            return self._validated_payload_cache
         payload_type = EVENT_PAYLOADS.get((self.event_type, self.schema_version))
         if payload_type is None:
             raise ValueError(
@@ -336,7 +389,23 @@ class UncommittedEvent(FrozenModel):
             )
         # Payloads are canonical JSON values, so UUIDs and other rich types are
         # deliberately decoded from their wire representations here.
-        return payload_type.model_validate(self.payload, strict=False)
+        decoded = payload_type.model_validate(self.payload, strict=False)
+        self._validated_payload_cache = decoded
+        return decoded
+
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        # A copy (even a field-preserving one) must not inherit the source
+        # instance's cached decode: pydantic's `model_copy` carries
+        # `__pydantic_private__` (and therefore `_validated_payload_cache`)
+        # over to the copy by default, which would let a copy constructed
+        # with `update={...}` (e.g. a different `event_type`/`schema_version`/
+        # `payload`) silently return the *original* instance's stale decoded
+        # payload instead of re-decoding against its own, possibly different,
+        # wire representation. Reset the cache on every copy so
+        # `validated_payload()` always decodes fresh for a copy's own state.
+        copied = super().model_copy(update=update, deep=deep)
+        copied._validated_payload_cache = None
+        return copied
 
 
 class StoredEvent(UncommittedEvent):

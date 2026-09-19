@@ -952,6 +952,79 @@ def test_availability_v2_rejects_stale_artifact_bound_to_a_different_plan() -> N
 
 
 @pytest.mark.unit
+def test_availability_v1_fallback_reports_available_for_stale_artifact_bound_to_a_different_plan_revision() -> (  # noqa: E501
+    None
+):
+    """EU-33 (C08 post-freeze remediation): pins a KNOWN LIMITATION, not
+    desired behavior.
+
+    `derive_wave3_availability`'s own docstring already names this residual
+    ("Finding B" / "Finding F"): unlike the v2 path, where
+    `RepresentationArtifactV2.plan_hash` binds an artifact to the exact
+    `RepresentationPlanV2` revision that selected it, the legacy v1
+    `RepresentationArtifact` has no equivalent binding field -- only
+    `problem_spec_hash`, which two structurally DIFFERENT plan revisions
+    selected against the same `ProblemSpec` (e.g. re-selected after a budget
+    or registry change) can share. This test constructs exactly that: two
+    distinct v1 `RepresentationPlan` revisions (different `selection_basis`,
+    hence genuinely different plan objects) against the same `ProblemSpec`,
+    and a v1 `RepresentationArtifact` that was really built for the FIRST
+    revision's world. Passed alongside the SECOND (different) plan revision,
+    `derive_wave3_availability` currently reports `AVAILABLE` -- not
+    `UNAVAILABLE_VALIDATION` -- purely because the artifact's `problem_spec_
+    hash`/`requested_kind` still match; the fact that it is stale relative to
+    this exact plan revision is invisible to the v1 schema.
+
+    This test documents that the gap exists today; it does NOT close it.
+    Closing it requires either a v1 schema change (with fixture blast
+    radius) or migrating callers to `select_bound`/`build_bound` -- both
+    explicitly out of scope here per `derive_wave3_availability`'s own
+    docstring recommendation. See also
+    `test_availability_v2_rejects_stale_artifact_bound_to_a_different_plan`,
+    which proves the v2 path does NOT have this gap.
+    """
+    problem = _problem()
+    view = RepresentationView(
+        id="view-1",
+        kind=RepresentationKind.DECISION_TABLE,
+        role="PRIMARY",
+        compatibility_score=0.9,
+        expected_value="clear trade-offs",
+        builder_ref="m04.decision-table",
+    )
+    plan_revision_one = RepresentationPlan(
+        problem_spec_hash=canonical_hash(problem),
+        views=(view,),
+        selection_basis=("initial selection pass",),
+    )
+    plan_revision_two = RepresentationPlan(
+        problem_spec_hash=canonical_hash(problem),
+        views=(view,),
+        selection_basis=("re-selected after a budget change",),
+    )
+    assert plan_revision_one != plan_revision_two
+
+    # Built for plan_revision_one's world; v1's schema has no field that
+    # could record which plan revision it was actually bound to.
+    stale_artifact = _representation_artifact(problem)
+
+    availability, reason = derive_wave3_availability(
+        problem_blockers=(),
+        representation=plan_revision_two,
+        representation_artifacts=(stale_artifact,),
+        budget_remaining=_remaining(),
+    )
+
+    # Known limitation: this SHOULD arguably be UNAVAILABLE_VALIDATION (the
+    # artifact was never bound to plan_revision_two), but the v1 fallback
+    # path cannot detect that -- it currently reports AVAILABLE.
+    assert availability is Wave3ContextAvailability.AVAILABLE
+    assert reason == (
+        "problem, blockers, and representation are all available and mutually consistent"
+    )
+
+
+@pytest.mark.unit
 def test_availability_prefers_v2_representation_state_over_v1() -> None:
     """Finding F: when v2 bound representation state is present, it is used
     in preference to legacy v1 state, even if v1 state alone would have

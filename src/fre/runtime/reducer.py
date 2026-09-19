@@ -1,8 +1,10 @@
 """Pure reducer protocol and foundational run reducer."""
 
 import hashlib
+from collections import deque
 from collections.abc import Callable, Mapping
-from typing import Protocol, TypeVar
+from collections.abc import Set as AbstractSet
+from typing import Any, Protocol, TypeVar
 from uuid import UUID
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -112,6 +114,14 @@ class RunState(FrozenModel):
     terminal_context_disposition: str | None = None
     model_calls: tuple[SemanticModelCallRecordV2 | SemanticModelCallRecord, ...] = ()
     task_signature: TaskSignature | None = None
+    # C05 remediation (finding #14, documentation-only): write-only by
+    # design -- audit/forensic record of the bootstrap-budget-sizing
+    # signature only. Never read back by production code (the bootstrap
+    # budget calculation uses the local `bootstrap_signature` variable in
+    # `TaskClassifier.canonical_events` directly). See
+    # `TaskPreliminarilyClassified`'s docstring (runtime/events.py) for the
+    # full rationale, including why removal is out of scope here (all 10
+    # golden fixtures carry this field).
     preliminary_task_signature: TaskSignature | None = None
     classification_record: ClassificationRecord | None = None
     classification_diagnostics: tuple[str, ...] = ()
@@ -346,6 +356,127 @@ def _validate_m03_ledger_node_provenance(
         raise ValueError("M03 ledger node claims EXPLICIT_INPUT origin without any anchor")
 
 
+def _find_model_call_by_idempotency_key(
+    state: "RunState", key: str
+) -> "SemanticModelCallRecordV2 | SemanticModelCallRecord | None":
+    """Return the first entry in ``state.model_calls`` whose
+    ``idempotency_key`` matches ``key``, or ``None`` if there is no match.
+
+    Shared by both the duplicate-identity admission guard (which only needs
+    presence/absence) and the adjudication-reference resolution (which needs
+    the matching record itself), so the two independent linear scans over
+    ``state.model_calls`` stay in sync.
+    """
+    for call in state.model_calls:
+        if call.idempotency_key == key:
+            return call
+    return None
+
+
+def _validate_model_call_common(
+    state: RunState,
+    payload: ModelCallRecorded | ModelCallFailed | ModelCallRecordedV2 | ModelCallFailedV2,
+) -> None:
+    """Shared validation shape (EU-05, C04 cleanup, item #5) for the checks
+    genuinely identical across all four `ModelCall*` event types -- V1/V2,
+    Recorded/Failed alike -- called once before each branch's own
+    type-specific checks in `RunReducer.apply`.
+
+    Only checks proven byte-identical across every payload type are here:
+    idempotency-key uniqueness, the "a successful call must carry both
+    artifacts" rule (itself conditioned on the payload being one of the two
+    *Recorded* variants, not merged into a false, type-blind shape), and
+    artifact registration. The V2-only reservation/settlement matching
+    (shared by `ModelCallRecordedV2`/`ModelCallFailedV2` alone, not the V1
+    types) and each type's own status/accounting-condition rules remain
+    branch-local in `apply` -- they are not "shared-looking" duplication,
+    they are genuinely different per type.
+
+    Idempotency-key uniqueness is checked via `_find_model_call_by_idempotency_key`
+    (C07 remediation) rather than an inline scan, so this admission guard and the
+    adjudication-reference resolution elsewhere in this module stay in sync.
+    """
+    if _find_model_call_by_idempotency_key(state, payload.record.idempotency_key) is not None:
+        raise ValueError("semantic model-call identity already recorded")
+    if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
+        payload.record.raw_artifact is None or payload.record.proposal_artifact is None
+    ):
+        raise ValueError("successful semantic model call requires raw and proposal artifacts")
+    for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
+        if artifact is not None and artifact.sha256 not in state.artifacts:
+            raise ValueError("semantic model-call artifact is not registered")
+
+
+def _build_compilation_record(
+    packet: ContextPacket,
+    *,
+    renderer_version: str,
+    json_sha256: str | None,
+    markdown_sha256: str | None,
+) -> ContextCompilationRecord:
+    """Shared `ContextCompilationRecord` construction for both the v1
+    `ContextCompiled` and v2 `ContextCompiledV2` reducer branches (C08
+    remediation, EU-29): the two branches build field-for-field identical
+    records from a `ContextPacket`, differing only in whether the artifact
+    sha256 values are already known non-Optional (v2) or must be derived via
+    an `if ... else None` ternary from an Optional artifact payload (v1).
+    This helper stays payload-shape-agnostic by accepting the already-
+    resolved (possibly-None) sha256 values rather than the raw payload
+    objects -- each call site is responsible for its own ternary/resolution.
+    """
+    return ContextCompilationRecord(
+        packet_hash=packet.packet_hash,
+        profile=packet.profile,
+        compiler_version=packet.compiler_version,
+        compression_policy_version=packet.compression_policy_version,
+        applied_rule_ids=packet.applied_rule_ids,
+        renderer_version=renderer_version,
+        canonical_byte_size=len(canonical_json(packet)),
+        json_artifact_sha256=json_sha256,
+        markdown_artifact_sha256=markdown_sha256,
+    )
+
+
+def _verify_optional_ref(declared: str | None, real: object | None, message: str) -> None:
+    """Shared "declared ref must match a canonical hash of the real,
+    already-applied value" check (C08 remediation, EU-30). Collapses the
+    copy-paste-with-variation `task_signature_ref`/`budget_plan_ref`/
+    `budget_policy_hash`/`representation_plan_ref` checks in the
+    `ContextCompiledV2` reducer branch, all of which share the same shape:
+    a declared ref that, when present, must correspond to a real value that
+    is both present and whose canonical hash matches. `real` is passed
+    pre-hashed (or otherwise directly comparable) by each call site so this
+    helper stays agnostic to what "canonical_hash(real)" means for a given
+    field; see call sites for the exact comparison performed.
+    """
+    if declared is not None and (real is None or declared != real):
+        raise ValueError(message)
+
+
+def _verify_ref_set_matches(
+    declared: AbstractSet[Any],
+    real: AbstractSet[Any],
+    *,
+    dangling_message: str,
+    omission_message: str,
+) -> None:
+    """Shared bidirectional set-difference check (C08 remediation, EU-31):
+    every declared ref must resolve to a real, already-applied entity (no
+    dangling references), and every real, already-applied entity must be
+    declared (no silent omissions understating real run state). Collapses
+    the repeated `blocker_refs`/`representation_artifact_refs` checks in the
+    `ContextCompiledV2` reducer branch. Each call site supplies its own
+    existing error message text verbatim for both directions (the two call
+    sites' wording differs in more than a single substitutable entity name,
+    e.g. article choice and the applied-collection's name), so messages are
+    passed through rather than reconstructed from a shared template.
+    """
+    if declared - real:
+        raise ValueError(dangling_message)
+    if real - declared:
+        raise ValueError(omission_message)
+
+
 class RunReducer:
     version = "2.0"
     compatible_snapshot_versions = frozenset({"1.0", "2.0"})
@@ -562,18 +693,11 @@ class RunReducer:
             changes["context_packets"] = (*state.context_packets, payload.packet)
             changes["context_compilations"] = (
                 *state.context_compilations,
-                ContextCompilationRecord(
-                    packet_hash=payload.packet.packet_hash,
-                    profile=payload.packet.profile,
-                    compiler_version=payload.packet.compiler_version,
-                    compression_policy_version=payload.packet.compression_policy_version,
-                    applied_rule_ids=payload.packet.applied_rule_ids,
+                _build_compilation_record(
+                    payload.packet,
                     renderer_version=payload.renderer_version,
-                    canonical_byte_size=len(canonical_json(payload.packet)),
-                    json_artifact_sha256=payload.json_artifact.sha256
-                    if payload.json_artifact
-                    else None,
-                    markdown_artifact_sha256=payload.markdown_artifact.sha256
+                    json_sha256=payload.json_artifact.sha256 if payload.json_artifact else None,
+                    markdown_sha256=payload.markdown_artifact.sha256
                     if payload.markdown_artifact
                     else None,
                 ),
@@ -619,50 +743,44 @@ class RunReducer:
                 raise ValueError(
                     "wave3_context problem_spec_ref does not match the run's current ProblemSpec"
                 )
-            if wave3.task_signature_ref is not None and (
-                state.task_signature is None
-                or wave3.task_signature_ref != canonical_hash(state.task_signature)
-            ):
-                raise ValueError(
-                    "wave3_context task_signature_ref does not match the run's current "
-                    "TaskSignature"
-                )
-            if wave3.budget_plan_ref is not None and (
-                state.budget.plan is None
-                or wave3.budget_plan_ref != canonical_hash(state.budget.plan)
-            ):
-                raise ValueError(
-                    "wave3_context budget_plan_ref does not match the run's current BudgetPlan"
-                )
-            if (
-                wave3.budget_policy_hash is not None
-                and wave3.budget_policy_hash != state.budget.policy_hash
-            ):
-                raise ValueError(
-                    "wave3_context budget_policy_hash does not match the run's current budget "
-                    "policy_hash"
-                )
+            _verify_optional_ref(
+                wave3.task_signature_ref,
+                canonical_hash(state.task_signature) if state.task_signature is not None else None,
+                "wave3_context task_signature_ref does not match the run's current TaskSignature",
+            )
+            _verify_optional_ref(
+                wave3.budget_plan_ref,
+                canonical_hash(state.budget.plan) if state.budget.plan is not None else None,
+                "wave3_context budget_plan_ref does not match the run's current BudgetPlan",
+            )
+            _verify_optional_ref(
+                wave3.budget_policy_hash,
+                state.budget.policy_hash,
+                "wave3_context budget_policy_hash does not match the run's current budget "
+                "policy_hash",
+            )
             # Every declared blocker ref must resolve to an actually-applied
             # ProblemBlocker -- a ref naming a blocker_id this run never
             # recorded is a dangling reference and is rejected outright (the
             # C04-C07-pattern check the plan calls out explicitly).
             real_blocker_ids = {blocker.blocker_id for blocker in state.problem_blockers}
             declared_blocker_ids = set(wave3.blocker_refs)
-            if declared_blocker_ids - real_blocker_ids:
-                raise ValueError(
+            # Finding C (C08 remediation): completeness is required in both
+            # directions -- every DECLARED entry must be real (no dangling
+            # ref), and every REAL, currently-applied blocker must be
+            # declared (a packet could otherwise silently omit one,
+            # understating what this run actually knows).
+            _verify_ref_set_matches(
+                declared_blocker_ids,
+                real_blocker_ids,
+                dangling_message=(
                     "wave3_context blocker_refs references a blocker_id absent from the run's "
                     "applied problem_blockers"
-                )
-            # Finding C (C08 remediation): the check above only proves every
-            # DECLARED entry is real -- it never proved every REAL entry was
-            # declared. A packet could silently omit a real, currently-applied
-            # blocker from `blocker_refs` (understating what this run actually
-            # knows) and the check above would never notice. Completeness is
-            # required in both directions.
-            if real_blocker_ids - declared_blocker_ids:
-                raise ValueError(
+                ),
+                omission_message=(
                     "wave3_context blocker_refs omits a real problem_blocker applied to this run"
-                )
+                ),
+            )
             # Finding D (C08 remediation): `prompt_version`/`model_identity`
             # are caller-supplied claims about which semantic model call
             # produced/influenced this compilation. Neither field is otherwise
@@ -703,34 +821,36 @@ class RunReducer:
                 raise ValueError(
                     "wave3_context ledger_version is ahead of the run state actually reached"
                 )
-            if wave3.representation_plan_ref is not None and (
-                state.representation_plan is None
-                or wave3.representation_plan_ref != canonical_hash(state.representation_plan)
-            ):
-                raise ValueError(
-                    "wave3_context representation_plan_ref does not match the run's current "
-                    "representation plan"
-                )
+            _verify_optional_ref(
+                wave3.representation_plan_ref,
+                canonical_hash(state.representation_plan)
+                if state.representation_plan is not None
+                else None,
+                "wave3_context representation_plan_ref does not match the run's current "
+                "representation plan",
+            )
             real_artifact_hashes = {
                 canonical_hash(artifact) for artifact in state.representation_artifacts
             }
             declared_artifact_refs = set(wave3.representation_artifact_refs)
-            if declared_artifact_refs - real_artifact_hashes:
-                raise ValueError(
-                    "wave3_context representation_artifact_refs references an artifact absent "
-                    "from the run's applied representation_artifacts"
-                )
             # Finding C (C08 remediation): completeness in the other direction
             # too -- every real, currently-applied v1 `representation_artifacts`
             # entry (the only entries `Wave3SemanticContext.representation_
             # artifact_refs` can ever represent -- it has no v2-specific ref
             # field) must be declared; a packet omitting one is understating
             # real, already-applied state.
-            if real_artifact_hashes - declared_artifact_refs:
-                raise ValueError(
+            _verify_ref_set_matches(
+                declared_artifact_refs,
+                real_artifact_hashes,
+                dangling_message=(
+                    "wave3_context representation_artifact_refs references an artifact absent "
+                    "from the run's applied representation_artifacts"
+                ),
+                omission_message=(
                     "wave3_context representation_artifact_refs omits a real "
                     "representation_artifact applied to this run"
-                )
+                ),
+            )
             # Sibling enumeration (the C06 lesson applied here): every UNKNOWN
             # surfaced into the permitted view must match, field-for-field, an
             # UNKNOWN the current ProblemSpec actually declares -- not only
@@ -840,16 +960,11 @@ class RunReducer:
             changes["context_packets"] = (*state.context_packets, packet)
             changes["context_compilations"] = (
                 *state.context_compilations,
-                ContextCompilationRecord(
-                    packet_hash=packet.packet_hash,
-                    profile=packet.profile,
-                    compiler_version=packet.compiler_version,
-                    compression_policy_version=packet.compression_policy_version,
-                    applied_rule_ids=packet.applied_rule_ids,
+                _build_compilation_record(
+                    packet,
                     renderer_version=payload.renderer_version,
-                    canonical_byte_size=len(canonical_json(packet)),
-                    json_artifact_sha256=payload.json_artifact.sha256,
-                    markdown_artifact_sha256=payload.markdown_artifact.sha256,
+                    json_sha256=payload.json_artifact.sha256,
+                    markdown_sha256=payload.markdown_artifact.sha256,
                 ),
             )
         elif isinstance(payload, StopDecisionRecordedV2):
@@ -907,19 +1022,7 @@ class RunReducer:
         elif isinstance(
             payload, (ModelCallRecorded, ModelCallFailed, ModelCallRecordedV2, ModelCallFailedV2)
         ):
-            if any(
-                item.idempotency_key == payload.record.idempotency_key for item in state.model_calls
-            ):
-                raise ValueError("semantic model-call identity already recorded")
-            if isinstance(payload, (ModelCallRecorded, ModelCallRecordedV2)) and (
-                payload.record.raw_artifact is None or payload.record.proposal_artifact is None
-            ):
-                raise ValueError(
-                    "successful semantic model call requires raw and proposal artifacts"
-                )
-            for artifact in (payload.record.raw_artifact, payload.record.proposal_artifact):
-                if artifact is not None and artifact.sha256 not in state.artifacts:
-                    raise ValueError("semantic model-call artifact is not registered")
+            _validate_model_call_common(state, payload)
             # V1 events (`ModelCallRecorded`/`ModelCallFailed`, plain
             # `SemanticModelCallRecord`) predate reservation-linked accounting and
             # carry no `reservation_id` -- they remain decode-only and are not
@@ -1323,13 +1426,8 @@ class RunReducer:
                         "representation plan (v2) references adjudication outside its own "
                         "declared tie band"
                     )
-                matching_call = next(
-                    (
-                        call
-                        for call in state.model_calls
-                        if call.idempotency_key == plan.adjudication_record_ref
-                    ),
-                    None,
+                matching_call = _find_model_call_by_idempotency_key(
+                    state, plan.adjudication_record_ref
                 )
                 if matching_call is None:
                     raise ValueError(
@@ -1457,6 +1555,28 @@ class RunReducer:
             # artifact store by their registered sha256 and rehashed; any
             # disagreement -- a forged claim, or bytes that no longer exist --
             # is rejected here, before persistence.
+            #
+            # EU-25 (informational, not a bug): this is 1 of 3 intentional
+            # hash computations in the write -> apply pipeline for a bound v2
+            # representation artifact: (1) `RepresentationSelector.build_bound`
+            # computes `content_hash` from the content it is about to write,
+            # (2) the artifact store computes its own hash-on-write (the
+            # `stored_ref.sha256` check in `build_bound`), and (3) this is the
+            # third, independent recompute-and-compare, done here from bytes
+            # re-read back out of the store. Each is defense against a
+            # different actor being wrong or malicious -- the caller
+            # (`build_bound`'s own check), the store (its hash-on-write), and
+            # a forged/mismatched claim reaching this reducer directly. That
+            # triple computation is deliberate, load-bearing, fail-closed
+            # security, not redundant work to be trimmed: removing any one of
+            # the three reopens the forged-content-hash exploit this check
+            # closes (see `test_reject_forged_content_hash_trusting_computed_
+            # bytes_instead` and `test_finding_i_fails_closed_without_
+            # artifact_reader_unless_trust_flag_set`). For very large
+            # artifacts this is a real, measurable perf cost; if that ever
+            # becomes a problem in practice, the fix is streaming/incremental
+            # hashing (the same hash, computed more cheaply), never removing
+            # one of the three hash steps.
             #
             # Finding I: without an `artifact_reader`, this verification
             # cannot run at all -- the pre-remediation code silently skipped
@@ -1603,13 +1723,20 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
     """
     # Pass 1: collect every settlement/release in the batch by reservation_id,
     # in encounter order, regardless of where the corresponding record sits.
-    pending: dict[str, list[tuple[str, ResourceVector | None]]] = {}
+    # EU-03 (C04 cleanup, item #3): a `deque` (not `list`) so pass 2's FIFO
+    # consumption below is O(1) per record via `popleft()` instead of O(n)
+    # via `list.pop(0)` (which shifts every remaining element down). FIFO
+    # ordering semantics are identical to a list's for this append/pop-front
+    # usage; only the complexity of draining the queue changes.
+    pending: dict[str, deque[tuple[str, ResourceVector | None]]] = {}
     for event in events:
         payload = event.validated_payload()
         if isinstance(payload, BudgetReservationSettled):
-            pending.setdefault(payload.reservation_id, []).append(("SETTLED", payload.actual_usage))
+            pending.setdefault(payload.reservation_id, deque()).append(
+                ("SETTLED", payload.actual_usage)
+            )
         elif isinstance(payload, BudgetReservationReleased):
-            pending.setdefault(payload.reservation_id, []).append(("RELEASED", None))
+            pending.setdefault(payload.reservation_id, deque()).append(("RELEASED", None))
     # Pass 2: validate every record against the complete map built above, so a
     # settlement positioned after its record in the tuple is still found.
     for event in events:
@@ -1620,7 +1747,7 @@ def validate_semantic_reservation_admission(events: tuple[StoredEvent, ...]) -> 
                 raise ValueError(
                     "semantic model-call reservation settlement evidence is missing from this batch"
                 )
-            kind, actual_usage = queue.pop(0)
+            kind, actual_usage = queue.popleft()
             if kind != "SETTLED":
                 raise ValueError(
                     "semantic model-call must be paired with a reservation settlement "

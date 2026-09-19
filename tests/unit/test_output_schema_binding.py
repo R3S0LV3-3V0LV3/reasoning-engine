@@ -181,6 +181,55 @@ def test_stale_request_schema_hash_is_rejected_before_provider_invocation(
 
 
 @pytest.mark.unit
+def test_release_failure_in_schema_mismatch_path_does_not_mask_binding_error(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """EU-07 (C04 cleanup, item #7): if `_release()` itself raises while
+    cleaning up after a stale-schema-hash rejection, the caller must still
+    see `SemanticSchemaBindingError` -- not the release failure -- with the
+    release failure surfaced as `__cause__` rather than replacing the
+    propagated exception outright."""
+    run_id, value = _setup(engine)
+    model = CapturingModel([_result()])
+    schemas = default_output_schema_registry()
+    real_get = schemas.get
+    calls = {"n": 0}
+
+    def flaky_get(schema_id: str, version: str):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        definition, model_type = real_get(schema_id, version)
+        if calls["n"] > 1:
+            definition = definition.model_copy(update={"schema_hash": "0" * 64})
+        return definition, model_type
+
+    schemas.get = flaky_get  # type: ignore[method-assign]
+    runtime = SemanticModelRuntime(model, engine, default_prompt_registry(), schemas)
+
+    release_error = RuntimeError("simulated _release failure")
+
+    def failing_release(run_id: object, reservation_id: str) -> None:
+        raise release_error
+
+    runtime._release = failing_release  # type: ignore[method-assign]
+
+    with pytest.raises(SemanticSchemaBindingError) as excinfo:
+        asyncio.run(
+            runtime.execute(
+                run_id=run_id,
+                module_id="M01",
+                module_version="1.0",
+                operation="classify",
+                prompt_id="m01.classify",
+                prompt_version="1.0",
+                canonical_input=value,
+                policy=SemanticRuntimePolicy(maximum_repair_attempts=0),
+            )
+        )
+    assert not model.requests
+    assert excinfo.value.__cause__ is release_error
+
+
+@pytest.mark.unit
 def test_conflicting_registration_of_same_id_and_version_is_rejected() -> None:
     """2.1.5: a schema id+version paired with materially different bytes must
     be rejected, whether the difference comes from a different model
@@ -218,6 +267,71 @@ def test_registry_get_detects_a_post_registration_hash_mismatch() -> None:
     )
     with pytest.raises(OutputSchemaError, match="integrity mismatch"):
         registry.get("mismatch.schema", "1.0")
+
+
+@pytest.mark.unit
+def test_canonical_schema_hash_is_memoized_per_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EU-01 (C04 cleanup, item #1): `canonical_schema_hash` must not recompute
+    the hash from scratch for the same model on every `register()`/`get()`
+    call -- it is memoized per model class, so the underlying hash function
+    runs at most once per model."""
+    import fre.prompts.schemas as schemas_module
+
+    class Model(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+        value: int
+
+    call_count = 0
+    real_canonical_hash = schemas_module.canonical_hash  # type: ignore[attr-defined]
+
+    def spy_canonical_hash(value: object) -> str:
+        nonlocal call_count
+        call_count += 1
+        return real_canonical_hash(value)
+
+    monkeypatch.setattr(schemas_module, "canonical_hash", spy_canonical_hash)
+
+    registry_a = OutputSchemaRegistry()
+    registry_b = OutputSchemaRegistry()
+    registry_a.register("memo.schema.a", "1.0", Model, "M99", "op")
+    assert call_count == 1
+
+    # A second `register()` for the *same model class* (via a different
+    # registry/schema id, to avoid the conflicting-registration guard) must
+    # reuse the cached hash rather than recomputing it.
+    registry_b.register("memo.schema.b", "1.0", Model, "M99", "op")
+    assert call_count == 1
+
+    hash_a = registry_a.get("memo.schema.a", "1.0")[0].schema_hash
+    hash_b = registry_b.get("memo.schema.b", "1.0")[0].schema_hash
+    assert hash_a == hash_b
+    assert call_count == 1
+
+    # Repeated `get()` calls (the registry's own integrity re-check) also
+    # reuse the cached value rather than recomputing.
+    registry_a.get("memo.schema.a", "1.0")
+    registry_a.get("memo.schema.a", "1.0")
+    assert call_count == 1
+
+
+@pytest.mark.unit
+def test_canonical_schema_hash_matches_canonical_hash_of_the_json_schema() -> None:
+    """EU-04 (C04 cleanup, item #4) parity check: `canonical_schema_hash(model)`
+    must be byte-for-byte identical to `canonical_hash(model.model_json_schema())`
+    for every currently-registered schema, since `canonical_schema_hash` is
+    defined in terms of the same `canonical_json` serialization `canonical_hash`
+    uses -- there is no independent hand-rolled hashing path to diverge from
+    the shared primitive."""
+    registry = default_output_schema_registry()
+    for schema_id, version in (
+        ("m01.classification-output", "1.0"),
+        ("m03.problem-formalisation-output", "1.0"),
+        ("m04.representation-adjudication-output", "1.0"),
+    ):
+        _, model = registry.get(schema_id, version)
+        assert canonical_schema_hash(model) == canonical_hash(model.model_json_schema())
 
 
 @pytest.mark.unit
@@ -289,3 +403,31 @@ def test_default_registry_schemas_satisfy_their_own_limits() -> None:
         assert _schema_nesting_depth(model.model_json_schema()) <= MAX_SCHEMA_NESTING_DEPTH
         assert len(canonical_schema_bytes(model)) <= MAX_SCHEMA_CANONICAL_BYTES
         assert definition.schema_hash == canonical_schema_hash(model)
+
+
+@pytest.mark.unit
+def test_classification_output_schema_shape_matches_pre_eu11_baseline() -> None:
+    """C05 remediation (finding #11): regression pin for the
+    `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal` consolidation
+    into a shared generic `_CategoricalProposal[EstimateT]` base.
+
+    These are the exact `ClassificationOutput` schema hash, nesting depth,
+    and canonical byte size measured against the pre-consolidation flat
+    (copy-pasted) classes, captured as a baseline before the change per the
+    unit's acceptance-test instructions. `canonical_schema_hash` must be
+    byte-for-byte identical -- not merely "close" -- because it is exactly
+    what `OutputSchemaRegistry.register()` persists as `schema_hash` and
+    downstream event payloads (`SemanticModelCallRecordV2.output_schema_hash`)
+    carry forward.
+    """
+    assert (
+        canonical_schema_hash(ClassificationOutput)
+        == "3621d418a2e614559e72b041ef8605a591282bb55756a513e8d1a996a25c4af9"
+    )
+    assert len(canonical_schema_bytes(ClassificationOutput)) == 4215
+    assert _schema_nesting_depth(ClassificationOutput.model_json_schema()) == 17
+    # And, redundantly, against the documented global budgets (belt-and-braces
+    # with the exact-value pins above, which are the real regression guard).
+    depth = _schema_nesting_depth(ClassificationOutput.model_json_schema())
+    assert depth <= MAX_SCHEMA_NESTING_DEPTH
+    assert len(canonical_schema_bytes(ClassificationOutput)) <= MAX_SCHEMA_CANONICAL_BYTES

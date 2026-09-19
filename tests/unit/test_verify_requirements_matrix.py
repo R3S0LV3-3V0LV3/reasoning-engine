@@ -261,3 +261,62 @@ def test_a_hand_edited_drift_from_the_generator_is_rejected(
     # Restore: confirm the drift check passes again once content matches.
     scratch_matrix.write_text(render())
     assert check_matrix_matches_generator(scratch_matrix) == []
+
+
+# --- EU-45: MatrixRow shape validation (mis-ordered fields must be visible) ---
+
+
+@pytest.mark.unit
+def test_matrix_row_requires_keyword_construction_so_field_order_is_explicit() -> None:
+    """`MatrixRow` (EU-45, C10 post-freeze cleanup) replaces the old bare
+    7-tuple rows. Positional construction still works (it is a NamedTuple),
+    but keyword construction -- the form every literal row in
+    `generate_requirements_matrix.py` now uses -- makes a swapped
+    `positive_test`/`negative_test` immediately visible in the source and at
+    the call site, instead of silently rendering into the wrong column."""
+    from scripts.generate_requirements_matrix import NA, MatrixRow
+
+    # A deliberately mis-ordered row: positive_test and negative_test swapped
+    # relative to their intended semantic content.
+    swapped = MatrixRow(
+        row_id="W3-TEST",
+        requirement="fixture requirement",
+        impl="fre.example.Symbol",
+        positive_test=NA,  # intended to be negative_test
+        negative_test="tests/unit/test_domain.py::test_domain_models_are_immutable",
+        evidence="N/A",
+        sha_key="C10",
+    )
+    # The mis-order is now a plainly labeled, named field on the object --
+    # not a silent positional slot -- so it is visible/catchable by
+    # inspection (e.g. `swapped.positive_test == NA` is an obviously wrong
+    # claim for a row whose only real test is cited as negative_test).
+    assert swapped.positive_test == NA
+    assert swapped.negative_test == "tests/unit/test_domain.py::test_domain_models_are_immutable"
+
+    # Wrong field name at construction time is a decisive, immediate error
+    # (unlike a mis-ordered plain positional tuple, which would construct
+    # successfully and fail silently downstream).
+    with pytest.raises(TypeError):
+        MatrixRow(  # type: ignore[call-arg]
+            row_id="W3-TEST",
+            requirement="fixture requirement",
+            impl="fre.example.Symbol",
+            positive_test="tests/unit/test_domain.py::test_domain_models_are_immutable",
+            wrong_field_name="N/A",
+            evidence="N/A",
+            sha_key="C10",
+        )
+
+
+@pytest.mark.unit
+def test_rows_and_cross_cutting_are_all_well_formed_matrix_rows() -> None:
+    """Every literal row in ROWS/CROSS_CUTTING is a `MatrixRow` with all
+    seven fields populated as strings -- the structural guarantee EU-45
+    introduces in place of the old un-validated 7-tuples."""
+    from scripts.generate_requirements_matrix import CROSS_CUTTING, ROWS, MatrixRow
+
+    for row in [*ROWS, *CROSS_CUTTING]:
+        assert isinstance(row, MatrixRow)
+        for field in MatrixRow._fields:
+            assert isinstance(getattr(row, field), str)

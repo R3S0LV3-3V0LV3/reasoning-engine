@@ -54,9 +54,12 @@ from fre.runtime.events import (
     ModelCallRecorded,
     ModelCallRecordedV2,
     RunCreated,
+    RunStatusChanged,
     StopDecisionRecorded,
     StopDecisionRecordedV2,
+    StoredEvent,
 )
+from fre.runtime.reducer import validate_semantic_reservation_admission
 from fre.semantic_runtime import SemanticModelRuntime, SemanticRuntimePolicy
 
 VALID: dict[str, JsonValue] = {
@@ -303,6 +306,55 @@ def test_run_created_decodes_at_v1_and_v2_is_unregistered(
     with pytest.raises(ValueError, match="unregistered event type/schema"):
         hypothetical_v2.validated_payload()
     assert ("RunCreated", "2.0") not in EVENT_PAYLOADS
+
+
+@pytest.mark.unit
+def test_validated_payload_decodes_exactly_once_across_admit_then_apply(
+    engine: FrontierReasoningEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """EU-02 (C04 cleanup, item #2): the admission/apply pipeline decodes each
+    event's payload three separate times before this change -- twice inside
+    `validate_semantic_reservation_admission` (once per pass) and again
+    inside `RunReducer.apply` -- all against the exact same `StoredEvent`
+    instance (this is how `FrontierReasoningEngine.append` itself invokes
+    them: the same `stored_events` tuple is passed to both).
+    `validated_payload()` must memoize per instance so the real decode work
+    happens exactly once per event across that whole admit-then-apply
+    cycle."""
+    handle = engine.create_run({"eu-02": "decode-once"})
+
+    call_count = 0
+    real_model_validate = RunStatusChanged.model_validate
+
+    def spy_model_validate(cls: object, *args: object, **kwargs: object) -> RunStatusChanged:
+        nonlocal call_count
+        call_count += 1
+        return real_model_validate(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        RunStatusChanged,
+        "model_validate",
+        classmethod(spy_model_validate),  # type: ignore[arg-type]
+    )
+
+    event = engine.make_event(
+        handle.run_id, RunStatusChanged(status="RUNNING", reason="eu-02"), module_id="test"
+    )
+    stored = StoredEvent.model_validate(
+        {**event.model_dump(), "created_at": event.created_at, "sequence": handle.version + 1},
+        strict=True,
+    )
+
+    # Exactly the two call sites named in EU-02: the batch-admission
+    # validator (`engine.py`'s append-time check), then `RunReducer.apply`
+    # -- both against the same `stored` instance, as `FrontierReasoningEngine
+    # .append` itself does.
+    validate_semantic_reservation_admission((stored,))
+    state = engine.inspect(handle.run_id)
+    engine.reducer.apply(state, stored)
+
+    assert call_count == 1
 
 
 @pytest.mark.unit

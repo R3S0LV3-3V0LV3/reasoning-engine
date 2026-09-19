@@ -200,6 +200,21 @@ class RepresentationArtifactV2(FrozenModel):
     source_snapshot_version: int = Field(ge=0)
     requested_kind: RepresentationKind
     actual_kind: RepresentationKind
+    # EU-26 (informational, not an oversight): unlike v1's `RepresentationArtifact`
+    # above, where `requested_builder_id`/`requested_builder_version` are
+    # `Optional` because v1 needed to stay decode-safe for pre-fix snapshots
+    # that had no way to recover the true requested value, v2 is a fresh
+    # design with no such legacy-snapshot constraint. It deliberately keeps
+    # both fields required-even-when-derivable (in the non-fallback case,
+    # `fallback_attribution_is_consistent` below forces
+    # `requested_* == actual_*`, so the two required strings are then
+    # redundant with `actual_builder_id`/`actual_builder_version`) so that
+    # every artifact instance is self-documenting about what was requested
+    # vs. what actually ran, without a reader having to reason about whether
+    # a missing/`None` value means "not requested" or "not recorded". This is
+    # an intentional schema-economy trade-off -- required-and-self-documenting
+    # over optional-like-v1 -- not a correctness bug; see EU-26 in the Wave 3
+    # post-freeze cleanup plan for the full design-tension writeup.
     requested_builder_id: str = Field(min_length=1)
     requested_builder_version: str = Field(min_length=1)
     actual_builder_id: str = Field(min_length=1)

@@ -1,11 +1,11 @@
 """Strict structured-output schemas and deterministic registry."""
 
-import hashlib
+from functools import cache
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fre.domain.common import FrozenModel, JsonValue, canonical_json
+from fre.domain.common import FrozenModel, JsonValue, canonical_hash, canonical_json
 from fre.domain.semantic import EpistemicOriginLabel, SourceAnchor, SupportRef
 from fre.domain.task import HorizonClass, Ordinal4, SearchSpaceClass, TaskType
 
@@ -51,13 +51,59 @@ def canonical_schema_bytes(model: type[BaseModel]) -> bytes:
     return canonical_json(model.model_json_schema())
 
 
+@cache
 def canonical_schema_hash(model: type[BaseModel]) -> str:
-    """Hash of `canonical_schema_bytes` (== `canonical_hash(model.model_json_schema())`)."""
-    return hashlib.sha256(canonical_schema_bytes(model)).hexdigest()
+    """Hash of a model's canonical JSON-Schema representation.
+
+    Delegates to the shared `canonical_hash` primitive (EU-04, C04 cleanup,
+    item #4) rather than hand-rolling `hashlib.sha256(canonical_json(...))`
+    itself -- `canonical_hash(value) == hashlib.sha256(canonical_json(value)).hexdigest()`,
+    so `canonical_hash(model.model_json_schema())` is byte-for-byte identical
+    to the old hand-rolled computation for every currently-registered schema
+    (confirmed by an explicit before/after parity test;
+    see `test_canonical_schema_hash_matches_canonical_hash_of_the_json_schema`
+    in `tests/unit/test_output_schema_binding.py`). `canonical_schema_bytes`
+    is kept as a separate helper (still used directly by resource-exhaustion
+    size checks in `enforce_schema_limits`) and remains equal to
+    `canonical_json(model.model_json_schema())`.
+
+    Memoized per model class (EU-01, C04 cleanup, item #1): a registered
+    output-schema model's JSON-Schema shape is fixed once the class is
+    defined, so re-deriving `model_json_schema()` and re-hashing it on every
+    `OutputSchemaRegistry.get()` call was pure, deterministic, wasted work.
+    Caching by `model` (a `type` object, hashable and stable for the
+    lifetime of the process) makes repeated lookups O(1) after the first
+    call without changing the returned value -- this is a pure caching
+    change, not a hash-algorithm change; output is byte-identical to the
+    uncached computation for every input. `OutputSchemaRegistry.get()` still
+    performs its integrity comparison (`canonical_schema_hash(model) !=
+    definition.schema_hash`) on every call -- only the underlying
+    computation is now cheap, not the check itself.
+    """
+    return canonical_hash(model.model_json_schema())
 
 
 def _resolve_local_ref(root: JsonValue, ref: str) -> JsonValue | None:
-    """Resolve a local JSON-Schema pointer (e.g. "#/$defs/Thing") against `root`."""
+    """Resolve a local JSON-Schema pointer (e.g. "#/$defs/Thing") against `root`.
+
+    EU-06 (C04 cleanup, item #6): deliberately does NOT perform RFC 6901
+    `~0`/`~1` unescaping, unlike `source_anchors._resolve_pointer` (which
+    does full RFC 6901 unescaping). This is not an oversight -- the two
+    functions resolve pointers over disjoint, differently-sourced document
+    kinds. Every `ref` this function ever sees is a `$ref` string Pydantic
+    itself generated inside `model.model_json_schema()`'s own `$defs`
+    table, keyed by the model's own Python class/type names -- identifiers
+    that can never contain a literal `/` or `~`, so there is nothing to
+    escape in the first place. `_resolve_pointer`, in contrast, resolves
+    `SourceAnchor` selectors against arbitrary externally-sourced JSON
+    documents, whose object keys (e.g. real-world field/column names) can
+    legitimately contain `/` or `~` and therefore MUST be RFC 6901-escaped
+    on the wire and unescaped here. Do not "fix" this function into RFC
+    6901 compliance -- for its actual, always-Pydantic-generated input
+    domain, a raw `/`-split is both correct and simpler; escaping semantics
+    should track each function's own input domain, not be unified for its
+    own sake.
+    """
     if not ref.startswith("#/"):
         return None
     node: JsonValue = root
@@ -200,25 +246,47 @@ class ClassificationDimensionProposal(StrictOutput):
     rationale: str
 
 
-class TaskTypeProposal(StrictOutput):
-    estimate: TaskType
+class _CategoricalProposal[EstimateT](StrictOutput):
+    """Shared shape for `TaskTypeProposal`/`SearchSpaceProposal`/`HorizonProposal`.
+
+    C05 remediation (finding #11): the three categorical proposal classes
+    were byte-identical copy-pasted subclasses of `StrictOutput`, differing
+    only in `estimate`'s type. A plain (non-generic) shared base was tried
+    first and rejected: adding `estimate` only in each subclass reorders
+    Pydantic's generated `required` list (base-class fields first, then the
+    subclass's own new field), which changes `canonical_schema_hash`'s output
+    even though `properties` is unaffected (`canonical_json` sorts object
+    keys, but preserves list/array order, and `required` is a list) -- a
+    regression the plan's hard "byte-identical hash" requirement forbids.
+    This generic base instead declares `estimate` *first*, alongside
+    `confidence`/`anchors`/`rationale`, so each subclass
+    (`class TaskTypeProposal(_CategoricalProposal[TaskType]): pass`) adds no
+    new fields at all -- field declaration order, and therefore the generated
+    `required` list order, is identical to the original flat classes. Each
+    subclass fully binds the type parameter with a normal, non-generic class
+    name, so `model_json_schema()` emits one concrete `$defs` entry titled
+    after the subclass itself (e.g. `"TaskTypeProposal"`), not a
+    generic-instantiation-mangled name. Verified byte-for-byte identical to
+    the pre-change schema by an explicit before/after parity test -- see
+    `tests/unit/test_output_schema_binding.py`.
+    """
+
+    estimate: EstimateT
     confidence: float = Field(ge=0, le=1)
     anchors: tuple[SourceAnchor, ...] = ()
     rationale: str
 
 
-class SearchSpaceProposal(StrictOutput):
-    estimate: SearchSpaceClass
-    confidence: float = Field(ge=0, le=1)
-    anchors: tuple[SourceAnchor, ...] = ()
-    rationale: str
+class TaskTypeProposal(_CategoricalProposal[TaskType]):
+    pass
 
 
-class HorizonProposal(StrictOutput):
-    estimate: HorizonClass
-    confidence: float = Field(ge=0, le=1)
-    anchors: tuple[SourceAnchor, ...] = ()
-    rationale: str
+class SearchSpaceProposal(_CategoricalProposal[SearchSpaceClass]):
+    pass
+
+
+class HorizonProposal(_CategoricalProposal[HorizonClass]):
+    pass
 
 
 class ClassificationOutput(StrictOutput):

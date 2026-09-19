@@ -105,7 +105,27 @@ class ClassificationDimensionResult(FrozenModel):
 
 
 class FloorOverrideRecord(FrozenModel):
-    """Audit trail entry for a deterministic floor/escalation changing a dimension."""
+    """Audit trail entry for a deterministic floor/escalation changing a dimension.
+
+    C05 remediation (finding #16, ARCH-DEFER -- explicitly not fixed in this
+    cleanup pass): the name `FloorOverrideRecord`, and the
+    `"permission_floor"` / `"low_confidence_escalation"` /
+    `"no_proposal_fallback"` vocabulary used in `reason`/`approving_rule`
+    (see `m01_classifier.py`'s `dimension()`/`categorical_dimension()`), are
+    overloaded beyond literal "floor" changes -- `low_confidence_escalation`
+    and `no_proposal_fallback` are escalations, not floors, yet are recorded
+    through the same "floor override" audit shape. A more accurate future
+    name (e.g. `DimensionOverrideRecord`) would improve auditor clarity, but
+    a rename here would touch this class, every `override_basis`/`reason`
+    string literal in `m01_classifier.py`, persisted event payloads, every
+    golden fixture, and the diagnostic-string parsing at
+    `m01_classifier.py`'s `diagnostics` construction
+    (`f"{override.axis}:{override.reason}"`) -- a wide-blast-radius,
+    schema-adjacent change requiring full golden-fixture regeneration.
+    Deferred: if undertaken, it should be scoped as its own
+    SCHEMA-RISK-REFACTOR unit with an explicit fixture-reseal budget, not
+    folded into a cleanup pass.
+    """
 
     axis: str
     reason: str
@@ -113,6 +133,24 @@ class FloorOverrideRecord(FrozenModel):
     policy_hash: str
     previous_floor: str
     new_floor: str
+    # C05 remediation (finding #13, documentation-only): at the only
+    # construction site today (`m01_classifier.py`'s `record_override`,
+    # called from `dimension()`/`categorical_dimension()`), `approving_rule`
+    # is always set to exactly the same value as `reason`. It is
+    # deliberately kept as a distinct field rather than collapsed into
+    # `reason` (or derived from it) -- a future caller could set the two
+    # independently (e.g. `reason` as a free-text audit note,
+    # `approving_rule` as a stable machine-matchable rule identifier from a
+    # fixed vocabulary) without a schema change. Note the field is *not*
+    # cross-checked against `reason` (or anything else) by
+    # `ClassificationRecord._floor_overrides_are_exhaustive` below.
+    # `FloorOverrideRecord` is embedded in `ClassificationRecord.floor_overrides`,
+    # part of persisted event payloads referenced by golden fixtures
+    # (`tests/fixtures/golden/*.json`) and `m01_classifier.py`'s diagnostic
+    # string (`f"{override.axis}:{override.reason}"`) -- removing or
+    # collapsing this field would be a persisted-schema change requiring
+    # fixture regeneration, and is explicitly out of scope for this cleanup
+    # pass (tier-5, non-blocking).
     approving_rule: str
 
 

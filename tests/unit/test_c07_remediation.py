@@ -64,7 +64,7 @@ from fre.runtime.events import (
     StoredEvent,
     event_wire_identity,
 )
-from fre.runtime.reducer import RunReducer, RunState
+from fre.runtime.reducer import RunReducer, RunState, _find_model_call_by_idempotency_key
 
 
 def envelope(text: str = "Compare causal and dependency structure.") -> TaskEnvelope:
@@ -1080,3 +1080,82 @@ def test_finding_i_fails_closed_without_artifact_reader_unless_trust_flag_set() 
         trusting_state, RepresentationArtifactCompiledV2(artifact=artifact2)
     )
     assert final_state.representation_artifacts_v2 == (artifact2,)
+
+
+@pytest.mark.unit
+def test_find_model_call_by_idempotency_key_found_and_not_found() -> None:
+    """EU-24: direct unit test for the shared idempotency-key lookup helper
+    that replaced the two independent linear scans over `state.model_calls`
+    (the duplicate-identity `any(...)` guard and the adjudication-ref
+    `next(...)` scan)."""
+    ref = ArtifactRef(artifact_id=UUID(int=1), sha256="a" * 64)
+    present_key = "b" * 64
+    absent_key = "c" * 64
+    call = _real_call_record(
+        idempotency_key=present_key, module_id="M03", operation="formalise", ref=ref
+    )
+    state = RunState(run_id=UUID(int=1), version=1, model_calls=(call,))
+
+    assert _find_model_call_by_idempotency_key(state, present_key) is call
+    assert _find_model_call_by_idempotency_key(state, absent_key) is None
+    assert (
+        _find_model_call_by_idempotency_key(RunState(run_id=UUID(int=1), version=0), present_key)
+        is None
+    )
+
+
+@pytest.mark.unit
+def test_eu28_reducer_accepts_mismatched_input_hash_when_state_lacks_classification_or_budget(
+    engine: FrontierReasoningEngine,
+) -> None:
+    """EU-28 (Wave 3 post-freeze cleanup, C07 item #28): pins a known,
+    ACCEPTED residual limitation. This documents current, tolerated
+    behavior -- it is NOT desired behavior, and it does NOT mean a forged
+    `input_hash` is safe to accept in general.
+
+    `RunReducer.apply`'s `RepresentationPlanSelectedV2` branch only
+    independently re-verifies a bound v2 plan's `input_hash` against
+    `canonical_hash({"problem": ..., "signature": ..., "budget": ...})` when
+    `state.task_signature` and `state.budget.plan` are BOTH already
+    populated (see the "Finding G" comment on that branch in reducer.py).
+    When either is absent, the reducer trusts the plan's own self-reported
+    `input_hash` unverified, as long as the plan is otherwise internally
+    self-consistent (its `plan_hash` correctly reseals every other field,
+    including the forged `input_hash`).
+
+    This test constructs exactly that scenario directly via low-level
+    `engine.append`, bypassing `composition.py`'s `select_representation`
+    entirely (the way an adversarial or buggy caller driving the reducer
+    directly could) -- a `RepresentationPlanV2` with a forged, mismatched
+    `input_hash`, applied to a run state where `task_signature`/`budget.plan`
+    are both absent -- and asserts the reducer currently ACCEPTS it. See
+    `tests/unit/test_c09_remediation.py::
+    test_select_representation_rejects_run_missing_classification_or_budget`
+    for the companion test proving `select_representation` itself always
+    rejects before this path is ever reachable through the real
+    coordinator."""
+    handle = engine.create_run({"eu28": "input-hash-gap"})
+    problem = ProblemSpec(output_contract=OutputContract(form="TEXT"))
+    _append(engine, handle.run_id, ProblemFormalised(problem=problem), module_id="M03")
+
+    state = engine.inspect(handle.run_id)
+    assert state.task_signature is None
+    assert state.budget.plan is None
+
+    # Built only to construct a self-consistent plan; deliberately never
+    # applied to `state` via M01/M02 events, so the reducer-side guard being
+    # pinned here (task_signature/budget.plan both absent) actually holds.
+    signature, _ = TaskClassifier().classify(envelope(), None)
+    budget, _ = BudgetAllocator().allocate(signature, default_tier_policy(), DeploymentLimits())
+    plan = RepresentationSelector().select_bound(problem, signature, budget, state.version)
+
+    forged = plan.model_copy(update={"input_hash": "0" * 64})
+    forged = forged.model_copy(update={"plan_hash": bind_hash(forged, exclude={"plan_hash"})})
+    assert forged.input_hash != plan.input_hash
+
+    # Bypasses `composition.py.select_representation`'s hard guard entirely --
+    # a real caller can never reach this state through the coordinator.
+    _append(engine, handle.run_id, RepresentationPlanSelectedV2(plan=forged), module_id="M04")
+
+    final_state = engine.inspect(handle.run_id)
+    assert final_state.representation_plan_v2 == forged
