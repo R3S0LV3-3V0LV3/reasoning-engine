@@ -391,30 +391,40 @@ class TaskClassifier:
                 record_override(name, estimate, effective, override_basis)
             return effective
 
+        # C05 remediation (finding #10): one upfront per-axis unpack of the
+        # proposal's dimension sub-object, instead of repeating
+        # `proposal.<axis>.<field> if proposal else None` for every field
+        # below. Same resulting values for every input combination -- purely
+        # a mechanical de-duplication of the "no proposal at all" guard.
+        consequence_proposal = proposal.consequence if proposal else None
+        reversibility_proposal = proposal.reversibility if proposal else None
+        ambiguity_proposal = proposal.ambiguity if proposal else None
+        evidence_scarcity_proposal = proposal.evidence_scarcity if proposal else None
+
         irreversibility: Ordinal4 | None
         irreversible_upper: Ordinal4 | None
-        if proposal:
+        if reversibility_proposal is not None:
             if "irreversibility" not in explicit:
                 _validate_ordinal_bound(
                     "reversibility",
-                    proposal.reversibility.estimate,
-                    proposal.reversibility.conservative_upper,
+                    reversibility_proposal.estimate,
+                    reversibility_proposal.conservative_upper,
                     ascending=False,
                 )
-            irreversibility = reversibility_to_irreversibility(proposal.reversibility.estimate)
+            irreversibility = reversibility_to_irreversibility(reversibility_proposal.estimate)
             irreversible_upper = reversibility_to_irreversibility(
-                proposal.reversibility.conservative_upper
+                reversibility_proposal.conservative_upper
             )
         else:
             irreversibility = irreversible_upper = None
         consequence = dimension(
             "consequence",
-            proposal.consequence.estimate if proposal else None,
-            proposal.consequence.confidence if proposal else None,
-            proposal.consequence.conservative_upper if proposal else None,
-            proposal.consequence.rationale if proposal else None,
+            consequence_proposal.estimate if consequence_proposal else None,
+            consequence_proposal.confidence if consequence_proposal else None,
+            consequence_proposal.conservative_upper if consequence_proposal else None,
+            consequence_proposal.rationale if consequence_proposal else None,
             floor_consequence,
-            proposal.consequence.anchors if proposal else (),
+            consequence_proposal.anchors if consequence_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/consequence"),)
                 if "consequence" in explicit
@@ -426,11 +436,11 @@ class TaskClassifier:
         irreversible = dimension(
             "irreversibility",
             irreversibility,
-            proposal.reversibility.confidence if proposal else None,
+            reversibility_proposal.confidence if reversibility_proposal else None,
             irreversible_upper,
-            proposal.reversibility.rationale if proposal else None,
+            reversibility_proposal.rationale if reversibility_proposal else None,
             floor_irreversibility,
-            proposal.reversibility.anchors if proposal else (),
+            reversibility_proposal.anchors if reversibility_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/irreversibility"),)
                 if "irreversibility" in explicit
@@ -443,12 +453,12 @@ class TaskClassifier:
         )
         ambiguity = dimension(
             "ambiguity",
-            proposal.ambiguity.estimate if proposal else None,
-            proposal.ambiguity.confidence if proposal else None,
-            proposal.ambiguity.conservative_upper if proposal else None,
-            proposal.ambiguity.rationale if proposal else None,
+            ambiguity_proposal.estimate if ambiguity_proposal else None,
+            ambiguity_proposal.confidence if ambiguity_proposal else None,
+            ambiguity_proposal.conservative_upper if ambiguity_proposal else None,
+            ambiguity_proposal.rationale if ambiguity_proposal else None,
             floor_ambiguity,
-            proposal.ambiguity.anchors if proposal else (),
+            ambiguity_proposal.anchors if ambiguity_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/ambiguity"),)
                 if "ambiguity" in explicit
@@ -459,12 +469,14 @@ class TaskClassifier:
         )
         scarcity = dimension(
             "evidence_scarcity",
-            proposal.evidence_scarcity.estimate if proposal else None,
-            proposal.evidence_scarcity.confidence if proposal else None,
-            proposal.evidence_scarcity.conservative_upper if proposal else None,
-            proposal.evidence_scarcity.rationale if proposal else None,
+            evidence_scarcity_proposal.estimate if evidence_scarcity_proposal else None,
+            evidence_scarcity_proposal.confidence if evidence_scarcity_proposal else None,
+            evidence_scarcity_proposal.conservative_upper
+            if evidence_scarcity_proposal
+            else None,
+            evidence_scarcity_proposal.rationale if evidence_scarcity_proposal else None,
             floor_evidence_scarcity,
-            proposal.evidence_scarcity.anchors if proposal else (),
+            evidence_scarcity_proposal.anchors if evidence_scarcity_proposal else (),
             (
                 (_field_anchor(envelope, "/user_metadata/evidence_scarcity"),)
                 if "evidence_scarcity" in explicit
