@@ -217,6 +217,116 @@ def test_m03_preserves_hard_unknown_and_epistemic_labels(mode: str) -> None:
 
 
 @pytest.mark.unit
+def test_m03_merges_explicit_hard_constraint_omitted_by_proposal() -> None:
+    """W3 final-gate remediation: a model proposal that silently drops one of
+    the user's `explicit_constraints` (while faithfully representing another)
+    must not produce a `ProblemSpec` missing it. Before the fix, `formalise`
+    trusted `proposal.items` exclusively whenever a proposal was present, so
+    the second explicit constraint below vanished with no error and no
+    ledger trace -- this test fails on the pre-fix code and passes after."""
+    task = TaskEnvelope(
+        task_id=UUID(int=1),
+        text="Minimize cost subject to cost <= 10 and weight <= 5kg.",
+        explicit_constraints=("cost <= 10", "weight <= 5kg"),
+        requested_output=OutputContract(form="TEXT"),
+        execution_permissions=PermissionSet(allow_external_writes=False),
+    )
+    anchor = {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {
+            "object_type": "TaskEnvelope",
+            "object_id": str(task.task_id),
+            "revision": None,
+        },
+        "selector": "/explicit_constraints/0",
+    }
+    # The proposal covers "cost <= 10" verbatim but never mentions the
+    # "weight <= 5kg" constraint anywhere -- a realistic omission, not a
+    # paraphrase.
+    proposal = ProblemFormalisationOutput.model_validate_json(
+        json.dumps(
+            {
+                "items": (
+                    {
+                        "id": "c1",
+                        "kind": "CONSTRAINT",
+                        "description": "cost <= 10",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [anchor],
+                        "attributes": {
+                            "constraint_kind": "HARD",
+                            "verification_mode": "UNAVAILABLE",
+                            "verification_status": "UNKNOWN",
+                        },
+                    },
+                )
+            }
+        )
+    )
+    problem = ProblemFormaliser().formalise(task, proposal)
+    hard_descriptions = {c.description for c in problem.constraints if c.kind == "HARD"}
+    assert "cost <= 10" in hard_descriptions
+    assert "weight <= 5kg" in hard_descriptions
+    # No duplicate was synthesised for the constraint the proposal already
+    # represented.
+    assert sum(1 for c in problem.constraints if c.description == "cost <= 10") == 1
+    synthesised = next(c for c in problem.constraints if c.description == "weight <= 5kg")
+    assert synthesised.kind == "HARD"
+    assert synthesised.verification_status is VerificationStatus.UNKNOWN
+    assert synthesised.provenance is not None
+    assert synthesised.provenance.origin is EpistemicOriginLabel.EXPLICIT_INPUT
+    assert len(synthesised.provenance.anchors) == 1
+    synthesised_anchor = synthesised.provenance.anchors[0]
+    assert synthesised_anchor.source_kind is SourceKind.TASK_FIELD
+    assert isinstance(synthesised_anchor.source_ref, ObjectRef)
+    assert synthesised_anchor.source_ref.object_id == str(task.task_id)
+    assert synthesised_anchor.selector == "/explicit_constraints/1"
+    assert synthesised.id not in {"c1"}
+
+
+@pytest.mark.unit
+def test_m03_downgraded_explicit_constraint_is_restored_as_hard() -> None:
+    """A proposal that restates the user's constraint verbatim but downgrades
+    it to SOFT must not let the HARD requirement quietly disappear: the
+    explicit statement is not "represented" by a HARD constraint, so it is
+    merged back in as its own synthesised HARD item alongside the proposal's
+    (retained) SOFT one."""
+    task = envelope()
+    anchor = {
+        "source_kind": "TASK_FIELD",
+        "source_ref": {
+            "object_type": "TaskEnvelope",
+            "object_id": str(task.task_id),
+            "revision": None,
+        },
+        "selector": "/explicit_constraints/0",
+    }
+    proposal = ProblemFormalisationOutput.model_validate_json(
+        json.dumps(
+            {
+                "items": (
+                    {
+                        "id": "c1",
+                        "kind": "CONSTRAINT",
+                        "description": "cost <= 10",
+                        "origin": "EXPLICIT_INPUT",
+                        "anchors": [anchor],
+                        "attributes": {
+                            "constraint_kind": "SOFT",
+                            "verification_mode": "UNAVAILABLE",
+                            "verification_status": "UNKNOWN",
+                        },
+                    },
+                )
+            }
+        )
+    )
+    problem = ProblemFormaliser().formalise(task, proposal)
+    kinds = {c.kind for c in problem.constraints if c.description == "cost <= 10"}
+    assert kinds == {"HARD", "SOFT"}
+
+
+@pytest.mark.unit
 def test_m04_selection_budget_projection_hash_and_fallback() -> None:
     task = envelope()
     problem = ProblemFormaliser().formalise(task, None)
