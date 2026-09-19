@@ -316,33 +316,51 @@ class TaskClassifier:
                         upper,
                         ascending=name in _ASCENDING_AXES or name == "irreversibility",
                     )
-            after_floor = harder(estimate, floor)
-            effective = after_floor
             effective_confidence = None if is_explicit else confidence
             effective_upper = None if is_explicit else upper
-            low_confidence_applied = False
-            if (
+            # C05 remediation (finding #15): a single ordered pipeline of
+            # three escalation stages (permission floor -> low-confidence
+            # escalation -> no-proposal fallback), each computing its own
+            # "did this stage actually change the running value" flag exactly
+            # once, right where it computes the new value -- instead of the
+            # prior shape, where the low-confidence and fallback stages each
+            # tracked their own boolean but the floor stage did not, forcing
+            # a separate, later re-comparison (`after_floor != estimate`) to
+            # recover the same information. Each stage's `applied` flag is
+            # reused directly to build `reasons`, with no re-derivation.
+            # Preserves the exact fixed stage order and the exact `"+"`-joined
+            # `override_basis` string for every input combination -- this
+            # value is persisted in event payloads and golden fixtures.
+            after_floor = harder(estimate, floor)
+            floor_applied = after_floor != estimate
+
+            low_confidence_applies = (
                 not is_explicit
                 and confidence is not None
                 and confidence < policy.confidence_threshold
-            ):
-                escalated = harder(
-                    after_floor, harder(upper or estimate, policy.low_confidence_floor)
-                )
-                low_confidence_applied = escalated != after_floor
-                effective = escalated
-            fallback_applied = False
-            if proposal is None and name not in explicit:
-                escalated = harder(effective, policy.fallback_ordinal)
-                fallback_applied = escalated != effective
-                effective = escalated
-            reasons = []
-            if after_floor != estimate:
-                reasons.append("permission_floor")
-            if low_confidence_applied:
-                reasons.append("low_confidence_escalation")
-            if fallback_applied:
-                reasons.append("no_proposal_fallback")
+            )
+            after_low_confidence = (
+                harder(after_floor, harder(upper or estimate, policy.low_confidence_floor))
+                if low_confidence_applies
+                else after_floor
+            )
+            low_confidence_applied = after_low_confidence != after_floor
+
+            fallback_applies = proposal is None and name not in explicit
+            after_fallback = (
+                harder(after_low_confidence, policy.fallback_ordinal)
+                if fallback_applies
+                else after_low_confidence
+            )
+            fallback_applied = after_fallback != after_low_confidence
+
+            effective = after_fallback
+            stages = (
+                (floor_applied, "permission_floor"),
+                (low_confidence_applied, "low_confidence_escalation"),
+                (fallback_applied, "no_proposal_fallback"),
+            )
+            reasons = [label for applied, label in stages if applied]
             override_basis = "+".join(reasons) if reasons else None
             dimensions[name] = ClassificationDimensionResult(
                 estimated=estimate.value,
