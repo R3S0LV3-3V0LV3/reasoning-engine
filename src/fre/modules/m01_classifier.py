@@ -642,6 +642,16 @@ class TaskClassifier:
         unchanged. A future orchestrator (C09) driving re-classification of an
         already-active run must not call this method at all; it would need
         its own revision path built around the real projection, not this one.
+
+        EU-36 (w3-cleanup) cross-reference: `fre.composition.Wave3Engine.
+        classify_task` is exactly that C09 orchestrator, and it deliberately
+        does NOT call this method -- see its own docstring for why the
+        bootstrap-then-semantic-call-then-finalize ordering it needs cannot
+        be expressed as one call to `canonical_events` (this method runs the
+        semantic call synchronously with no interleaving point to persist a
+        bootstrap budget first). The two implementations look similar but
+        exist for structurally different calling contexts; this is
+        intentional duplication, not drift.
         """
         if current_projection is not None and current_projection.plan is not None:
             raise ValueError(

@@ -251,6 +251,12 @@ class Wave3Engine:
         persisted first, then the semantic call made, then the final
         classification (which mirrors the second half of `canonical_events`'
         logic exactly, via `_finalize_classification`) persisted last.
+
+        EU-36 (w3-cleanup) cross-reference: see `TaskClassifier.
+        canonical_events`'s own docstring (finding #9) for the mirror image
+        of this note -- it documents why it is designed for exactly one
+        calling context (a run's initial classification with no prior budget
+        activity) and must never be called by this orchestrator.
         """
         state = self.engine.inspect(run_id)
         if state.task_signature is not None:
@@ -701,6 +707,20 @@ class Wave3Engine:
             canonical_hash(state.task_signature) if state.task_signature is not None else None
         )
         representation_plan_v2 = state.representation_plan_v2
+        # EU-35 (w3-cleanup): this scan is reverse-ordered specifically to
+        # short-circuit on the common "already compiled recently" case (the
+        # most-recent-match, if any, is the first candidate examined). The
+        # worst-case O(n) miss-path is bounded by the number of context
+        # packets compiled on this run, which is typically small -- accepted
+        # as a measured-acceptable cost, not a real bottleneck, pending
+        # evidence otherwise. If `state.context_packets` is ever observed
+        # growing large enough for this to matter, the fix is a derived index
+        # keyed on the match tuple below (a dict overwrite naturally gives
+        # "most recent per key"), populated either via a new `RunState` field
+        # (an event-sourced schema change) or a per-call local index built
+        # from this same tuple (which would not reduce asymptotic cost, only
+        # clarify the code) -- scope that as its own unit if/when evidence
+        # justifies it.
         for packet in reversed(state.context_packets):
             wave3 = packet.wave3_context
             if (
