@@ -113,6 +113,24 @@ class FloorOverrideRecord(FrozenModel):
     policy_hash: str
     previous_floor: str
     new_floor: str
+    # C05 remediation (finding #13, documentation-only): at the only
+    # construction site today (`m01_classifier.py`'s `record_override`,
+    # called from `dimension()`/`categorical_dimension()`), `approving_rule`
+    # is always set to exactly the same value as `reason`. It is
+    # deliberately kept as a distinct field rather than collapsed into
+    # `reason` (or derived from it) -- a future caller could set the two
+    # independently (e.g. `reason` as a free-text audit note,
+    # `approving_rule` as a stable machine-matchable rule identifier from a
+    # fixed vocabulary) without a schema change. Note the field is *not*
+    # cross-checked against `reason` (or anything else) by
+    # `ClassificationRecord._floor_overrides_are_exhaustive` below.
+    # `FloorOverrideRecord` is embedded in `ClassificationRecord.floor_overrides`,
+    # part of persisted event payloads referenced by golden fixtures
+    # (`tests/fixtures/golden/*.json`) and `m01_classifier.py`'s diagnostic
+    # string (`f"{override.axis}:{override.reason}"`) -- removing or
+    # collapsing this field would be a persisted-schema change requiring
+    # fixture regeneration, and is explicitly out of scope for this cleanup
+    # pass (tier-5, non-blocking).
     approving_rule: str
 
 
